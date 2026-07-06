@@ -1,5 +1,7 @@
 # WP Meta Skills
 
+[![skills.sh: zivtech/wp-meta-skills](https://img.shields.io/badge/skills.sh-zivtech%2Fwp--meta--skills-111111)](https://skills.sh/zivtech/wp-meta-skills)
+
 A **verification-first toolchain for WordPress**: turn any model's output into gate-verified, shippable WordPress artifacts. Deterministic gates (WordPress Coding Standards, Plugin Check, `wp-env` activation) plus an automated repair loop do the work — so the value is *verified code*, not prompt magic, and it works with the model you already have.
 
 > **Status:** initial public release. The pipeline is runnable today and model-agnostic; the supporting evidence is still **early and internal (n=1 fixture)**. Scope and boundaries are in *What the toolchain does*.
