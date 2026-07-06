@@ -4,6 +4,8 @@ A **verification-first toolchain for WordPress**: turn any model's output into g
 
 > **Status:** initial public release. The pipeline is runnable today and model-agnostic; the supporting evidence is still **early and internal (n=1 fixture)**. Scope and boundaries are in *What the toolchain does*.
 
+Discover and install the skills via [skills.sh](https://skills.sh/zivtech/wp-meta-skills): `npx skills add zivtech/wp-meta-skills`.
+
 ## The idea
 
 LLM-written WordPress code looks plausible and ships broken. This toolchain closes that gap with a **loop, not a better prompt**:
