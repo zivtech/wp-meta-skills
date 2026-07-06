@@ -1,0 +1,39 @@
+{
+  "all_artifact_gates_pass": true,
+  "all_certifications_pass": true,
+  "all_materialization_gates_pass": true,
+  "all_packet_gates_pass": true,
+  "entries": [
+    {
+      "artifact_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/minimal-plugin-environment-v1/generated-blueprint/blueprint.json",
+      "certification_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/minimal-plugin-environment-v1/certification.json",
+      "fixture_id": "minimal-plugin-environment-v1",
+      "packet_path": "evals/suites/wordpress-blueprint-executor/examples/minimal-plugin-environment-v1.materializable-packet.md",
+      "scorecard_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/minimal-plugin-environment-v1/scorecard.md",
+      "status": "pass",
+      "steps": 4
+    },
+    {
+      "artifact_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/block-theme-reproduction-v1/generated-blueprint/blueprint.json",
+      "certification_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/block-theme-reproduction-v1/certification.json",
+      "fixture_id": "block-theme-reproduction-v1",
+      "packet_path": "evals/suites/wordpress-blueprint-executor/examples/block-theme-reproduction-v1.materializable-packet.md",
+      "scorecard_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/block-theme-reproduction-v1/scorecard.md",
+      "status": "pass",
+      "steps": 6
+    },
+    {
+      "artifact_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/unsupported-feature-boundary-v1/generated-blueprint/blueprint.json",
+      "certification_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/unsupported-feature-boundary-v1/certification.json",
+      "fixture_id": "unsupported-feature-boundary-v1",
+      "packet_path": "evals/suites/wordpress-blueprint-executor/examples/unsupported-feature-boundary-v1.materializable-packet.md",
+      "scorecard_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/unsupported-feature-boundary-v1/scorecard.md",
+      "status": "pass",
+      "steps": 5
+    }
+  ],
+  "evidence_boundary": "Static Blueprint executor packet certification only. This is not Playground launch evidence, answer-key scoring, human review, variance measurement, or public benchmark evidence.",
+  "generated_at": "2026-06-21T08:02:35Z",
+  "run_id": "wordpress-blueprint-executor-static-cert-20260621",
+  "suite": "wordpress-blueprint-executor"
+}

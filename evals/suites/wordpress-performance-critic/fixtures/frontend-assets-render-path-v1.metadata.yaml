@@ -1,0 +1,31 @@
+name: frontend-assets-render-path-v1
+suite: wordpress-performance-critic
+skill_under_test: wordpress-performance-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: synthetic
+risk_class: frontend_assets_render_path
+expected_wordpress_apis:
+  - "wp_enqueue_script"
+  - "wp_enqueue_style"
+  - "wp_register_script"
+  - "wp_register_style"
+  - "render_callback"
+  - "block.json"
+  - "wp_remote_get"
+  - "Core Web Vitals"
+expected_verification_surfaces:
+  - "browser performance trace"
+  - "Core Web Vitals lab or field data where available"
+  - "Query Monitor or APM render timing"
+  - "before/after page asset inventory"
+must_detect:
+  - "unconditional frontend asset loading"
+  - "blocking script placement and unnecessary dependency risk"
+  - "editor/frontend asset boundary confusion"
+  - "remote HTTP call in render_callback without cache/fallback"
+  - "missing measurement plan"
+negative_space:
+  - "does not prove Core Web Vitals failure without data"
+  - "does not require removing dynamic rendering when freshness requires it"
+  - "does not prove production latency without real traffic/environment data"

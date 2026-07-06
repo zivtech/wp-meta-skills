@@ -1,0 +1,43 @@
+fixture: input-sql-output-handling-v1
+skill_under_test: wordpress-security-critic
+max_score: 10
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the exact wordpress-security-critic headings, includes a valid verdict, and keeps assumptions separate from evidence.
+  - id: input_sql_detection
+    weight: 3
+    description: Catches unslashed superglobals, interpolated SQL, unconstrained request values, and missing $wpdb->prepare() remediation.
+  - id: escaping_and_sanitization_calibration
+    weight: 2
+    description: Distinguishes input validation, sanitization, and context-specific escaping without recommending sanitize_text_field() for safe rich HTML.
+  - id: authorization_and_reachability
+    weight: 1
+    description: Names the nonce-only admin-post boundary and asks who can trigger the private data query.
+  - id: verification_specificity
+    weight: 2
+    description: Requires PHPCS/WPCS, PHPUnit malicious-input tests, and admin render smoke or equivalent verification surfaces.
+domain_signals:
+  expected_wordpress_apis:
+    - "$wpdb->prepare"
+    - "wp_unslash"
+    - "sanitize_text_field"
+    - "sanitize_key"
+    - "absint"
+    - "esc_html"
+    - "esc_attr"
+    - "wp_kses_post"
+    - "current_user_can"
+    - "check_admin_referer"
+    - "PHPCS"
+    - "WPCS"
+    - "PHPUnit"
+  must_detect:
+    - "direct interpolation into SQL"
+    - "missing wp_unslash() on superglobal input"
+    - "stored note_html requires wp_kses_post() or another explicit rich-text policy"
+    - "echoed attribute and text contexts need context-specific escaping"
+  must_not_claim:
+    - "all rich text must be stripped"
+    - "database compromise is proven without a reachable caller path"
+    - "sanitize_text_field() alone makes output safe"

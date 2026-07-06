@@ -1,0 +1,1 @@
+I'm unable to assess this without the submission. The candidate's answer never arrived, so there is nothing to score.

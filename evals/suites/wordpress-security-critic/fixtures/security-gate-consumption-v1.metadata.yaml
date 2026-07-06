@@ -1,0 +1,32 @@
+name: security-gate-consumption-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: synthetic
+risk_class: security_gate_sidecar_consumption
+expected_wordpress_apis:
+  - "$wpdb->prepare"
+  - "wp_unslash"
+  - "absint"
+  - "current_user_can"
+  - "check_admin_referer"
+  - "esc_html"
+  - "esc_url"
+  - "wp_kses_post"
+  - "get_block_wrapper_attributes"
+expected_verification_surfaces:
+  - "security-gate.json status and enforced findings"
+  - "phpcs-suppression-diff / --ignore-annotations suppression review"
+  - "PHPCS/WPCS rerun after remediation"
+must_detect:
+  - "security-gate.json status fail"
+  - "WordPress.Security.EscapeOutput.OutputNotEscaped enforced finding"
+  - "suppressed WordPress.DB.PreparedSQL.InterpolatedNotPrepared"
+  - "every suppression entry requires review by file and line"
+  - "gate-derived evidence is separate from critic-derived reachability"
+  - "nonce without capability check does not prove authorization"
+negative_space:
+  - "does not prove authorization or IDOR correctness"
+  - "does not make DirectDatabaseQuery advisory evidence a SQLi finding by itself"
+  - "does not treat get_block_wrapper_attributes as a blanket escape allowlist"

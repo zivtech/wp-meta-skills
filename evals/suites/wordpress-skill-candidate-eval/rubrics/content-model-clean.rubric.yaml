@@ -1,0 +1,46 @@
+fixture: content-model-clean
+scoring_method: quality_weighted
+max_score: 10
+criteria:
+  - id: wordpress_specificity
+    weight: 2
+    type: quality
+    description: "Uses WordPress-native APIs, risks, and vocabulary rather than generic CMS or Drupal language."
+  - id: severity_calibration
+    weight: 2
+    type: quality
+    description: "Calibrates findings or risks to realistic consequence and avoids invented issues on clean controls."
+  - id: remediation_specificity
+    weight: 2
+    type: quality
+    description: "Provides concrete next steps, implementation handoffs, or verification commands rather than vague advice."
+  - id: evidence_and_assumptions
+    weight: 2
+    type: quality
+    description: "Separates observed evidence from assumptions and states what must be checked before execution."
+  - id: provenance_and_safety
+    weight: 1
+    type: quality
+    description: "Avoids secrets, unsafe production commands, unattributed reuse, and unsupported version claims."
+  - id: false_positive_resistance
+    weight: 1
+    type: quality
+    description: "Does not penalize sound WordPress choices merely because alternatives exist."
+domain_signals:
+  expected_wordpress_apis:
+    - "register_post_type"
+    - "register_taxonomy"
+    - "register_post_meta"
+    - "show_in_rest"
+    - "ACF field groups"
+  must_detect:
+    - "Registered meta canonical schema"
+    - "Taxonomy vs meta roles"
+    - "ACF as editor UI not sole source of truth"
+  must_not_penalize_or_do:
+    - "Demand custom tables"
+    - "Ignore REST/search needs"
+    - "Move structured fields into post_content"
+discrimination_gate:
+  required_delta: 0.2
+  fallback: blind_pairwise_preference

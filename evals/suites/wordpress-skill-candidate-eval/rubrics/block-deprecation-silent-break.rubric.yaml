@@ -1,0 +1,44 @@
+fixture: block-deprecation-silent-break
+scoring_method: quality_weighted
+max_score: 10
+criteria:
+  - id: wordpress_specificity
+    weight: 2
+    type: quality
+    description: "Uses WordPress-native APIs, risks, and vocabulary rather than generic CMS or Drupal language."
+  - id: severity_calibration
+    weight: 2
+    type: quality
+    description: "Calibrates findings or risks to realistic consequence and avoids invented issues on clean controls."
+  - id: remediation_specificity
+    weight: 2
+    type: quality
+    description: "Provides concrete next steps, implementation handoffs, or verification commands rather than vague advice."
+  - id: evidence_and_assumptions
+    weight: 2
+    type: quality
+    description: "Separates observed evidence from assumptions and states what must be checked before execution."
+  - id: provenance_and_safety
+    weight: 1
+    type: quality
+    description: "Avoids secrets, unsafe production commands, unattributed reuse, and unsupported version claims."
+  - id: false_positive_resistance
+    weight: 1
+    type: quality
+    description: "Does not penalize sound WordPress choices merely because alternatives exist."
+domain_signals:
+  expected_wordpress_apis:
+    - "deprecated block versions"
+    - "register_block_type"
+    - "block.json"
+  must_detect:
+    - "Missing deprecated array causes block validation failure on existing v1 posts"
+    - "The activation migration updates a setting only and does not address block markup or validation"
+    - "Correct fix is a deprecated entry mapping v1 attributes/markup to v2, not a post_content rewrite"
+  must_not_penalize_or_do:
+    - "Conclude the change is safe because a migration script exists"
+    - "Recommend a blind find/replace of post_content as the remedy"
+    - "Treat the attribute rename as a cosmetic refactor with no compatibility impact"
+discrimination_gate:
+  required_delta: 0.2
+  fallback: blind_pairwise_preference

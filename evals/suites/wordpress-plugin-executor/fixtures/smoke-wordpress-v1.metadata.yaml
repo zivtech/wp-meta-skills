@@ -1,0 +1,13 @@
+name: smoke-wordpress-v1
+suite: wordpress-plugin-executor
+skill_under_test: wordpress-plugin-executor
+skill_type: executor
+difficulty_tier: smoke
+provenance: synthetic
+expected_behavior:
+  - Uses the required output contract
+  - Emits materializable generated-file fences
+  - Applies WordPress-native gates
+  - Names exact WordPress APIs and verification commands
+  - Separates evidence from assumptions
+  - Provides specific verification or review handoff

@@ -1,0 +1,11 @@
+{
+  "a_short_valid_heading.md": "valid",
+  "b_anchorless_prose.md": "valid",
+  "c_padded_refusal_heading.md": "review",
+  "d_refusal_quotes_fence.md": "review",
+  "e_fake_recovery.md": "review",
+  "FN1_post_window_refusal.md": "review",
+  "FN2_out_of_set_bodyless.md": "review",
+  "FN4_out_of_set_padded.md": "review",
+  "FP3_valid_quotes_phrase.md": "review"
+}

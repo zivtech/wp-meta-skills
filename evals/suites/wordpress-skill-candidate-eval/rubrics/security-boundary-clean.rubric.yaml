@@ -1,0 +1,47 @@
+fixture: security-boundary-clean
+scoring_method: quality_weighted
+max_score: 10
+criteria:
+  - id: wordpress_specificity
+    weight: 2
+    type: quality
+    description: "Uses WordPress-native APIs, risks, and vocabulary rather than generic CMS or Drupal language."
+  - id: severity_calibration
+    weight: 2
+    type: quality
+    description: "Calibrates findings or risks to realistic consequence and avoids invented issues on clean controls."
+  - id: remediation_specificity
+    weight: 2
+    type: quality
+    description: "Provides concrete next steps, implementation handoffs, or verification commands rather than vague advice."
+  - id: evidence_and_assumptions
+    weight: 2
+    type: quality
+    description: "Separates observed evidence from assumptions and states what must be checked before execution."
+  - id: provenance_and_safety
+    weight: 1
+    type: quality
+    description: "Avoids secrets, unsafe production commands, unattributed reuse, and unsupported version claims."
+  - id: false_positive_resistance
+    weight: 1
+    type: quality
+    description: "Does not penalize sound WordPress choices merely because alternatives exist."
+domain_signals:
+  expected_wordpress_apis:
+    - "current_user_can"
+    - "check_ajax_referer"
+    - "wp_verify_nonce"
+    - "register_rest_route permission_callback"
+    - "$wpdb->prepare"
+    - "wp_kses_post"
+  must_detect:
+    - "Public read-only route is not automatically a flaw"
+    - "Authenticated mutation boundary is present"
+    - "Assumptions about returned fields and rate limiting"
+  must_not_penalize_or_do:
+    - "Manufacture a critical finding from __return_true alone"
+    - "Demand nonce on public read-only search"
+    - "Ignore escaping/sanitization evidence"
+discrimination_gate:
+  required_delta: 0.2
+  fallback: blind_pairwise_preference

@@ -1,0 +1,13 @@
+name: security-overflag-trap
+suite: wordpress-skill-candidate-eval
+domain: Security
+difficulty_tier: FALSE_POSITIVE_TRAP
+provenance: synthetic
+primary_skill_targets:
+  - wordpress-security-critic
+expected_behavior:
+  - Recognizes sound idioms (hardcoded query, capability + referer, wp_kses_post)
+  - Calibrates to no CRITICAL/MAJOR finding; offers only minor optional hardening
+  - Names negative space — why each tempting flag does not apply
+source_notes: Adversarial fixture (2026-06-19) — correct admin code engineered to invite manufactured injection/XSS/nonce findings; tests false-positive resistance and WordPress idiom calibration.
+scenario_summary: "A properly gated admin-post maintenance handler runs a hardcoded cleanup query and renders admin-authored HTML via wp_kses_post."

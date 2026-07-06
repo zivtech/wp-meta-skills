@@ -1,0 +1,13 @@
+name: performance-subtle-real-issue
+suite: wordpress-skill-candidate-eval
+domain: Performance and operations
+difficulty_tier: CALIBRATION_TRAP
+provenance: synthetic
+primary_skill_targets:
+  - wordpress-performance-critic
+expected_behavior:
+  - Catches the single real bottleneck (LIKE on unindexed postmeta)
+  - Recommends taxonomy/indexed column and measurement
+  - Affirms the sound patterns instead of flagging them
+source_notes: Adversarial fixture (2026-06-19) — one genuine meta_query bottleneck embedded among correct caching, enqueue, and image patterns; tests recall AND false-positive resistance together.
+scenario_summary: "A listing archive filters by city/region with meta_query LIKE on unindexed postmeta while its caching, enqueue, and images are already sound."

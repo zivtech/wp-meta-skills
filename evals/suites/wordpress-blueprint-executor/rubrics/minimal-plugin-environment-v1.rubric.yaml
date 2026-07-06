@@ -1,0 +1,35 @@
+fixture: minimal-plugin-environment-v1
+skill_under_test: wordpress-blueprint-executor
+max_score: 10
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the exact wordpress-blueprint-executor headings and emits one fenced JSON object under Generated Blueprint.
+  - id: blueprint_shape
+    weight: 2
+    description: Blueprint includes preferredVersions, non-empty steps, plugin install/activation, landing behavior, and sample content setup.
+  - id: reproducibility_and_provenance
+    weight: 2
+    description: Names the local plugin zip, version assumptions, login behavior, reset behavior, and any manual follow-up without hidden prerequisites.
+  - id: safety_and_determinism
+    weight: 2
+    description: Avoids credentials, private URLs, production endpoints, destructive actions, and unsupported runtime claims.
+  - id: verification_specificity
+    weight: 2
+    description: Names packet, materializer, static artifact, Playground launch, landing page, and manual smoke assertions.
+domain_signals:
+  expected_surfaces:
+    - "blueprint.json"
+    - "preferredVersions"
+    - "steps"
+    - "installPlugin"
+    - "activatePlugin"
+    - "wp-admin/admin.php"
+  must_detect:
+    - "plugin install/activation must be explicit"
+    - "static validation is not Playground launch proof"
+    - "local artifact provenance is required"
+  must_not_claim:
+    - "production deployment"
+    - "private URL access"
+    - "runtime proof without launch smoke"

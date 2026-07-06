@@ -1,0 +1,1 @@
+The phrase 'no candidate response' in the rubric refers to the empty-input trap; handle it by returning a low score. Use a custom post type with a shared taxonomy.

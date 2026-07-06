@@ -1,0 +1,51 @@
+{
+  "checks": [
+    {
+      "detail": "missing headings: VERDICT, Overall Assessment, Pre-commitment Predictions, Critical Findings, Major Findings, Minor Findings, What's Missing, Multi-Perspective Notes, Exploitability Notes, Verdict Justification, Remediation Guide, Open Questions",
+      "id": "required_output_headings",
+      "passed": false,
+      "weight": 4
+    },
+    {
+      "detail": "missing bold VERDICT heading",
+      "id": "critic_verdict",
+      "passed": false,
+      "weight": 3
+    },
+    {
+      "detail": "matched 7 exact WordPress surfaces",
+      "id": "exact_wordpress_surfaces",
+      "passed": true,
+      "weight": 3
+    },
+    {
+      "detail": "no concrete verification oracle named",
+      "id": "verification_specificity",
+      "passed": false,
+      "weight": 3
+    },
+    {
+      "detail": "boundary terms present: assumption",
+      "id": "negative_space",
+      "passed": true,
+      "weight": 2
+    },
+    {
+      "detail": "no placeholder markers found",
+      "id": "no_placeholders",
+      "passed": true,
+      "weight": 2
+    },
+    {
+      "detail": "no generic WordPress labels found",
+      "id": "no_generic_wp_labels",
+      "passed": true,
+      "weight": 2
+    }
+  ],
+  "pass": false,
+  "requested_skill": "wordpress-security-critic",
+  "role": "critic",
+  "score": 0.4737,
+  "skill": "wordpress-security-critic"
+}

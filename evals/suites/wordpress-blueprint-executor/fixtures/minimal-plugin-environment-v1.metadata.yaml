@@ -1,0 +1,28 @@
+name: minimal-plugin-environment-v1
+suite: wordpress-blueprint-executor
+skill_under_test: wordpress-blueprint-executor
+skill_type: executor
+difficulty_tier: focused
+provenance: synthetic
+risk_class: minimal_reproducible_plugin_environment
+expected_wordpress_surfaces:
+  - "blueprint.json"
+  - "preferredVersions"
+  - "steps"
+  - "installPlugin"
+  - "activatePlugin"
+  - "wp-admin/admin.php"
+expected_verification_surfaces:
+  - "Blueprint static JSON validation"
+  - "Playground launch smoke"
+  - "landing page assertion"
+  - "reset behavior notes"
+must_detect:
+  - "plugin install and activation must be explicit"
+  - "login and landing page setup cannot be hidden"
+  - "local plugin zip provenance must be listed"
+  - "static JSON is not runtime proof"
+negative_space:
+  - "does not prove production deployment"
+  - "does not fetch private URLs"
+  - "does not prove Playground launch without a runtime smoke record"

@@ -1,0 +1,15 @@
+name: triage-routing-risk
+suite: wordpress-skill-candidate-eval
+domain: Project triage and routing
+difficulty_tier: HAS_RISK
+provenance: synthetic
+primary_skill_targets:
+  - wordpress-planner
+  - wordpress-critic
+expected_behavior:
+  - WordPress-native routing and terminology
+  - Explicit assumptions and tradeoffs
+  - Security, performance, and rollout awareness proportional to risk
+  - No invented findings on clean controls
+source_notes: Designed from the 2026-06-16 WordPress candidate catalog and Zivtech V1 plan.
+scenario_summary: "A handoff proposes adding a one-off admin_init script in functions.php to create staff pages and update roles on every request."

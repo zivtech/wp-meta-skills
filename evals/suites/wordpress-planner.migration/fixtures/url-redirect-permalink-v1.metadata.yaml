@@ -1,0 +1,27 @@
+name: url-redirect-permalink-v1
+suite: wordpress-planner.migration
+skill_under_test: wordpress-planner.migration
+skill_type: planner
+difficulty_tier: focused
+provenance: synthetic
+risk_class: url_redirect_permalink_preservation
+expected_wordpress_apis:
+  - "wp rewrite flush"
+  - "wp search-replace"
+  - "wp option get permalink_structure"
+  - "redirect import"
+  - "redirect export"
+expected_verification_surfaces:
+  - "pre-launch crawl comparison"
+  - "post-launch 404 sampling"
+  - "redirect map acceptance criteria"
+  - "chain and loop checks"
+must_detect:
+  - "redirect plan without acceptance criteria"
+  - "missing SEO metadata export"
+  - "canonical URL and query-string uncertainty"
+  - "permalink model must be verified separately from redirect import"
+negative_space:
+  - "does not prove search-equity preservation"
+  - "does not finalize redirects without crawl and stakeholder acceptance"
+  - "does not claim all legacy aliases are known"

@@ -1,0 +1,13 @@
+name: security-sql-aliased-taint
+suite: wordpress-skill-candidate-eval
+domain: Security
+difficulty_tier: INJECTION_SUBTLE
+provenance: synthetic
+primary_skill_targets:
+  - wordpress-security-critic
+expected_behavior:
+  - Traces taint across function boundaries to the interpolated query
+  - States that prepare() elsewhere does not protect this path
+  - Requires prepare()/placeholder plus an injection regression test
+source_notes: Adversarial fixture (2026-06-19) — taint crosses two function hops so WPCS PreparedSQL misses it; prepare() used elsewhere and a correct capability check act as decoys.
+scenario_summary: "An authorized AJAX endpoint passes an unsanitized $_GET value through a helper into an interpolated $wpdb query."

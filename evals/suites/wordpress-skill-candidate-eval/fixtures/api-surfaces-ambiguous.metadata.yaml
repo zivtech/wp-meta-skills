@@ -1,0 +1,15 @@
+name: api-surfaces-ambiguous
+suite: wordpress-skill-candidate-eval
+domain: REST Abilities Interactivity APIs
+difficulty_tier: AMBIGUOUS_TRADEOFF
+provenance: synthetic
+primary_skill_targets:
+  - wordpress-planner
+  - wordpress-critic
+expected_behavior:
+  - WordPress-native routing and terminology
+  - Explicit assumptions and tradeoffs
+  - Security, performance, and rollout awareness proportional to risk
+  - No invented findings on clean controls
+source_notes: Designed from the 2026-06-16 WordPress candidate catalog and Zivtech V1 plan.
+scenario_summary: "A donation calculator could use the Interactivity API, a small React block, or plain server-rendered forms."

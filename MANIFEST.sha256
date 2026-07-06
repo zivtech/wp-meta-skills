@@ -1,0 +1,35 @@
+# MANIFEST.sha256 — Integrity checksums for skill and agent files
+# Generated: 2026-07-06T17:29:10Z
+# Commit: fc1c57a
+#
+# Verify with: shasum -a 256 -c MANIFEST.sha256
+# Or run: ./install.sh --verify
+
+bcb6a43e6e85e981f30fd36bab2238112d5ee2c2ce92d7d43bf29402ecc7f4c1  .claude/agents/wordpress-block-executor.md
+ce62bd90ed779690e12d6e22ebce6eb6448e4d1cd35eb49959a01c5118986bc8  .claude/agents/wordpress-block-planner.md
+6a1de9b3fb7a653a6adfb93d592fb6aea37a6bc845f802ea5df473a11bfb2b9b  .claude/agents/wordpress-blueprint-executor.md
+0f41b73b6a0844db807d597ca700754294abfb6530a20daeff2b6e209906bc68  .claude/agents/wordpress-content-model-planner.md
+1311fa5cc633f0d9d6615d81f479810a6638d62d5bddcb8aa3d5c9b3e157b674  .claude/agents/wordpress-critic.md
+c4c53cc8e4b46367baf4de321ac28f9fc7f8fce5543e3de7265005c15a83e47a  .claude/agents/wordpress-migration-planner.md
+ea6dff3e5db3c72e3312bf7d12392d6ed1aa7f7a5450f87a77f068fb77879f82  .claude/agents/wordpress-performance-critic.md
+d72cd3cf6604554e389357c821f499b863a13ea1b64a3b13ab9b898fdfaf0e1a  .claude/agents/wordpress-planner.md
+99a35817a2e3e8b430f7fc07abd896bfefafbd470d39c3bd393918e39cf52f24  .claude/agents/wordpress-plugin-executor.md
+377f2c2c3eafd53af03abf3628d72806708143ca1cbeffad17c024c99b8dbccf  .claude/agents/wordpress-plugin-planner.md
+d325b5463c1a0c5e5727413c1dd37d32fab463e2d7f1da4f93ff07a601a29413  .claude/agents/wordpress-security-critic.md
+1551acce14e431fdba106839cf1130f367c4c4074c1fc40b2b10dc1bfb1057a5  .claude/agents/wordpress-theme-critic.md
+17bf5ab5fd1b3c2cf28c0bd586edb577815ee28285c7c3340c09976085513706  .claude/agents/wordpress-theme-executor.md
+3cb469d73bd3360c28f2e56a9d10508aa04c683d9800566089c290b283bb21da  .claude/agents/wordpress-theme-planner.md
+69e9874c7c74ca07f5f333f1351d2fcc22d963da0f1074bb56cb9c1ed521931e  .claude/skills/wordpress-block-executor/SKILL.md
+e33db0f5e6f6dddae07596779085e8f536317b290fe69077e7abb50123772405  .claude/skills/wordpress-blueprint-executor/SKILL.md
+ca0866ca92821a3093d4b30caadf0e3f1373c529cb202f7b88a467439aefac2b  .claude/skills/wordpress-critic/SKILL.md
+b8a4d1022f35baf779f42ffe5aa46df3215d04b731d43c7a2841c3f87a2b7ec7  .claude/skills/wordpress-performance-critic/SKILL.md
+a0f37834b31649aa73f1b841fe680b156e5c5f959e34804825356115ff9d4369  .claude/skills/wordpress-planner.block/SKILL.md
+aad6ac460c56c0231a45640334edec2f783366fbc57f4f87cd8082b3479dde03  .claude/skills/wordpress-planner.content-model/SKILL.md
+9e7eee48f3cd6d40519abcfc37cf381599ecb56b85e912d1404a6e5264802210  .claude/skills/wordpress-planner.migration/SKILL.md
+6d52db7e55fcf2be76fdc849d44382da4f1d861bc42f38ca39bb063520078418  .claude/skills/wordpress-planner.plugin/SKILL.md
+5bddf05cbd6627ec662cc0a1d5fc3e844fd683be3731101bdee12d1d3db86ce6  .claude/skills/wordpress-planner.theme/SKILL.md
+bf900ff63346b7912cde89282f0b9111a67e99f77abc8a108603f0ad874fc03b  .claude/skills/wordpress-planner/SKILL.md
+896d0a5992513dd1aff51ba5ee2cfcc46d17fb0eda6638f69676dbf72b7c34d1  .claude/skills/wordpress-plugin-executor/SKILL.md
+f65c23b702cb8fc5a6aba9aff1c82d3c5fae7e14e437c3b8a0c7784eacc1d3e0  .claude/skills/wordpress-security-critic/SKILL.md
+aa1b8a46a16ffa267f2ab4127a3cfe7cd5fc49b8ab741e86fb97961cc9747808  .claude/skills/wordpress-theme-critic/SKILL.md
+2556941fa7164a9ec9944b7e1b43d5bdccc3b74c190abdf116ecabc00876239a  .claude/skills/wordpress-theme-executor/SKILL.md

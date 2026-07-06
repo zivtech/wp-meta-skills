@@ -1,0 +1,21 @@
+{
+  "all_artifact_gates_pass": true,
+  "all_certifications_pass": true,
+  "all_materialization_gates_pass": true,
+  "all_packet_gates_pass": true,
+  "entries": [
+    {
+      "artifact_path": "evals/results/wordpress-blueprint-executor-self-contained-static-cert-20260621/self-contained-plugin-launch-v1/generated-blueprint/blueprint.json",
+      "certification_path": "evals/results/wordpress-blueprint-executor-self-contained-static-cert-20260621/self-contained-plugin-launch-v1/certification.json",
+      "fixture_id": "self-contained-plugin-launch-v1",
+      "packet_path": "evals/suites/wordpress-blueprint-executor/examples/self-contained-plugin-launch-v1.materializable-packet.md",
+      "scorecard_path": "evals/results/wordpress-blueprint-executor-self-contained-static-cert-20260621/self-contained-plugin-launch-v1/scorecard.md",
+      "status": "pass",
+      "steps": 5
+    }
+  ],
+  "evidence_boundary": "Self-contained static Blueprint executor packet certification only. This proves no VFS payload is required and the saved packet passes static gates; it is not browser-observed Playground launch evidence, answer-key scoring, human review, variance measurement, or public benchmark evidence.",
+  "generated_at": "2026-06-21T09:33:12Z",
+  "run_id": "wordpress-blueprint-executor-self-contained-static-cert-20260621",
+  "suite": "wordpress-blueprint-executor"
+}

@@ -1,0 +1,506 @@
+{
+  "ability_name": "acme-mcp-smoke/get-runtime-marker",
+  "ability_smoke_status": "pass",
+  "artifact_kind": "plugin",
+  "artifact_path": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o/acme-mcp-smoke",
+  "block_build_gate": null,
+  "block_build_smoke_requested": false,
+  "block_build_smoke_status": "not_run",
+  "block_deprecation_smoke_requested": false,
+  "block_deprecation_smoke_status": "not_run",
+  "block_deprecation_static_gate": null,
+  "block_gate": null,
+  "block_name": null,
+  "block_smoke_status": "not_run",
+  "commands": {
+    "ability_smoke": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "eval",
+        "\nif ( ! function_exists( 'wp_get_ability' ) ) {\n    fwrite( STDERR, 'wp_get_ability unavailable; WordPress 6.9+ Abilities API not present.' );\n    exit( 3 );\n}\n$ability = wp_get_ability( \"acme-mcp-smoke/get-runtime-marker\" );\nif ( ! $ability ) {\n    fwrite( STDERR, 'ability not registered: acme-mcp-smoke/get-runtime-marker' );\n    exit( 4 );\n}\necho wp_json_encode(\n    array(\n        'name'        => $ability->get_name(),\n        'label'       => $ability->get_label(),\n        'description' => $ability->get_description(),\n        'category'    => $ability->get_category(),\n    )\n);\n"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+      "duration_sec": 1.412,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp eval \nif ( ! function_exists( 'wp_get_ability' ) ) {\n    fwrite( STDERR, 'wp_get_ability unavailable; WordPress 6.9+ Abilities API not present.' );\n    exit( 3 );\n}\n$ability = wp_get_ability( \"acme-mcp-smoke/get-runtime-marker\" );\nif ( ! $ability ) {\n    fwrite( STDERR, 'ability not registered: acme-mcp-smoke/get-runtime-marker' );\n    exit( 4 );\n}\necho wp_json_encode(\n    array(\n        'name'        => $ability->get_name(),\n        'label'       => $ability->get_label(),\n        'description' => $ability->get_description(),\n        'category'    => $ability->get_category(),\n    )\n);\n' on the cli container. \n\n\u2714 Ran `wp eval \nif ( ! function_exists( 'wp_get_ability' ) ) {\n    fwrite( STDERR, 'wp_get_ability unavailable; WordPress 6.9+ Abilities API not present.' );\n    exit( 3 );\n}\n$ability = wp_get_ability( \"acme-mcp-smoke/get-runtime-marker\" );\nif ( ! $ability ) {\n    fwrite( STDERR, 'ability not registered: acme-mcp-smoke/get-runtime-marker' );\n    exit( 4 );\n}\necho wp_json_encode(\n    array(\n        'name'        => $ability->get_name(),\n        'label'       => $ability->get_label(),\n        'description' => $ability->get_description(),\n        'category'    => $ability->get_category(),\n    )\n);\n` in 'cli'. (in 0s 496ms)\n",
+      "stdout": "{\"name\":\"acme-mcp-smoke\\/get-runtime-marker\",\"label\":\"Get Runtime Marker\",\"description\":\"Returns a deterministic marker string for MCP Adapter runtime smoke tests.\",\"category\":\"acme-mcp-smoke\"}"
+    },
+    "activation": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "plugin",
+        "activate",
+        "acme-mcp-smoke"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+      "duration_sec": 1.288,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp plugin activate acme-mcp-smoke' on the cli container. \n\nWarning: Plugin 'acme-mcp-smoke' is already active.\n\u2714 Ran `wp plugin activate acme-mcp-smoke` in 'cli'. (in 0s 406ms)\n",
+      "stdout": "Success: Plugin already activated.\n"
+    },
+    "block_deprecation_post": null,
+    "block_smoke": null,
+    "editor_smoke": null,
+    "mcp_adapter_discover": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "mcp-adapter",
+        "serve",
+        "--user=admin",
+        "--server=mcp-adapter-default-server"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+      "duration_sec": 1.457,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp mcp-adapter serve --user=admin --server=mcp-adapter-default-server' on the cli container. \n\n[MCP STDIO Bridge] MCP STDIO Bridge started for server: mcp-adapter-default-server\n[MCP STDIO Bridge] MCP STDIO Bridge stopped\n\u2714 Ran `wp mcp-adapter serve --user=admin --server=mcp-adapter-default-server` in 'cli'. (in 0s 536ms)\n",
+      "stdout": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"abilities\\\":[{\\\"name\\\":\\\"acme-mcp-smoke\\\\/get-runtime-marker\\\",\\\"label\\\":\\\"Get Runtime Marker\\\",\\\"description\\\":\\\"Returns a deterministic marker string for MCP Adapter runtime smoke tests.\\\"}]}\"}],\"structuredContent\":{\"abilities\":[{\"name\":\"acme-mcp-smoke/get-runtime-marker\",\"label\":\"Get Runtime Marker\",\"description\":\"Returns a deterministic marker string for MCP Adapter runtime smoke tests.\"}]},\"isError\":false}}\n"
+    },
+    "mcp_adapter_execute": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "mcp-adapter",
+        "serve",
+        "--user=admin",
+        "--server=mcp-adapter-default-server"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+      "duration_sec": 1.284,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp mcp-adapter serve --user=admin --server=mcp-adapter-default-server' on the cli container. \n\n[MCP STDIO Bridge] MCP STDIO Bridge started for server: mcp-adapter-default-server\n[21-Jun-2026 02:58:49 UTC] PHP Deprecated:  Calling static trait method WP\\MCP\\Infrastructure\\Observability\\McpObservabilityHelperTrait::is_sensitive_key is deprecated, it should only be called on a class using the trait in /var/www/html/wp-content/plugins/mcp-adapter/includes/Transport/Infrastructure/RequestRouter.php on line 292\nDeprecated: Calling static trait method WP\\MCP\\Infrastructure\\Observability\\McpObservabilityHelperTrait::is_sensitive_key is deprecated, it should only be called on a class using the trait in /var/www/html/wp-content/plugins/mcp-adapter/includes/Transport/Infrastructure/RequestRouter.php on line 292\n[21-Jun-2026 02:58:49 UTC] PHP Deprecated:  Accessing static trait property WP\\MCP\\Infrastructure\\Observability\\McpObservabilityHelperTrait::$sensitive_patterns is deprecated, it should only be accessed on a class using the trait in /var/www/html/wp-content/plugins/mcp-adapter/includes/Infrastructure/Observability/McpObservabilityHelperTrait.php on line 180\nDeprecated: Accessing static trait property WP\\MCP\\Infrastructure\\Observability\\McpObservabilityHelperTrait::$sensitive_patterns is deprecated, it should only be accessed on a class using the trait in /var/www/html/wp-content/plugins/mcp-adapter/includes/Infrastructure/Observability/McpObservabilityHelperTrait.php on line 180\n[21-Jun-2026 02:58:49 UTC] PHP Deprecated:  Calling static trait method WP\\MCP\\Infrastructure\\Observability\\McpObservabilityHelperTrait::is_sensitive_key is deprecated, it should only be called on a class using the trait in /var/www/html/wp-content/plugins/mcp-adapter/includes/Transport/Infrastructure/RequestRouter.php on line 292\nDeprecated: Calling static trait method WP\\MCP\\Infrastructure\\Observability\\McpObservabilityHelperTrait::is_sensitive_key is deprecated, it should only be called on a class using the trait in /var/www/html/wp-content/plugins/mcp-adapter/includes/Transport/Infrastructure/RequestRouter.php on line 292\n[21-Jun-2026 02:58:49 UTC] PHP Deprecated:  Accessing static trait property WP\\MCP\\Infrastructure\\Observability\\McpObservabilityHelperTrait::$sensitive_patterns is deprecated, it should only be accessed on a class using the trait in /var/www/html/wp-content/plugins/mcp-adapter/includes/Infrastructure/Observability/McpObservabilityHelperTrait.php on line 180\nDeprecated: Accessing static trait property WP\\MCP\\Infrastructure\\Observability\\McpObservabilityHelperTrait::$sensitive_patterns is deprecated, it should only be accessed on a class using the trait in /var/www/html/wp-content/plugins/mcp-adapter/includes/Infrastructure/Observability/McpObservabilityHelperTrait.php on line 180\n[MCP STDIO Bridge] MCP STDIO Bridge stopped\n\u2714 Ran `wp mcp-adapter serve --user=admin --server=mcp-adapter-default-server` in 'cli'. (in 0s 546ms)\n",
+      "stdout": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"success\\\":true,\\\"data\\\":{\\\"marker\\\":\\\"Runtime MCP smoke\\\",\\\"source\\\":\\\"acme-mcp-smoke\\\"}}\"}],\"structuredContent\":{\"success\":true,\"data\":{\"marker\":\"Runtime MCP smoke\",\"source\":\"acme-mcp-smoke\"}},\"isError\":false}}\n"
+    },
+    "mcp_adapter_install": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "plugin",
+        "install",
+        "https://github.com/WordPress/mcp-adapter/releases/latest/download/mcp-adapter.zip",
+        "--activate"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+      "duration_sec": 2.672,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp plugin install https://github.com/WordPress/mcp-adapter/releases/latest/download/mcp-adapter.zip --activate' on the cli container. \n\n\u2714 Ran `wp plugin install https://github.com/WordPress/mcp-adapter/releases/latest/download/mcp-adapter.zip --activate` in 'cli'. (in 1s 941ms)\n",
+      "stdout": "Downloading installation package from https://github.com/WordPress/mcp-adapter/releases/latest/download/mcp-adapter.zip...\nUnpacking the package...\nInstalling the plugin...\nPlugin installed successfully.\nActivating 'mcp-adapter'...\nPlugin 'mcp-adapter' activated.\nSuccess: Installed 1 of 1 plugins.\n"
+    },
+    "mcp_adapter_list": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "mcp-adapter",
+        "list"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+      "duration_sec": 1.148,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp mcp-adapter list' on the cli container. \n\n\u2714 Ran `wp mcp-adapter list` in 'cli'. (in 0s 438ms)\n",
+      "stdout": "ID\tName\tVersion\tTools\tResources\tPrompts\nmcp-adapter-default-server\tMCP Adapter Default Server\tv1.0.0\t3\t0\t0\n"
+    },
+    "mcp_adapter_tools_list": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "mcp-adapter",
+        "serve",
+        "--user=admin",
+        "--server=mcp-adapter-default-server"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+      "duration_sec": 1.43,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp mcp-adapter serve --user=admin --server=mcp-adapter-default-server' on the cli container. \n\n[MCP STDIO Bridge] MCP STDIO Bridge started for server: mcp-adapter-default-server\n[MCP STDIO Bridge] MCP STDIO Bridge stopped\n\u2714 Ran `wp mcp-adapter serve --user=admin --server=mcp-adapter-default-server` in 'cli'. (in 0s 592ms)\n",
+      "stdout": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"mcp-adapter-discover-abilities\",\"title\":\"Discover Abilities\",\"description\":\"Discover all available WordPress abilities in the system. Returns a list of all registered abilities with their basic information.\",\"inputSchema\":{\"type\":\"object\"},\"outputSchema\":{\"type\":\"object\",\"properties\":{\"abilities\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"}},\"required\":[\"name\",\"label\",\"description\"]}}},\"required\":[\"abilities\"]},\"annotations\":{\"title\":\"Discover Abilities\",\"readOnlyHint\":true,\"destructiveHint\":false,\"idempotentHint\":true}},{\"name\":\"mcp-adapter-get-ability-info\",\"title\":\"Get Ability Info\",\"description\":\"Get detailed information about a specific WordPress ability including its input/output schema, description, and usage examples.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ability_name\":{\"type\":\"string\",\"description\":\"The full name of the ability to get information about\"}},\"required\":[\"ability_name\"]},\"outputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"},\"input_schema\":{\"type\":\"object\",\"description\":\"JSON Schema for the ability input parameters\"},\"output_schema\":{\"type\":\"object\",\"description\":\"JSON Schema for the ability output structure\"},\"meta\":{\"type\":\"object\",\"description\":\"Additional metadata about the ability\"}},\"required\":[\"name\",\"label\",\"description\",\"input_schema\"]},\"annotations\":{\"title\":\"Get Ability Info\",\"readOnlyHint\":true,\"destructiveHint\":false,\"idempotentHint\":true}},{\"name\":\"mcp-adapter-execute-ability\",\"title\":\"Execute Ability\",\"description\":\"Execute a WordPress ability with the provided parameters. This is the primary execution layer that can run any registered ability.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ability_name\":{\"type\":\"string\",\"description\":\"The full name of the ability to execute\"},\"parameters\":{\"type\":\"object\",\"description\":\"Parameters to pass to the ability\"}},\"required\":[\"ability_name\",\"parameters\"]},\"outputSchema\":{\"type\":\"object\",\"properties\":{\"success\":{\"type\":\"boolean\"},\"data\":{\"type\":[\"object\",\"array\",\"string\",\"number\",\"integer\",\"boolean\",\"null\"],\"description\":\"The result data from the ability execution\"},\"error\":{\"type\":\"string\",\"description\":\"Error message if execution failed\"}},\"required\":[\"success\"]},\"annotations\":{\"title\":\"Execute Ability\",\"readOnlyHint\":false,\"destructiveHint\":true,\"idempotentHint\":false}}]}}\n"
+    },
+    "start": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "start",
+        "--auto-port"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+      "duration_sec": 30.325,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\nWordPress development site started at http://localhost:8893\nMySQL is listening on port 32844\n\n \u2714 Done! (in 29s 410ms)\n",
+      "stdout": ""
+    },
+    "stop": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "stop"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+      "duration_sec": 13.126,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2714 Stopped WordPress. (in 12s 391ms)\n",
+      "stdout": ""
+    }
+  },
+  "editor_insert_render_smoke_requested": false,
+  "editor_smoke_requested": false,
+  "editor_smoke_status": "not_run",
+  "execute_post_summary_ability": false,
+  "fixture_kind": "plugin",
+  "fixture_retained": false,
+  "fixture_root": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+  "full_plugin_runtime_profile": {
+    "artifact_path": "/private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o/acme-mcp-smoke",
+    "artifact_type": "plugin",
+    "checks": [
+      {
+        "command": null,
+        "detail": "path exists: /private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o/acme-mcp-smoke",
+        "id": "artifact_path",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no banned destructive command patterns found",
+        "id": "unsafe_commands",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no long secret-like assignments found",
+        "id": "hardcoded_secrets",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "plugin header found in /private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o/acme-mcp-smoke/acme-mcp-smoke.php",
+        "id": "plugin_header",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "PHP files satisfy cheap WPCS shape checks",
+        "id": "php_wpcs_shape_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "admin, REST, AJAX, and SQL heuristics passed",
+        "id": "plugin_security_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "Abilities, MCP Adapter, and AI Client heuristics passed",
+        "id": "plugin_ai_surface_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "php -l passed for 1 PHP file(s)",
+        "id": "php_lint",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": [
+          "/private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o/vendor/bin/phpcs",
+          "--standard=WordPress",
+          "--extensions=php",
+          "--ignore=*.asset.php,*/node_modules/*,*/vendor/*",
+          "/private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o/acme-mcp-smoke"
+        ],
+        "detail": "exit 0",
+        "id": "phpcs_wpcs",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": [
+          "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+          "--yes",
+          "@wordpress/env",
+          "run",
+          "cli",
+          "--",
+          "wp",
+          "plugin",
+          "check",
+          "acme-mcp-smoke",
+          "--require=./wp-content/plugins/plugin-check/cli.php"
+        ],
+        "detail": "exit 0; stdout: Success: Checks complete. No errors found.; stderr: npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp plugin check acme-mcp-smoke --require=./wp-content/plugins/plugin-check/cli.php' on the cli container. \n\n\u2714 Ran `wp plugin check acme-mcp-smoke --require=./wp-content/plugins/plugin-check/cli.php` in 'cli'. (in 1s 618ms)",
+        "id": "plugin_check",
+        "required": true,
+        "status": "pass"
+      }
+    ],
+    "pass": true,
+    "profile": "runtime",
+    "required_tools": [],
+    "runtime_roots": {
+      "wp_env_root": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+      "wp_root": null
+    },
+    "status": "pass"
+  },
+  "generated_at": "2026-06-20T22:59:07",
+  "interactivity_smoke_requested": false,
+  "interactivity_smoke_status": "not_run",
+  "interactivity_static_gate": null,
+  "mcp_adapter_execute_args": {
+    "marker": "Runtime MCP smoke"
+  },
+  "mcp_adapter_expected_output": "Runtime MCP smoke",
+  "mcp_adapter_gate": {
+    "ability_name": "acme-mcp-smoke/get-runtime-marker",
+    "checks": [
+      {
+        "detail": "artifact declares an MCP-public ability",
+        "id": "mcp_static_public_ability",
+        "status": "pass"
+      },
+      {
+        "detail": "MCP Adapter plugin installed and activated",
+        "id": "mcp_adapter_install",
+        "status": "pass"
+      },
+      {
+        "detail": "wp mcp-adapter list exposes mcp-adapter-default-server",
+        "id": "mcp_adapter_default_server",
+        "status": "pass"
+      },
+      {
+        "detail": "tools/list exposes the MCP Adapter discovery, info, and execute tools",
+        "id": "mcp_tools_list",
+        "status": "pass"
+      },
+      {
+        "detail": "mcp-adapter-discover-abilities lists acme-mcp-smoke/get-runtime-marker",
+        "id": "mcp_discover_public_ability",
+        "status": "pass"
+      },
+      {
+        "detail": "mcp-adapter-execute-ability executed the public ability",
+        "id": "mcp_execute_public_ability",
+        "status": "pass"
+      }
+    ],
+    "expected_output": "Runtime MCP smoke",
+    "pass": true,
+    "status": "pass"
+  },
+  "mcp_adapter_smoke_requested": true,
+  "mcp_adapter_smoke_status": "pass",
+  "mcp_adapter_static_gate": {
+    "ability_name": "acme-mcp-smoke/get-runtime-marker",
+    "artifact_path": "/private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o/acme-mcp-smoke",
+    "checks": [
+      {
+        "detail": "ability selected for MCP smoke: acme-mcp-smoke/get-runtime-marker",
+        "id": "mcp_smoke_ability_name",
+        "status": "pass"
+      },
+      {
+        "detail": "ability registration includes meta.mcp.public",
+        "id": "mcp_public_meta_flag",
+        "status": "pass"
+      },
+      {
+        "detail": "artifact registers acme-mcp-smoke/get-runtime-marker with wp_register_ability()",
+        "id": "mcp_public_ability_registered",
+        "status": "pass"
+      }
+    ],
+    "pass": true,
+    "status": "pass"
+  },
+  "narrow_gate": {
+    "artifact_path": "/private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o/acme-mcp-smoke",
+    "artifact_type": "plugin",
+    "checks": [
+      {
+        "command": null,
+        "detail": "path exists: /private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o/acme-mcp-smoke",
+        "id": "artifact_path",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no banned destructive command patterns found",
+        "id": "unsafe_commands",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no long secret-like assignments found",
+        "id": "hardcoded_secrets",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "plugin header found in /private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o/acme-mcp-smoke/acme-mcp-smoke.php",
+        "id": "plugin_header",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "PHP files satisfy cheap WPCS shape checks",
+        "id": "php_wpcs_shape_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "admin, REST, AJAX, and SQL heuristics passed",
+        "id": "plugin_security_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "Abilities, MCP Adapter, and AI Client heuristics passed",
+        "id": "plugin_ai_surface_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "php -l passed for 1 PHP file(s)",
+        "id": "php_lint",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": [
+          "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+          "--yes",
+          "@wordpress/env",
+          "run",
+          "cli",
+          "--",
+          "wp",
+          "core",
+          "version"
+        ],
+        "detail": "exit 0; stdout: 7.0; stderr: npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp core version' on the cli container. \n\n\u2714 Ran `wp core version` in 'cli'. (in 0s 360ms)",
+        "id": "wp_env_smoke",
+        "required": true,
+        "status": "pass"
+      }
+    ],
+    "pass": true,
+    "profile": "static",
+    "required_tools": [
+      "php-lint",
+      "wp-env"
+    ],
+    "runtime_roots": {
+      "wp_env_root": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+      "wp_root": null
+    },
+    "status": "pass"
+  },
+  "negative_space": [
+    "not PHPUnit proof",
+    "not block validation proof",
+    "not editor or browser smoke proof",
+    "not Abilities API execution proof",
+    "not block runtime registration proof",
+    "not AI Client provider-call proof"
+  ],
+  "npx": "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+  "pass": true,
+  "phpunit_gate": null,
+  "phpunit_smoke_requested": false,
+  "phpunit_smoke_status": "not_run",
+  "provision_full_profile": true,
+  "provisioning": {
+    "composer_install": {
+      "command": [
+        "/opt/homebrew/bin/composer",
+        "install",
+        "--no-interaction",
+        "--no-progress",
+        "--quiet"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+      "duration_sec": 2.125,
+      "returncode": 0,
+      "stderr": "",
+      "stdout": ""
+    },
+    "plugin_check_install": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "plugin",
+        "install",
+        "plugin-check",
+        "--activate"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-0u141j5o",
+      "duration_sec": 3.344,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp plugin install plugin-check --activate' on the cli container. \n\n\u2714 Ran `wp plugin install plugin-check --activate` in 'cli'. (in 2s 698ms)\n",
+      "stdout": "Installing Plugin Check (PCP) (2.0.0)\nDownloading installation package from https://downloads.wordpress.org/plugin/plugin-check.2.0.0.zip...\nUnpacking the package...\nInstalling the plugin...\nPlugin installed successfully.\nActivating 'plugin-check'...\nPlugin 'plugin-check' activated.\nSuccess: Installed 1 of 1 plugins.\n"
+    }
+  },
+  "source_artifact_path": "/path/to/zivtech-meta-skills/evals/results/wordpress-skill-candidate-eval/generated-mcp-adapter-artifact-cert-20260621/generated-plugin/acme-mcp-smoke",
+  "status": "pass",
+  "strict_full_profile": false,
+  "wrapped_block_artifact": null
+}

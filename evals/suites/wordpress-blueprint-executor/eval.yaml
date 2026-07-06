@@ -1,0 +1,63 @@
+skill:
+  name: wordpress-blueprint-executor
+  type: executor
+  status: focused_static_certification_partial_with_self_contained_launch_readiness
+
+fixtures:
+  directory: ./fixtures
+  count: 5
+  pattern: "*.md"
+  metadata_suffix: ".metadata.yaml"
+
+rubrics:
+  directory: ./rubrics
+  scoring_method: quality_weighted
+
+baselines:
+  directory: ./baselines
+  conditions:
+    - baseline-zero-shot
+    - baseline-few-shot
+
+evaluation:
+  status: focused_static_certification_partial_with_self_contained_launch_readiness
+  full_run_status: blocked_until_playground_launch_smoke_answer_key_or_qa_review
+  latest_static_certification_run: wordpress-blueprint-executor-static-cert-20260621
+  latest_self_contained_static_certification_run: wordpress-blueprint-executor-self-contained-static-cert-20260621
+  latest_self_contained_launch_preflight_run: wordpress-blueprint-executor-self-contained-launch-preflight-20260621
+
+invocation:
+  model: sonnet
+  effort: low
+  baseline_provider: codex
+  baseline_model_policy: newest-chatgpt-level-at-run-time
+  baseline_model: gpt-5.5
+  baseline_effort: medium
+  note: "Skill-agent invocation still uses the local Claude CLI because the WordPress skill packages are Claude-agent surfaces. Baseline lanes default to the newest ChatGPT-level local Codex CLI (`codex exec --model gpt-5.5`) so Sonnet is no longer the default baseline."
+
+output_contract_oracle:
+  type: deterministic_wordpress_skill_output_contract
+  command: "python3 evals/harness/validate_wordpress_skill_output.py --skill wordpress-blueprint-executor --output <candidate-output.md>"
+  status: available
+
+oracle:
+  type: deterministic_executor_packet_contract
+  command: "python3 evals/harness/validate_wordpress_executor_packet.py --executor blueprint --packet <candidate-output.md>"
+  status: available
+
+materializer:
+  type: deterministic_executor_packet_materializer
+  command: "python3 evals/harness/materialize_wordpress_executor_packet.py --executor blueprint --packet <candidate-output.md> --out-dir <generated-blueprint-dir>"
+  status: available
+
+certifier:
+  type: deterministic_executor_artifact_certification
+  command: "python3 evals/harness/certify_wordpress_executor_artifact.py --executor blueprint --packet <candidate-output.md> --out-dir <generated-blueprint-dir> --result-dir <result-dir> --overwrite"
+  status: available
+
+artifact_oracle:
+  type: deterministic_wordpress_artifact_static
+  command: "python3 evals/harness/validate_wordpress_artifact.py --artifact-type blueprint --path <generated-blueprint-dir>/blueprint.json"
+  status: available
+  runtime_command: "Playground launch smoke record required outside the static JSON oracle."
+  runtime_status: external_runtime_required

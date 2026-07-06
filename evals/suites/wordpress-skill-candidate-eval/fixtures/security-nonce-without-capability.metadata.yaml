@@ -1,0 +1,13 @@
+name: security-nonce-without-capability
+suite: wordpress-skill-candidate-eval
+domain: Security
+difficulty_tier: AUTHZ_SUBTLE
+provenance: synthetic
+primary_skill_targets:
+  - wordpress-security-critic
+expected_behavior:
+  - Distinguishes request intent (nonce) from authorization (capability)
+  - Demonstrates the concrete privilege-escalation path
+  - Requires a capability check plus an unauthorized-caller test
+source_notes: Adversarial fixture (2026-06-19) — passes nonce verification and WPCS NonceVerification; the gap is a missing capability check, an absence a generic reviewer overlooks.
+scenario_summary: "An authenticated AJAX handler verifies a nonce but never checks the caller's capability before changing a user's role."

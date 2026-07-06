@@ -1,0 +1,36 @@
+fixture: cutover-rollback-reconciliation-v1
+skill_under_test: wordpress-planner.migration
+max_score: 10
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the exact wordpress-migration-planner headings and names launch, rollback, and ownership assumptions.
+  - id: cutover_plan
+    weight: 2
+    description: Defines content freeze, delta migration, launch checklist, rehearsal, and production cutover sequence.
+  - id: reconciliation_plan
+    weight: 3
+    description: Requires source/target counts, failed media queue, empty-field review, sample records, stable IDs or checksums, and editorial QA.
+  - id: rollback_and_monitoring
+    weight: 2
+    description: Names backup/export points, rollback triggers, rollback owner, post-launch monitoring, and read-only legacy fallback.
+  - id: calibration
+    weight: 1
+    description: Avoids claiming launch readiness or rerunnability from a partial dry run.
+domain_signals:
+  expected_wordpress_apis:
+    - "wp post list"
+    - "wp media import"
+    - "wp search-replace"
+    - "wp option get"
+    - "wp db export"
+    - "WP-CLI"
+  must_detect:
+    - "dry-run import is incomplete"
+    - "delta migration process is missing"
+    - "rollback trigger and owner are missing"
+    - "media failures and empty fields need reconciliation"
+  must_not_claim:
+    - "launch readiness is proven"
+    - "one dry run proves rerunnability"
+    - "failed imports can be ignored without owner acceptance"

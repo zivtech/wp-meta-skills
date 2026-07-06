@@ -1,0 +1,126 @@
+{
+  "artifact_gate": {
+    "artifact_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/minimal-plugin-environment-v1/generated-blueprint/blueprint.json",
+    "artifact_type": "blueprint",
+    "checks": [
+      {
+        "command": null,
+        "detail": "path exists: evals/results/wordpress-blueprint-executor-static-cert-20260621/minimal-plugin-environment-v1/generated-blueprint/blueprint.json",
+        "id": "artifact_path",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no banned destructive command patterns found",
+        "id": "unsafe_commands",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no long secret-like assignments found",
+        "id": "hardcoded_secrets",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "evals/results/wordpress-blueprint-executor-static-cert-20260621/minimal-plugin-environment-v1/generated-blueprint/blueprint.json contains 4 step(s)",
+        "id": "blueprint_json",
+        "required": true,
+        "status": "pass"
+      }
+    ],
+    "pass": true,
+    "profile": "static",
+    "required_tools": [],
+    "runtime_roots": {
+      "wp_env_root": null,
+      "wp_root": null
+    },
+    "status": "pass"
+  },
+  "artifact_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/minimal-plugin-environment-v1/generated-blueprint/blueprint.json",
+  "executor": "blueprint",
+  "feedback": [],
+  "materialization_gate": {
+    "executor": "blueprint",
+    "issues": [],
+    "out_dir": "evals/results/wordpress-blueprint-executor-static-cert-20260621/minimal-plugin-environment-v1/generated-blueprint",
+    "pass": true,
+    "status": "pass",
+    "written": [
+      {
+        "bytes": 933,
+        "path": "blueprint.json"
+      }
+    ]
+  },
+  "negative_space": [
+    "This certifies only the supplied saved executor packet, not model quality or variance.",
+    "Static profile passes do not prove WPCS, Plugin Check, PHPUnit, wp-env, browser, editor, or frontend behavior.",
+    "Runtime profile results are environment-specific and report missing required tools as blocked."
+  ],
+  "out_dir": "evals/results/wordpress-blueprint-executor-static-cert-20260621/minimal-plugin-environment-v1/generated-blueprint",
+  "packet": "evals/suites/wordpress-blueprint-executor/examples/minimal-plugin-environment-v1.materializable-packet.md",
+  "packet_gate": {
+    "checks": [
+      {
+        "detail": "all required headings present",
+        "id": "required_headings",
+        "passed": true,
+        "weight": 3
+      },
+      {
+        "detail": "packet starts with the required first heading and has no phase transcript",
+        "id": "packet_only_output",
+        "passed": true,
+        "weight": 2
+      },
+      {
+        "detail": "file map not required for this executor",
+        "id": "file_map",
+        "passed": true,
+        "weight": 1
+      },
+      {
+        "detail": "matched 5 exact surfaces",
+        "id": "exact_surfaces",
+        "passed": true,
+        "weight": 3
+      },
+      {
+        "detail": "verification terms present",
+        "id": "verification_oracles",
+        "passed": true,
+        "weight": 3
+      },
+      {
+        "detail": "critic handoff names expected critics",
+        "id": "critic_handoff",
+        "passed": true,
+        "weight": 2
+      },
+      {
+        "detail": "no banned destructive commands or literal secret assignments",
+        "id": "safety",
+        "passed": true,
+        "weight": 3
+      },
+      {
+        "detail": "parsed fenced JSON object",
+        "id": "blueprint_json",
+        "passed": true,
+        "weight": 3
+      }
+    ],
+    "executor": "blueprint",
+    "pass": true,
+    "score": 1.0
+  },
+  "pass": true,
+  "profile": "static",
+  "required_tools": [],
+  "status": "pass"
+}

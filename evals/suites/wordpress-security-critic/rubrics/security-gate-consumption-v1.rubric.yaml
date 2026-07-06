@@ -1,0 +1,46 @@
+fixture: security-gate-consumption-v1
+skill_under_test: wordpress-security-critic
+max_score: 10
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the exact wordpress-security-critic headings, including Security Gate Evidence and Suppression Review, with a valid verdict.
+  - id: gate_evidence_consumption
+    weight: 3
+    description: Cites security-gate.json status, enforced rule IDs, file/line locations, tool provenance, and distinguishes gate-derived evidence from critic-derived judgment.
+  - id: suppression_review
+    weight: 2
+    description: Reviews every suppressed_annotations entry by file, line, suppressed rule, security relevance, reappearance without annotations, and reviewed_safe_api when present.
+  - id: exploitability_calibration
+    weight: 2
+    description: Uses the deterministic gate as evidence while separately proving reachability, capability boundary, attacker-controlled data, and realistic blast radius before severity escalation.
+  - id: remediation_and_verification
+    weight: 1
+    description: Recommends exact WordPress remediation and a concrete rerun of PHPCS/WPCS/security-gate verification.
+domain_signals:
+  expected_wordpress_apis:
+    - "$wpdb->prepare"
+    - "wp_unslash"
+    - "absint"
+    - "current_user_can"
+    - "check_admin_referer"
+    - "esc_html"
+    - "esc_url"
+    - "wp_kses_post"
+    - "get_block_wrapper_attributes"
+    - "security-gate.json"
+    - "phpcs-suppression-diff"
+    - "--ignore-annotations"
+    - "WordPress.DB.PreparedSQL.InterpolatedNotPrepared"
+    - "WordPress.Security.EscapeOutput.OutputNotEscaped"
+  must_detect:
+    - "security-gate.json status fail"
+    - "enforced WordPress.Security.EscapeOutput.OutputNotEscaped at acme-report-export.php:26"
+    - "suppressed WordPress.DB.PreparedSQL.InterpolatedNotPrepared at acme-report-export.php:20"
+    - "reviewed get_block_wrapper_attributes suppression at blocks/report-card/render.php:14"
+    - "gate-derived evidence is separate from critic-derived reachability"
+    - "nonce-only admin_post path still needs current_user_can()"
+  must_not_claim:
+    - "security-gate.json proves authorization correctness"
+    - "DirectDatabaseQuery warning alone proves SQL injection"
+    - "get_block_wrapper_attributes allows all EscapeOutput suppressions"

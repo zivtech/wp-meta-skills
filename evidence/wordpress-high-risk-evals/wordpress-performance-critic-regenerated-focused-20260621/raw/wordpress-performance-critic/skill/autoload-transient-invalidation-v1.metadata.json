@@ -1,0 +1,14 @@
+{
+  "agent": "wordpress-performance-critic",
+  "agent_injection": "content",
+  "agent_prompt_path": "wordpress-skills/.claude/agents/wordpress-performance-critic.md",
+  "condition": "skill",
+  "effort": "low",
+  "fixture_id": "autoload-transient-invalidation-v1",
+  "mode": "critic",
+  "model": "sonnet",
+  "provider": "claude",
+  "runtime": "local_claude_cli",
+  "stage": "single",
+  "suite": "wordpress-performance-critic"
+}

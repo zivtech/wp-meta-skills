@@ -1,0 +1,33 @@
+name: input-sql-output-handling-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: synthetic
+risk_class: unsafe_input_sql_output_handling
+expected_wordpress_apis:
+  - "$wpdb->prepare"
+  - "sanitize_text_field"
+  - "sanitize_key"
+  - "absint"
+  - "wp_unslash"
+  - "esc_html"
+  - "esc_attr"
+  - "esc_url"
+  - "wp_kses_post"
+  - "current_user_can"
+  - "check_admin_referer"
+expected_verification_surfaces:
+  - "PHPCS/WPCS sniff coverage for prepared SQL and escaping"
+  - "PHPUnit tests for malicious term and note_type values"
+  - "admin render smoke showing escaped output"
+must_detect:
+  - "interpolated SQL query"
+  - "unslashed superglobal input"
+  - "late escaping gaps"
+  - "false confidence from sanitization alone"
+  - "nonce without authorization boundary"
+negative_space:
+  - "does not prove database compromise without a reachable caller path"
+  - "does not require destroying safe rich-text behavior"
+  - "does not cover dependency provenance"

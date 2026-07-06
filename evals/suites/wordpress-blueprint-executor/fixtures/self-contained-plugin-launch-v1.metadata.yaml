@@ -1,0 +1,31 @@
+name: self-contained-plugin-launch-v1
+suite: wordpress-blueprint-executor
+skill_under_test: wordpress-blueprint-executor
+skill_type: executor
+difficulty_tier: focused
+provenance: synthetic
+risk_class: self_contained_playground_launch
+expected_wordpress_surfaces:
+  - "blueprint.json"
+  - "preferredVersions"
+  - "steps"
+  - "mkdir"
+  - "writeFile"
+  - "activatePlugin"
+  - "current_user_can"
+  - "wp-admin/admin.php"
+expected_verification_surfaces:
+  - "Blueprint static JSON validation"
+  - "launch-readiness preflight"
+  - "Playground fragment URL"
+  - "landing page assertion"
+  - "reset behavior notes"
+must_detect:
+  - "self-contained Blueprint must avoid VFS payloads"
+  - "plugin activation must be explicit"
+  - "visible admin-page smoke text must be named"
+  - "static launch readiness is not browser-observed runtime proof"
+negative_space:
+  - "does not prove production deployment"
+  - "does not fetch private URLs"
+  - "does not prove Playground runtime behavior without a recorded launch smoke"

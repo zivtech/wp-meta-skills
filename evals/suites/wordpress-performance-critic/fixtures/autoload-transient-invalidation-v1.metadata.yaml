@@ -1,0 +1,30 @@
+name: autoload-transient-invalidation-v1
+suite: wordpress-performance-critic
+skill_under_test: wordpress-performance-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: synthetic
+risk_class: autoload_transient_invalidation
+expected_wordpress_apis:
+  - "get_option"
+  - "update_option"
+  - "set_transient"
+  - "get_transient"
+  - "delete_transient"
+  - "wp option list --autoload=on"
+  - "wp_remote_get"
+expected_verification_surfaces:
+  - "wp option list --autoload=on"
+  - "object-cache hit/miss metrics"
+  - "database option-size inspection"
+  - "before/after render timing with remote API failure simulation"
+must_detect:
+  - "large option payload risk"
+  - "unbounded transient lifetime"
+  - "missing invalidation trigger"
+  - "render-time remote call without timeout/error fallback"
+  - "cache-as-fix handwaving"
+negative_space:
+  - "does not prove autoload behavior without inspecting runtime/version state"
+  - "does not prove production latency or capacity without real environment data"
+  - "does not treat every transient as bad"

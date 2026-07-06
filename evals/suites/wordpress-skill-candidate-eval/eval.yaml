@@ -1,0 +1,75 @@
+skill:
+  name: wordpress-skill-candidate-eval
+  type: candidate-comparison
+  description: Evaluate upstream WordPress skill candidates, fair baselines, and Zivtech prototypes across WordPress V1 coverage domains.
+
+fixtures:
+  directory: ./fixtures
+  count: 32
+  pattern: "*.md"
+  metadata_suffix: ".metadata.yaml"
+
+rubrics:
+  directory: ./rubrics
+  scoring_method: quality_weighted
+  primary_gate: discrimination_pilot
+
+context_documents:
+  - ./domain-sampling-strategy.md
+  - ./provenance-manifest.md
+  - ./test-critic-review.md
+
+baselines:
+  directory: ./baselines
+  conditions:
+    - baseline-zero-shot
+    - baseline-few-shot
+
+invocation:
+  model: sonnet
+  effort: low
+  baseline_provider: codex
+  baseline_model_policy: newest-chatgpt-level-at-run-time
+  baseline_model: gpt-5.5
+  baseline_effort: medium
+  note: "Candidate-comparison baseline lanes should use the newest ChatGPT-level local Codex CLI. Invoke-compatible paths route only condition names beginning baseline-* through Codex; raw_upstream_candidate and zivtech_prototype require the suite-specific runners. run_wordpress_candidate_pilot.py, run_pairwise_pilot.py, and answer_key_score.py --generate route baseline-* lanes through Codex while keeping skill/upstream lanes on explicit isolated Claude prompt surfaces."
+
+candidate_lanes:
+  - raw_upstream_candidate
+  - baseline-zero-shot
+  - baseline-few-shot
+  - zivtech_prototype
+
+statistical_design:
+  pilot_required: true
+  pilot_required_delta: 0.2
+  pilot_fixture_ids:
+    - security-boundary-risk
+    - block-development-risk
+    - content-model-ambiguous
+    - performance-ops-clean
+  pilot_runs_per_condition: 3
+  judging:
+    judge_model: claude-opus-4-6
+    judge_runtime: local_claude_cli
+    temperature: 0
+    max_tokens: 4096
+    rubric_blinding: true
+    randomize_condition_order: true
+  full_run_plan:
+    design: paired_by_fixture
+    runs_per_condition: 3
+    bootstrap_replications: 2000
+    effect_size: paired_cohens_d_and_median_delta
+    confidence_interval: bootstrap_95_percent
+    multiple_comparisons: benjamini_hochberg_fdr_for_domain_subscores
+    minimum_publishable_n: 27
+  fallback_if_saturated: blind_pairwise_preference
+  test_critic_verdict: ACCEPT-WITH-RESERVATIONS
+  full_run_status: blocked_until_pilot_passes_and_outputs_are_archived
+
+alternate_measurement_targets:
+  output_contract_adherence:
+    status: available
+    oracle: "python3 evals/harness/validate_wordpress_skill_output.py --skill <wordpress-skill> --output <candidate-output.md>"
+    notes: "Use when measuring contract conformance, variance reduction, or skill discipline. Baselines may fail this oracle; that is meaningful only for contract-adherence claims, not frontier-model review-quality superiority claims."

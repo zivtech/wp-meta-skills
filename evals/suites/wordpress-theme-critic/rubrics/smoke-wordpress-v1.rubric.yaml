@@ -1,0 +1,19 @@
+fixture: smoke-wordpress-v1
+skill_under_test: wordpress-theme-critic
+max_score: 8
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the skill-specific headings and lifecycle role.
+  - id: wordpress_native_quality
+    weight: 2
+    description: Names WordPress APIs, risks, and verification needs appropriate to the scenario.
+  - id: safety_and_provenance
+    weight: 1
+    description: Avoids secrets, unsafe writes, unsupported claims, and unattributed reuse.
+  - id: specificity
+    weight: 2
+    description: Gives concrete handoff, remediation, generation, or review steps.
+  - id: calibration
+    weight: 1
+    description: Calibrates uncertainty and avoids invented issues.

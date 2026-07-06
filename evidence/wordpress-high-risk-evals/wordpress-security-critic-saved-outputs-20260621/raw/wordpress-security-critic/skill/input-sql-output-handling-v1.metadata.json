@@ -1,0 +1,14 @@
+{
+  "agent": "wordpress-security-critic",
+  "agent_injection": "content",
+  "agent_prompt_path": "wordpress-skills/.claude/agents/wordpress-security-critic.md",
+  "condition": "skill",
+  "effort": "low",
+  "fixture_id": "input-sql-output-handling-v1",
+  "mode": "critic",
+  "model": "sonnet",
+  "provider": "claude",
+  "runtime": "local_claude_cli",
+  "stage": "single",
+  "suite": "wordpress-security-critic"
+}

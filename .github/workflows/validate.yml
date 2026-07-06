@@ -1,0 +1,75 @@
+name: Validate wp-meta-skills
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --upgrade pytest pyyaml
+
+      # ubuntu-latest ships PHP and Composer; installing the pinned toolchain
+      # lets the API-existence lint gate run for real instead of skipping.
+      - name: Cache Composer downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/composer/files
+          key: composer-${{ hashFiles('evals/harness/php-tools/composer.lock') }}
+
+      - name: Install pinned PHP analysis toolchain
+        run: composer install --no-interaction --no-progress --working-dir evals/harness/php-tools
+
+      - name: Verify manifest
+        run: ./install.sh --verify
+
+      - name: Validate agent/skill frontmatter and WordPress API contracts
+        run: |
+          python scripts/validate-agent-frontmatter.py
+          python scripts/validate-wordpress-exact-api-contract.py
+
+      - name: Validate selected WordPress eval suites
+        run: |
+          python scripts/validate-eval-suite-integrity.py \
+            --strict-suites wordpress-plugin-executor \
+            --strict-suites wordpress-block-executor \
+            --strict-suites wordpress-security-critic \
+            --strict-suites wordpress-performance-critic \
+            --strict-suites wordpress-planner.migration \
+            --strict-suites wordpress-blueprint-executor \
+            --strict-suites wordpress-skill-candidate-eval \
+            --allow-known-gaps
+
+      - name: Run WordPress harness tests
+        run: |
+          python -m pytest \
+            evals/harness/tests/test_invoke_claude_command.py \
+            evals/harness/tests/test_wordpress_runtime_smoke.py \
+            evals/harness/tests/test_wordpress_artifact_oracle.py \
+            evals/harness/tests/test_wordpress_blueprint_launch_readiness.py \
+            evals/harness/tests/test_wordpress_executor_packet_oracle.py \
+            evals/harness/tests/test_wordpress_exact_api_contract.py \
+            evals/harness/tests/test_wordpress_executor_artifact_certifier.py \
+            evals/harness/tests/test_wordpress_packet_materializer.py \
+            evals/harness/tests/test_wordpress_high_risk_answer_keys.py \
+            evals/harness/tests/test_wordpress_high_risk_saved_outputs.py \
+            evals/harness/tests/test_wordpress_skill_output_contract.py \
+            evals/harness/tests/test_answer_key_score.py \
+            evals/harness/tests/test_pairwise_pilot.py \
+            evals/harness/tests/test_wordpress_candidate_pilot_generation.py \
+            evals/harness/tests/test_wp_api_lint.py \
+            evals/harness/tests/test_wp_security_gate.py \
+            -q

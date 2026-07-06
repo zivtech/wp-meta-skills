@@ -1,0 +1,82 @@
+{
+  "findings": [
+    {
+      "enforced": true,
+      "file": "acme-report-export.php",
+      "line": 26,
+      "message": "All output should be run through an escaping function.",
+      "rule_id": "WordPress.Security.EscapeOutput.OutputNotEscaped",
+      "severity": "error",
+      "tool": "phpcs",
+      "vuln_class": "xss"
+    },
+    {
+      "enforced": false,
+      "file": "acme-report-export.php",
+      "line": 21,
+      "message": "Direct database query detected.",
+      "rule_id": "WordPress.DB.DirectDatabaseQuery.DirectQuery",
+      "severity": "warning",
+      "tool": "phpcs",
+      "vuln_class": "sqli"
+    }
+  ],
+  "negative_space": [
+    "No authorization/IDOR/capability-correctness reasoning: permission_callback and right-capability judgment belong to the security critic.",
+    "No taint or cross-function data-flow analysis in phase 1."
+  ],
+  "profile": "static",
+  "schema": "wordpress-security-gate",
+  "schema_version": 1,
+  "status": "fail",
+  "summary": {
+    "advisory": 1,
+    "errors": 1,
+    "reviewed_suppressed": 1,
+    "suppressed_security": 1,
+    "warnings": 1
+  },
+  "suppressed_annotations": [
+    {
+      "annotation": "phpcs:ignore",
+      "file": "acme-report-export.php",
+      "line": 20,
+      "message": "Use placeholders and $wpdb->prepare().",
+      "reappears_without_annotations": true,
+      "security_relevant": true,
+      "suppressed_rules": [
+        "WordPress.DB.PreparedSQL.InterpolatedNotPrepared"
+      ],
+      "vuln_class": "sqli"
+    },
+    {
+      "annotation": "phpcs:ignore",
+      "file": "blocks/report-card/render.php",
+      "line": 14,
+      "message": "All output should be run through an escaping function.",
+      "reappears_without_annotations": true,
+      "reviewed_safe_api": "get_block_wrapper_attributes",
+      "security_relevant": false,
+      "suppressed_rules": [
+        "WordPress.Security.EscapeOutput.OutputNotEscaped"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "command": [
+        "phpcs"
+      ],
+      "id": "phpcs-security",
+      "status": "fail"
+    },
+    {
+      "command": [
+        "phpcs",
+        "--ignore-annotations"
+      ],
+      "id": "phpcs-suppression-diff",
+      "status": "fail"
+    }
+  ]
+}

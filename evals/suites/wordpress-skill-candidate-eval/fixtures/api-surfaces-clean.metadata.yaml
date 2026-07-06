@@ -1,0 +1,15 @@
+name: api-surfaces-clean
+suite: wordpress-skill-candidate-eval
+domain: REST Abilities Interactivity APIs
+difficulty_tier: CLEAN_CONTROL
+provenance: synthetic
+primary_skill_targets:
+  - wordpress-planner
+  - wordpress-critic
+expected_behavior:
+  - WordPress-native routing and terminology
+  - Explicit assumptions and tradeoffs
+  - Security, performance, and rollout awareness proportional to risk
+  - No invented findings on clean controls
+source_notes: Designed from the 2026-06-16 WordPress candidate catalog and Zivtech V1 plan.
+scenario_summary: "A faceted resource finder uses a public REST route for published content and progressive enhancement for filters."

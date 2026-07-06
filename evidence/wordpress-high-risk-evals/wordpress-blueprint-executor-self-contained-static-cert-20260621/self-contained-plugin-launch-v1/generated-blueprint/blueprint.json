@@ -1,0 +1,37 @@
+{
+  "$schema": "https://playground.wordpress.net/blueprint-schema.json",
+  "features": {
+    "networking": false
+  },
+  "landingPage": "/wp-admin/admin.php?page=acme-inline-blueprint-smoke",
+  "preferredVersions": {
+    "php": "8.2",
+    "wp": "latest"
+  },
+  "steps": [
+    {
+      "step": "login",
+      "username": "admin"
+    },
+    {
+      "path": "/wordpress/wp-content/plugins/acme-inline-blueprint-smoke",
+      "step": "mkdir"
+    },
+    {
+      "data": "<?php\n/**\n * Plugin Name: Acme Inline Blueprint Smoke\n * Description: Disposable admin page for a self-contained WordPress Playground Blueprint smoke.\n * Version: 0.1.0\n * Author: Zivtech\n * License: GPL-2.0-or-later\n */\n\nadd_action( 'admin_menu', 'acme_inline_blueprint_smoke_menu' );\n\nfunction acme_inline_blueprint_smoke_menu() {\n\tadd_menu_page(\n\t\t'Inline Blueprint Smoke',\n\t\t'Inline Blueprint Smoke',\n\t\t'manage_options',\n\t\t'acme-inline-blueprint-smoke',\n\t\t'acme_inline_blueprint_smoke_render'\n\t);\n}\n\nfunction acme_inline_blueprint_smoke_render() {\n\tif ( ! current_user_can( 'manage_options' ) ) {\n\t\twp_die( esc_html__( 'You do not have permission to view this smoke page.', 'acme-inline-blueprint-smoke' ) );\n\t}\n\n\techo '<div class=\"wrap\"><h1>Inline Blueprint Smoke Ready</h1><p>Self-contained Playground launch fixture loaded without VFS payloads.</p></div>';\n}\n",
+      "path": "/wordpress/wp-content/plugins/acme-inline-blueprint-smoke/acme-inline-blueprint-smoke.php",
+      "step": "writeFile"
+    },
+    {
+      "pluginName": "Acme Inline Blueprint Smoke",
+      "pluginPath": "acme-inline-blueprint-smoke/acme-inline-blueprint-smoke.php",
+      "step": "activatePlugin"
+    },
+    {
+      "options": {
+        "blogname": "Acme Inline Blueprint Smoke"
+      },
+      "step": "setSiteOptions"
+    }
+  ]
+}

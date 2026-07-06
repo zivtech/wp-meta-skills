@@ -1,0 +1,15 @@
+{
+  "agent": null,
+  "auth_route": "ChatGPT/Codex local auth",
+  "baseline_provider": "codex",
+  "condition": "baseline-few-shot",
+  "effort": "medium",
+  "fixture_id": "autoload-transient-invalidation-v1",
+  "mode": "critic",
+  "model": "gpt-5.5",
+  "model_policy": "newest-chatgpt-level-at-run-time",
+  "provider": "codex",
+  "runtime": "local_codex_cli",
+  "stage": "single",
+  "suite": "wordpress-performance-critic"
+}

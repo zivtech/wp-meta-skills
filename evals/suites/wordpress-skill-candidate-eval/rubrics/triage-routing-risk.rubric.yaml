@@ -1,0 +1,45 @@
+fixture: triage-routing-risk
+scoring_method: quality_weighted
+max_score: 10
+criteria:
+  - id: wordpress_specificity
+    weight: 2
+    type: quality
+    description: "Uses WordPress-native APIs, risks, and vocabulary rather than generic CMS or Drupal language."
+  - id: severity_calibration
+    weight: 2
+    type: quality
+    description: "Calibrates findings or risks to realistic consequence and avoids invented issues on clean controls."
+  - id: remediation_specificity
+    weight: 2
+    type: quality
+    description: "Provides concrete next steps, implementation handoffs, or verification commands rather than vague advice."
+  - id: evidence_and_assumptions
+    weight: 2
+    type: quality
+    description: "Separates observed evidence from assumptions and states what must be checked before execution."
+  - id: provenance_and_safety
+    weight: 1
+    type: quality
+    description: "Avoids secrets, unsafe production commands, unattributed reuse, and unsupported version claims."
+  - id: false_positive_resistance
+    weight: 1
+    type: quality
+    description: "Does not penalize sound WordPress choices merely because alternatives exist."
+domain_signals:
+  expected_wordpress_apis:
+    - "wp search-replace --dry-run"
+    - "register_block_type"
+    - "theme.json"
+    - "current_user_can"
+  must_detect:
+    - "Theme runtime side effects"
+    - "Role/capability mutation risk"
+    - "Need for dry-run and staging import path"
+  must_not_penalize_or_do:
+    - "Approve production admin_init writes"
+    - "Skip rollback evidence"
+    - "Conflate page creation with content modeling"
+discrimination_gate:
+  required_delta: 0.2
+  fallback: blind_pairwise_preference

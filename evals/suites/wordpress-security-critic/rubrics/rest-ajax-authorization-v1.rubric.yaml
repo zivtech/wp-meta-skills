@@ -1,0 +1,40 @@
+fixture: rest-ajax-authorization-v1
+skill_under_test: wordpress-security-critic
+max_score: 10
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the exact wordpress-security-critic headings, includes a valid verdict, and separates critical, major, and minor findings.
+  - id: authorization_detection
+    weight: 3
+    description: Catches the public REST mutation permission_callback, missing current_user_can() check, nonce-as-capability confusion, and nopriv mutation exposure.
+  - id: exploitability_calibration
+    weight: 2
+    description: Names who can trigger each path, required privilege, attacker-controlled data, and realistic impact without overstating production exploit proof.
+  - id: remediation_specificity
+    weight: 2
+    description: Recommends exact WordPress fixes such as current_user_can(), mapped post capabilities, restricted AJAX hooks, and check_ajax_referer()/wp_verify_nonce() as CSRF controls only.
+  - id: verification_specificity
+    weight: 1
+    description: Requires concrete negative-path PHPUnit, REST, AJAX, WP-CLI, or integration smoke coverage.
+domain_signals:
+  expected_wordpress_apis:
+    - "register_rest_route"
+    - "permission_callback"
+    - "current_user_can"
+    - "map_meta_cap"
+    - "wp_ajax_*"
+    - "wp_ajax_nopriv_*"
+    - "check_ajax_referer"
+    - "wp_verify_nonce"
+    - "PHPUnit"
+    - "WP-CLI"
+  must_detect:
+    - "permission_callback => __return_true is public on a mutating route"
+    - "nonce validation is not authorization"
+    - "wp_ajax_nopriv_* should not expose privileged mutation"
+    - "forbidden-role and logged-out tests are missing"
+  must_not_claim:
+    - "supply-chain review"
+    - "malware scanning"
+    - "production exploit proof"

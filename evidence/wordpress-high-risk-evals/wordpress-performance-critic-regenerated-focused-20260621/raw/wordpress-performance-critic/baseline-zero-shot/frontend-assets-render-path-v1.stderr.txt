@@ -1,0 +1,204 @@
+2026-06-21T09:20:25.346688Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/Users/redacted/.codex/.tmp/plugins/plugins/redacted-unrelated-local-plugin/.codex-plugin/plugin.json
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-codex-invoke-mih2los2
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ee97b-314c-7963-97f7-f0056bf5755a
+--------
+user
+You are running a prompt-only baseline. Do not use tools, shell commands, file inspection, memory, project rules, or repository context. Use only the task text below and return the requested answer.
+
+Evaluate the WordPress task for wordpress-performance-critic. Be specific and safe.
+
+---
+
+Use this fixture:
+
+# Focused Fixture: Frontend Assets And Render Path
+
+Review the following WordPress block/plugin excerpt with
+`wordpress-performance-critic`. The review target is frontend asset loading,
+editor/frontend parity, and dynamic render-path work.
+
+## Artifact Under Review
+
+```php
+<?php
+/**
+ * Plugin Name: Acme Events Block
+ */
+
+add_action( 'init', 'acme_events_register_block' );
+function acme_events_register_block() {
+	wp_register_script(
+		'acme-events-editor',
+		plugins_url( 'build/editor.js', __FILE__ ),
+		array( 'wp-blocks', 'wp-element' ),
+		'1.0.0',
+		false
+	);
+
+	wp_enqueue_script(
+		'acme-events-front',
+		plugins_url( 'build/front.js', __FILE__ ),
+		array( 'jquery' ),
+		'1.0.0',
+		false
+	);
+
+	register_block_type(
+		__DIR__ . '/build',
+		array(
+			'editor_script'   => 'acme-events-editor',
+			'render_callback' => 'acme_events_render_block',
+		)
+	);
+}
+
+function acme_events_render_block( $attributes ) {
+	$response = wp_remote_get( 'https://example.invalid/events' );
+	$events   = json_decode( wp_remote_retrieve_body( $response ), true );
+	return '<div class="acme-events">' . esc_html( count( $events ) ) . ' events</div>';
+}
+```
+
+## Expected Review Focus
+
+- Detect unconditional frontend enqueue on `init`, blocking footer choice, and
+  unnecessary `jquery` dependency if the script is not needed on every page.
+- Detect possible editor-only/frontend confusion: `editor_script` belongs to
+  editor loading; frontend assets should be declared through `block.json`,
+  `viewScript`, `viewScriptModule`, or conditional enqueue where appropriate.
+- Detect render-time remote HTTP calls in `render_callback` and require timeout,
+  cache, stale fallback, and measurement boundaries.
+- Require concrete measurement: browser performance trace, Core Web Vitals where
+  available, Query Monitor/APM for render timing, or synthetic before/after page
+  tests.
+- Avoid fixes that only move work between requests without reducing total cost
+  or clarifying freshness requirements.
+
+## Required Boundaries
+
+Do not claim Core Web Vitals failure without field or lab data. Do not require
+removing dynamic rendering if freshness requirements justify it and a measured
+cache/fallback plan exists.
+2026-06-21T09:20:26.828814Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/Users/redacted/.codex/.tmp/plugins/plugins/redacted-unrelated-local-plugin/.codex-plugin/plugin.json
+hook: SessionStart
+hook: SessionStart Failed
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+2026-06-21T09:20:27.986262Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/Users/redacted/.codex/.tmp/plugins/plugins/redacted-unrelated-local-plugin/.codex-plugin/plugin.json
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+codex
+**Findings**
+
+1. **Frontend script is enqueued globally on `init`**
+   
+   `wp_enqueue_script( 'acme-events-front', ... )` runs during block registration, so `build/front.js` is loaded on every frontend request, whether the block appears on the page or not. That increases global JS cost and can affect pages unrelated to events.
+
+   Safer fix: declare the frontend asset in `block.json` with `viewScript` / `viewScriptModule`, or conditionally enqueue only when the block renders. If the script is only needed for this block, it should not be globally enqueued.
+
+2. **Script is forced into the document head**
+
+   Both scripts pass `false` as the final `wp_register_script()` / `wp_enqueue_script()` argument, which places them in the head in older-style registration. For frontend code, that can block parsing unnecessarily.
+
+   Safer fix: use the modern args array and load in the footer or with an explicit strategy where supported:
+
+   ```php
+   wp_enqueue_script(
+   	'acme-events-front',
+   	plugins_url( 'build/front.js', __FILE__ ),
+   	array(),
+   	'1.0.0',
+   	array( 'in_footer' => true )
+   );
+   ```
+
+   If the script must run before render, document that requirement and measure the cost.
+
+3. **Unnecessary `jquery` dependency risk**
+
+   `acme-events-front` depends on `jquery`, but the fixture does not show that `front.js` needs it. This can pull jQuery onto pages that otherwise would not need it, increasing transfer, parse, and execution cost.
+
+   Safer fix: remove `jquery` unless `front.js` actually uses it. If it does, consider rewriting the block behavior in vanilla JS or isolating the dependency to only pages where the block appears.
+
+4. **Editor/frontend asset boundary is unclear**
+
+   `editor_script` correctly targets editor loading, but the frontend script is not tied to the block metadata or the block render path. That creates parity and maintenance risk: editor assets are registered through block registration, while frontend assets are loaded globally and separately.
+
+   Safer fix: put frontend asset intent in `block.json` using `viewScript` or `viewScriptModule` when possible. Use conditional enqueue from `render_callback` only when metadata-based loading is insufficient.
+
+5. **Remote HTTP call happens during render**
+
+   `acme_events_render_block()` calls:
+
+   ```php
+   wp_remote_get( 'https://example.invalid/events' );
+   ```
+
+   on every block render. That puts network latency, DNS failures, TLS delays, and upstream instability directly in the page render path. It also has no explicit timeout, no error handling, no cache, and no stale fallback.
+
+   Safer fix: define freshness requirements, then cache the result with a bounded TTL. Add an explicit timeout, validate the response, handle `WP_Error`, and serve stale cached data if the remote call fails.
+
+   Example shape:
+
+   ```php
+   function acme_events_render_block( $attributes ) {
+   	$cache_key = 'acme_events_count';
+   	$cached    = get_transient( $cache_key );
+
+   	if ( false !== $cached ) {
+   		return '<div class="acme-events">' . esc_html( $cached ) . ' events</div>';
+   	}
+
+   	$response = wp_remote_get(
+   		'https://example.invalid/events',
+   		array( 'timeout' => 2 )
+   	);
+
+   	if ( is_wp_error( $response ) ) {
+   		return '<div class="acme-events">Events unavailable</div>';
+   	}
+
+   	$events = json_decode( wp_remote_retrieve_body( $response ), true );
+
+   	if ( ! is_array( $events ) ) {
+   		return '<div class="acme-events">Events unavailable</div>';
+   	}
+
+   	$count = count( $events );
+   	set_transient( $cache_key, $count, 5 * MINUTE_IN_SECONDS );
+
+   	return '<div class="acme-events">' . esc_html( $count ) . ' events</div>';
+   }
+   ```
+
+   That is only illustrative. The TTL should come from the actual freshness requirement.
+
+6. **No measurement boundary is defined**
+
+   The fixture shows likely performance risks, but it does not provide data proving Core Web Vitals failure. Do not claim LCP, INP, CLS, or TTFB regressions without field or lab evidence.
+
+   Required measurement before and after changes:
+
+   - Browser performance trace for frontend JS loading and execution.
+   - Core Web Vitals where field or lab data is available.
+   - Query Monitor, APM, or server timing around `render_callback`.
+   - Synthetic before/after page tests with and without the block present.
+   - Cache hit/miss timing for the remote events request.
+
+**What Not To Claim**
+
+This review does **not** prove a Core Web Vitals failure. It identifies risks in asset loading and server render time.
+
+This review also does **not** require removing dynamic rendering. Dynamic rendering may be justified if event freshness matters, but the render path needs explicit timeout behavior, cache policy, stale fallback, and measurement.
+hook: Stop
+hook: Stop Completed
+tokens used
+22,417

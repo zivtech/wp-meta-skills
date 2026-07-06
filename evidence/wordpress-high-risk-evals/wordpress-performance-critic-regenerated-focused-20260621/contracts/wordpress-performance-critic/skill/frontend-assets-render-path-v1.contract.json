@@ -1,0 +1,51 @@
+{
+  "checks": [
+    {
+      "detail": "all required headings present",
+      "id": "required_output_headings",
+      "passed": true,
+      "weight": 4
+    },
+    {
+      "detail": "valid verdict: REJECT",
+      "id": "critic_verdict",
+      "passed": true,
+      "weight": 3
+    },
+    {
+      "detail": "matched 6 exact WordPress surfaces",
+      "id": "exact_wordpress_surfaces",
+      "passed": true,
+      "weight": 3
+    },
+    {
+      "detail": "verification terms present: browser performance trace, core web vitals, query monitor, wp option list",
+      "id": "verification_specificity",
+      "passed": true,
+      "weight": 3
+    },
+    {
+      "detail": "boundary terms present: cannot verify, does not prove, negative space, open question, unknown",
+      "id": "negative_space",
+      "passed": true,
+      "weight": 2
+    },
+    {
+      "detail": "no placeholder markers found",
+      "id": "no_placeholders",
+      "passed": true,
+      "weight": 2
+    },
+    {
+      "detail": "no generic WordPress labels found",
+      "id": "no_generic_wp_labels",
+      "passed": true,
+      "weight": 2
+    }
+  ],
+  "pass": true,
+  "requested_skill": "wordpress-performance-critic",
+  "role": "critic",
+  "score": 1.0,
+  "skill": "wordpress-performance-critic"
+}

@@ -1,0 +1,28 @@
+name: rest-ajax-authorization-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: synthetic
+risk_class: rest_ajax_authorization_failure
+expected_wordpress_apis:
+  - "register_rest_route"
+  - "permission_callback"
+  - "current_user_can"
+  - "wp_ajax_*"
+  - "wp_ajax_nopriv_*"
+  - "check_ajax_referer"
+  - "wp_verify_nonce"
+expected_verification_surfaces:
+  - "PHPUnit REST request tests for unauthorized users"
+  - "AJAX nonce plus capability negative-path tests"
+  - "WP-CLI or integration smoke for mutation denial"
+must_detect:
+  - "public REST permission_callback on a privileged mutation"
+  - "nonce-as-authorization confusion"
+  - "logged-out nopriv mutation exposure"
+  - "missing forbidden-role test path"
+negative_space:
+  - "does not prove production exploitability without runtime context"
+  - "does not cover dependency or supply-chain review"
+  - "does not evaluate malware scanning"

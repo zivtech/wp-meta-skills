@@ -1,0 +1,38 @@
+fixture: legacy-cms-content-mapping-v1
+skill_under_test: wordpress-planner.migration
+max_score: 10
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the exact wordpress-migration-planner headings and includes a visible assumption register.
+  - id: source_target_mapping
+    weight: 3
+    description: Maps source articles, staff profiles, authors/bylines, taxonomies, revisions, fields, media, and URLs to WordPress post types, taxonomies, post meta, users, and attachments.
+  - id: uncertainty_and_negative_space
+    weight: 2
+    description: Preserves uncertainty around missing source exports, revision history, author mapping, and media fidelity instead of claiming completion.
+  - id: execution_and_idempotency
+    weight: 2
+    description: Requires stable source IDs, two-pass relationship resolution, media dedupe, rerunnable import scripts, and sample-row validation.
+  - id: verification_specificity
+    weight: 1
+    description: Names concrete validation checks such as row counts, sample records, media existence, link rewriting, WP-CLI import dry runs, and editorial QA.
+domain_signals:
+  expected_wordpress_apis:
+    - "register_post_type"
+    - "register_taxonomy"
+    - "register_post_meta"
+    - "wp_insert_post"
+    - "wp_update_post"
+    - "media_sideload_image"
+    - "wp import"
+    - "WP-CLI"
+  must_detect:
+    - "source schema inventory is required"
+    - "field-transform table is required"
+    - "media and relationship resolution need a second pass"
+    - "revision preservation is not proven"
+  must_not_claim:
+    - "real migration is proven without source extracts"
+    - "author and revision mapping is final without acceptance criteria"
+    - "generic import plan is sufficient"

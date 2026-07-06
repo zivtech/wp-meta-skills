@@ -1,0 +1,40 @@
+fixture: frontend-assets-render-path-v1
+skill_under_test: wordpress-performance-critic
+max_score: 10
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the exact wordpress-performance-critic headings, includes a valid verdict, and names what remains unmeasured.
+  - id: asset_loading_detection
+    weight: 3
+    description: Catches unconditional enqueueing, blocking placement, unnecessary dependencies, and editor/frontend asset boundary confusion.
+  - id: render_path_detection
+    weight: 2
+    description: Detects the remote HTTP call in render_callback and requires cache, timeout, stale fallback, and freshness boundaries.
+  - id: measurement_specificity
+    weight: 2
+    description: Requires browser performance trace, Core Web Vitals lab/field data where available, Query Monitor/APM render timing, or before/after asset inventory.
+  - id: calibration
+    weight: 1
+    description: Avoids claiming Core Web Vitals failure or production latency without data and avoids moving work between requests as a fake fix.
+domain_signals:
+  expected_wordpress_apis:
+    - "wp_enqueue_script"
+    - "wp_enqueue_style"
+    - "wp_register_script"
+    - "wp_register_style"
+    - "render_callback"
+    - "block.json"
+    - "wp_remote_get"
+    - "Query Monitor"
+    - "Core Web Vitals"
+    - "Playwright"
+  must_detect:
+    - "frontend assets are enqueued globally"
+    - "editor_script does not cover frontend asset strategy"
+    - "remote HTTP in render_callback needs cache/fallback"
+    - "measurement is required before claiming CWV or latency impact"
+  must_not_claim:
+    - "Core Web Vitals failure is proven"
+    - "dynamic rendering must always be removed"
+    - "moving work between requests is sufficient"

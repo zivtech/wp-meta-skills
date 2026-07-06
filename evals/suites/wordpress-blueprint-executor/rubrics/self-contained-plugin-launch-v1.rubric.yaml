@@ -1,0 +1,36 @@
+fixture: self-contained-plugin-launch-v1
+skill_under_test: wordpress-blueprint-executor
+max_score: 10
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the exact wordpress-blueprint-executor headings and emits one valid fenced JSON object under Generated Blueprint.
+  - id: self_contained_blueprint_shape
+    weight: 2
+    description: Blueprint includes preferredVersions, networking disabled, non-empty steps, inline plugin file creation with mkdir/writeFile, plugin activation, and landing behavior.
+  - id: launch_assertion_specificity
+    weight: 2
+    description: Names the exact admin page, visible smoke text, fragment URL or launch-readiness preflight, and reset behavior required for manual launch review.
+  - id: safety_and_determinism
+    weight: 2
+    description: Avoids credentials, private URLs, missing local ZIPs, external network assumptions, destructive actions, and production claims.
+  - id: evidence_boundary
+    weight: 2
+    description: Distinguishes static certification and launch readiness from observed Playground runtime proof and routes the packet to critic review.
+domain_signals:
+  expected_surfaces:
+    - "blueprint.json"
+    - "mkdir"
+    - "writeFile"
+    - "activatePlugin"
+    - "wp-admin/admin.php"
+    - "current_user_can"
+  must_detect:
+    - "no VFS payloads are required"
+    - "plugin activation must be explicit"
+    - "static launch readiness is not Playground runtime proof"
+    - "admin page visible assertion is required"
+  must_not_claim:
+    - "production deployment"
+    - "private URL access"
+    - "runtime proof without launch smoke"

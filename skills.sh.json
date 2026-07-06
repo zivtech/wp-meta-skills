@@ -1,0 +1,38 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "notGrouped": "bottom",
+  "groupings": [
+    {
+      "title": "Planning",
+      "description": "WordPress planning skills for architecture, content models, plugins, blocks, themes, and migrations.",
+      "skills": [
+        "wordpress-planner",
+        "wordpress-planner.content-model",
+        "wordpress-planner.plugin",
+        "wordpress-planner.block",
+        "wordpress-planner.theme",
+        "wordpress-planner.migration"
+      ]
+    },
+    {
+      "title": "Execution",
+      "description": "WordPress executor skills for materializable plugins, blocks, themes, and Playground Blueprints.",
+      "skills": [
+        "wordpress-blueprint-executor",
+        "wordpress-plugin-executor",
+        "wordpress-block-executor",
+        "wordpress-theme-executor"
+      ]
+    },
+    {
+      "title": "Review",
+      "description": "WordPress critic skills for architecture, security, performance, and theme review.",
+      "skills": [
+        "wordpress-critic",
+        "wordpress-security-critic",
+        "wordpress-performance-critic",
+        "wordpress-theme-critic"
+      ]
+    }
+  ]
+}

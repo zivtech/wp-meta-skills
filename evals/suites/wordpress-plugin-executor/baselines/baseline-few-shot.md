@@ -1,0 +1,1 @@
+Generate the requested WordPress plugin implementation packet. Use the exact top-level headings and materializable file-fence format required by the fixture. Include WordPress-specific safety notes, exact APIs, verification commands to run later, and explicit negative-space language for any commands not actually run.

@@ -1,0 +1,44 @@
+skill:
+  name: wordpress-performance-critic
+  type: critic
+  status: focused_saved_output_answer_key_partial
+
+fixtures:
+  directory: ./fixtures
+  count: 4
+  pattern: "*.md"
+  metadata_suffix: ".metadata.yaml"
+
+rubrics:
+  directory: ./rubrics
+  scoring_method: quality_weighted
+
+baselines:
+  directory: ./baselines
+  conditions:
+    - baseline-zero-shot
+    - baseline-few-shot
+
+evaluation:
+  status: focused_saved_output_answer_key_partial
+  full_run_status: blocked_until_test_critic_or_qa_review
+  latest_saved_output_run: wordpress-performance-critic-saved-outputs-20260621
+  latest_answer_key_run: wordpress-high-risk-answer-key-20260621
+  latest_regenerated_query_cache_run: wordpress-performance-critic-query-cache-regenerated-20260621
+  latest_regenerated_query_cache_answer_key_run: wordpress-performance-critic-query-cache-regenerated-answer-key-20260621
+  latest_regenerated_focused_run: wordpress-performance-critic-regenerated-focused-20260621
+  latest_regenerated_focused_answer_key_run: wordpress-performance-critic-regenerated-focused-answer-key-20260621
+
+invocation:
+  model: sonnet
+  effort: low
+  baseline_provider: codex
+  baseline_model_policy: newest-chatgpt-level-at-run-time
+  baseline_model: gpt-5.5
+  baseline_effort: medium
+  note: "Skill-agent invocation still uses the local Claude CLI because the WordPress skill packages are Claude-agent surfaces. Baseline lanes default to the newest ChatGPT-level local Codex CLI (`codex exec --model gpt-5.5`) so Sonnet is no longer the default baseline."
+
+output_contract_oracle:
+  type: deterministic_wordpress_skill_output_contract
+  command: "python3 evals/harness/validate_wordpress_skill_output.py --skill wordpress-performance-critic --output <candidate-output.md>"
+  status: available

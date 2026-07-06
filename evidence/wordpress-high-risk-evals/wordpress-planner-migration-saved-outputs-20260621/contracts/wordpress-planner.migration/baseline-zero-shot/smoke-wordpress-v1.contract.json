@@ -1,0 +1,51 @@
+{
+  "checks": [
+    {
+      "detail": "missing headings: Migration Scope, Current-State Evidence, Source Audit, Target Mapping, Transform And Execution Plan, Validation Plan, Rollback And Monitoring, Assumption Register, Test Strategy, Acceptance Criteria, Critic Handoff",
+      "id": "required_output_headings",
+      "passed": false,
+      "weight": 4
+    },
+    {
+      "detail": "verdict not required for this role",
+      "id": "critic_verdict",
+      "passed": true,
+      "weight": 1
+    },
+    {
+      "detail": "matched 1 exact WordPress surfaces; expected at least 2",
+      "id": "exact_wordpress_surfaces",
+      "passed": false,
+      "weight": 3
+    },
+    {
+      "detail": "no concrete verification oracle named",
+      "id": "verification_specificity",
+      "passed": false,
+      "weight": 3
+    },
+    {
+      "detail": "boundary terms present: assumption, unknown",
+      "id": "negative_space",
+      "passed": true,
+      "weight": 2
+    },
+    {
+      "detail": "no placeholder markers found",
+      "id": "no_placeholders",
+      "passed": true,
+      "weight": 2
+    },
+    {
+      "detail": "no generic WordPress labels found",
+      "id": "no_generic_wp_labels",
+      "passed": true,
+      "weight": 2
+    }
+  ],
+  "pass": false,
+  "requested_skill": "wordpress-planner.migration",
+  "role": "planner",
+  "score": 0.4118,
+  "skill": "wordpress-migration-planner"
+}

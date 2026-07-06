@@ -1,0 +1,29 @@
+name: query-cache-pressure-v1
+suite: wordpress-performance-critic
+skill_under_test: wordpress-performance-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: synthetic
+risk_class: query_and_cache_pressure
+expected_wordpress_apis:
+  - "WP_Query"
+  - "no_found_rows"
+  - "fields => 'ids'"
+  - "update_post_meta_cache"
+  - "update_post_term_cache"
+  - "pre_get_posts"
+  - "wp_cache_get"
+  - "wp_cache_set"
+expected_verification_surfaces:
+  - "Query Monitor query count and duplicate-query evidence"
+  - "database/query logs or wp profile output where available"
+  - "controlled before/after page-render measurement"
+must_detect:
+  - "N+1 WP_Query loop in a render path"
+  - "missing no_found_rows when pagination is not used"
+  - "unbounded meta query pressure"
+  - "cache-as-fix handwaving without invalidation and measurement"
+negative_space:
+  - "does not prove production latency without environment data"
+  - "does not require custom tables without scale evidence"
+  - "does not claim all WP_Query usage is a defect"

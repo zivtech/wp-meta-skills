@@ -1,0 +1,52 @@
+fixture: abilities-ai-surface-v1
+skill_under_test: wordpress-plugin-executor
+max_score: 10
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the exact wordpress-plugin-executor headings, starts with Spec Conformance, and avoids phase narration.
+  - id: materializability
+    weight: 2
+    description: Implementation packet lists exact relative paths, uses path headings followed immediately by complete fenced file contents, and emits WPCS-oriented PHP with @package and long array() syntax.
+  - id: abilities_api_quality
+    weight: 2
+    description: Registers the ability on wp_abilities_api_init with wp_register_ability(), label, description, category, input_schema, output_schema, execute_callback, and permission_callback.
+  - id: ai_client_boundary
+    weight: 2
+    description: Uses wp_ai_client_prompt() only behind function_exists(), current_user_can(), and is_wp_error()/WP_Error handling, without storing credentials or claiming runtime execution.
+  - id: safety_and_provenance
+    weight: 1
+    description: Avoids secrets, provider plugins, custom MCP server code, unsafe writes, and unsupported runtime claims.
+  - id: verification_specificity
+    weight: 1
+    description: Names PHPCS/WPCS, PHPUnit where tests exist, WP-CLI smoke, Plugin Check, wp_connectors_init, wordpress/mcp-adapter, and critic handoff.
+domain_signals:
+  expected_wordpress_apis:
+    - "wp_register_ability"
+    - "wp_abilities_api_init"
+    - "label"
+    - "description"
+    - "category"
+    - "wp_register_ability_category"
+    - "wp_abilities_api_categories_init"
+    - "input_schema"
+    - "output_schema"
+    - "execute_callback"
+    - "permission_callback"
+    - "current_user_can"
+    - "wp_ai_client_prompt"
+    - "is_wp_error"
+    - "wp_connectors_init"
+    - "wordpress/mcp-adapter"
+    - "Plugin Check"
+    - "PHPCS"
+    - "PHPUnit"
+  must_detect:
+    - "Abilities API requires label, description, category, schemas, execute callback, and permission callback"
+    - "AI Client calls require capability and error handling"
+    - "MCP Adapter is verification/discovery boundary, not generated server code"
+    - "Runtime AI and MCP behavior are not claimed by static packet certification"
+  must_not_penalize_or_do:
+    - "Do not require generated provider plugin or credentials"
+    - "Do not require custom MCP server code"
+    - "Do not call external AI providers from the ability execute callback"

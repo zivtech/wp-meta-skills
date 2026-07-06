@@ -1,0 +1,51 @@
+{
+  "checks": [
+    {
+      "detail": "missing headings: VERDICT, Overall Assessment, Pre-commitment Predictions, Critical Findings, Major Findings, Minor Findings, What's Missing, Multi-Perspective Notes, Measurement Notes, Verdict Justification, Remediation Guide, Open Questions",
+      "id": "required_output_headings",
+      "passed": false,
+      "weight": 4
+    },
+    {
+      "detail": "missing bold VERDICT heading",
+      "id": "critic_verdict",
+      "passed": false,
+      "weight": 3
+    },
+    {
+      "detail": "matched 0 exact WordPress surfaces; expected at least 2",
+      "id": "exact_wordpress_surfaces",
+      "passed": false,
+      "weight": 3
+    },
+    {
+      "detail": "verification terms present: wp option list",
+      "id": "verification_specificity",
+      "passed": true,
+      "weight": 3
+    },
+    {
+      "detail": "boundary terms present: not claiming",
+      "id": "negative_space",
+      "passed": true,
+      "weight": 2
+    },
+    {
+      "detail": "no placeholder markers found",
+      "id": "no_placeholders",
+      "passed": true,
+      "weight": 2
+    },
+    {
+      "detail": "no generic WordPress labels found",
+      "id": "no_generic_wp_labels",
+      "passed": true,
+      "weight": 2
+    }
+  ],
+  "pass": false,
+  "requested_skill": "wordpress-performance-critic",
+  "role": "critic",
+  "score": 0.4737,
+  "skill": "wordpress-performance-critic"
+}

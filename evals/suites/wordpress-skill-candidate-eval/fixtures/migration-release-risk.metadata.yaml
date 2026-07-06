@@ -1,0 +1,15 @@
+name: migration-release-risk
+suite: wordpress-skill-candidate-eval
+domain: Migrations and release readiness
+difficulty_tier: HAS_RISK
+provenance: synthetic
+primary_skill_targets:
+  - wordpress-planner
+  - wordpress-critic
+expected_behavior:
+  - WordPress-native routing and terminology
+  - Explicit assumptions and tradeoffs
+  - Security, performance, and rollout awareness proportional to risk
+  - No invented findings on clean controls
+source_notes: Designed from the 2026-06-16 WordPress candidate catalog and Zivtech V1 plan.
+scenario_summary: "A launch handoff proposes direct production SQL updates to convert shortcodes and rewrite domains."

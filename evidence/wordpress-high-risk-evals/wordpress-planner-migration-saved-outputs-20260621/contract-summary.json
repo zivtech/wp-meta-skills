@@ -1,0 +1,199 @@
+{
+  "all_contracts_pass": false,
+  "all_generation_ok": true,
+  "artifact_counts": {
+    "contract_results": 12,
+    "entries": 12,
+    "outputs": 12
+  },
+  "by_condition": {
+    "baseline-few-shot": {
+      "contract_pass": 0,
+      "count": 4,
+      "generation_ok": 4
+    },
+    "baseline-zero-shot": {
+      "contract_pass": 0,
+      "count": 4,
+      "generation_ok": 4
+    },
+    "skill": {
+      "contract_pass": 4,
+      "count": 4,
+      "generation_ok": 4
+    }
+  },
+  "contract_pass_count": 4,
+  "entries": [
+    {
+      "condition": "skill",
+      "contract_pass": true,
+      "contract_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/contracts/wordpress-planner.migration/skill/cutover-rollback-reconciliation-v1.contract.json",
+      "contract_score": 1.0,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "cutover-rollback-reconciliation-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/skill/cutover-rollback-reconciliation-v1.metadata.json",
+      "output_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/skill/cutover-rollback-reconciliation-v1.md",
+      "suite": "wordpress-planner.migration"
+    },
+    {
+      "condition": "baseline-zero-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/contracts/wordpress-planner.migration/baseline-zero-shot/cutover-rollback-reconciliation-v1.contract.json",
+      "contract_score": 0.7647,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "cutover-rollback-reconciliation-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-zero-shot/cutover-rollback-reconciliation-v1.metadata.json",
+      "output_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-zero-shot/cutover-rollback-reconciliation-v1.md",
+      "suite": "wordpress-planner.migration"
+    },
+    {
+      "condition": "baseline-few-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/contracts/wordpress-planner.migration/baseline-few-shot/cutover-rollback-reconciliation-v1.contract.json",
+      "contract_score": 0.7647,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "cutover-rollback-reconciliation-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-few-shot/cutover-rollback-reconciliation-v1.metadata.json",
+      "output_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-few-shot/cutover-rollback-reconciliation-v1.md",
+      "suite": "wordpress-planner.migration"
+    },
+    {
+      "condition": "skill",
+      "contract_pass": true,
+      "contract_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/contracts/wordpress-planner.migration/skill/legacy-cms-content-mapping-v1.contract.json",
+      "contract_score": 1.0,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "legacy-cms-content-mapping-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/skill/legacy-cms-content-mapping-v1.metadata.json",
+      "output_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/skill/legacy-cms-content-mapping-v1.md",
+      "suite": "wordpress-planner.migration"
+    },
+    {
+      "condition": "baseline-zero-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/contracts/wordpress-planner.migration/baseline-zero-shot/legacy-cms-content-mapping-v1.contract.json",
+      "contract_score": 0.5882,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "legacy-cms-content-mapping-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-zero-shot/legacy-cms-content-mapping-v1.metadata.json",
+      "output_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-zero-shot/legacy-cms-content-mapping-v1.md",
+      "suite": "wordpress-planner.migration"
+    },
+    {
+      "condition": "baseline-few-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/contracts/wordpress-planner.migration/baseline-few-shot/legacy-cms-content-mapping-v1.contract.json",
+      "contract_score": 0.7647,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "legacy-cms-content-mapping-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-few-shot/legacy-cms-content-mapping-v1.metadata.json",
+      "output_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-few-shot/legacy-cms-content-mapping-v1.md",
+      "suite": "wordpress-planner.migration"
+    },
+    {
+      "condition": "skill",
+      "contract_pass": true,
+      "contract_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/contracts/wordpress-planner.migration/skill/smoke-wordpress-v1.contract.json",
+      "contract_score": 1.0,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "smoke-wordpress-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/skill/smoke-wordpress-v1.metadata.json",
+      "output_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/skill/smoke-wordpress-v1.md",
+      "suite": "wordpress-planner.migration"
+    },
+    {
+      "condition": "baseline-zero-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/contracts/wordpress-planner.migration/baseline-zero-shot/smoke-wordpress-v1.contract.json",
+      "contract_score": 0.4118,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "smoke-wordpress-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-zero-shot/smoke-wordpress-v1.metadata.json",
+      "output_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-zero-shot/smoke-wordpress-v1.md",
+      "suite": "wordpress-planner.migration"
+    },
+    {
+      "condition": "baseline-few-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/contracts/wordpress-planner.migration/baseline-few-shot/smoke-wordpress-v1.contract.json",
+      "contract_score": 0.5882,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "smoke-wordpress-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-few-shot/smoke-wordpress-v1.metadata.json",
+      "output_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-few-shot/smoke-wordpress-v1.md",
+      "suite": "wordpress-planner.migration"
+    },
+    {
+      "condition": "skill",
+      "contract_pass": true,
+      "contract_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/contracts/wordpress-planner.migration/skill/url-redirect-permalink-v1.contract.json",
+      "contract_score": 1.0,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "url-redirect-permalink-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/skill/url-redirect-permalink-v1.metadata.json",
+      "output_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/skill/url-redirect-permalink-v1.md",
+      "suite": "wordpress-planner.migration"
+    },
+    {
+      "condition": "baseline-zero-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/contracts/wordpress-planner.migration/baseline-zero-shot/url-redirect-permalink-v1.contract.json",
+      "contract_score": 0.4706,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "url-redirect-permalink-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-zero-shot/url-redirect-permalink-v1.metadata.json",
+      "output_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-zero-shot/url-redirect-permalink-v1.md",
+      "suite": "wordpress-planner.migration"
+    },
+    {
+      "condition": "baseline-few-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/contracts/wordpress-planner.migration/baseline-few-shot/url-redirect-permalink-v1.contract.json",
+      "contract_score": 0.5882,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "url-redirect-permalink-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-few-shot/url-redirect-permalink-v1.metadata.json",
+      "output_path": "evals/results/wordpress-planner-migration-saved-outputs-20260621/raw/wordpress-planner.migration/baseline-few-shot/url-redirect-permalink-v1.md",
+      "suite": "wordpress-planner.migration"
+    }
+  ],
+  "evidence_boundary": "Saved-output contract evidence only. This is not answer-key scoring, human review, variance measurement, or public benchmark evidence.",
+  "focused_fixture_summary": {
+    "all_focused_skill_contracts_pass": true,
+    "definition": "non-smoke fixtures",
+    "entry_count": 9,
+    "skill_contract_pass_count": 3,
+    "skill_entry_count": 3
+  },
+  "generated_at": "2026-06-21T03:46:42",
+  "generation_ok_count": 12,
+  "run_dir": "evals/results/wordpress-planner-migration-saved-outputs-20260621",
+  "run_id": "wordpress-planner-migration-saved-outputs-20260621",
+  "skill": "wordpress-planner.migration",
+  "suite": "wordpress-planner.migration"
+}

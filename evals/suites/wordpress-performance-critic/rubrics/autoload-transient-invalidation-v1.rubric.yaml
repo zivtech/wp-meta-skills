@@ -1,0 +1,39 @@
+fixture: autoload-transient-invalidation-v1
+skill_under_test: wordpress-performance-critic
+max_score: 10
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the exact wordpress-performance-critic headings, includes a valid verdict, and clearly separates measured facts from assumptions.
+  - id: option_and_transient_detection
+    weight: 3
+    description: Catches large option payload risk, transient lifetime gaps, missing invalidation triggers, and remote-call-in-render behavior.
+  - id: measurement_specificity
+    weight: 2
+    description: Names concrete checks such as wp option list --autoload=on, option-size inspection, object-cache metrics, and failure-mode render timing.
+  - id: remediation_specificity
+    weight: 2
+    description: Recommends exact WordPress fixes such as explicit autoload policy, bounded transient TTL, delete_transient() on mutation hooks, HTTP timeout/error handling, and stale fallback.
+  - id: calibration
+    weight: 1
+    description: Avoids claiming autoload or production-capacity impact without runtime evidence and does not treat every transient as a defect.
+domain_signals:
+  expected_wordpress_apis:
+    - "get_option"
+    - "update_option"
+    - "set_transient"
+    - "get_transient"
+    - "delete_transient"
+    - "wp option list --autoload=on"
+    - "wp_remote_get"
+    - "Query Monitor"
+    - "WP-CLI"
+  must_detect:
+    - "large option payload can create autoload or storage pressure"
+    - "transient needs TTL and invalidation"
+    - "remote calls in render paths need timeout and fallback"
+    - "measurement is required before claiming site-wide impact"
+  must_not_claim:
+    - "autoload is proven without runtime inspection"
+    - "production capacity impact is proven"
+    - "all transients are harmful"

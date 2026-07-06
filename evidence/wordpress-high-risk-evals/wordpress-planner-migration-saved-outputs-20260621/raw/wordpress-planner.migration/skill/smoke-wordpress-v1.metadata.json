@@ -1,0 +1,14 @@
+{
+  "agent": "wordpress-planner.migration",
+  "agent_injection": "content",
+  "agent_prompt_path": "wordpress-skills/.claude/agents/wordpress-migration-planner.md",
+  "condition": "skill",
+  "effort": "low",
+  "fixture_id": "smoke-wordpress-v1",
+  "mode": "planner",
+  "model": "sonnet",
+  "provider": "claude",
+  "runtime": "local_claude_cli",
+  "stage": "single",
+  "suite": "wordpress-planner.migration"
+}

@@ -1,0 +1,44 @@
+fixture: upload-filesystem-boundary-v1
+skill_under_test: wordpress-security-critic
+max_score: 10
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the exact wordpress-security-critic headings, includes a valid verdict, and states negative space.
+  - id: upload_boundary_detection
+    weight: 3
+    description: Catches missing capability checks, unsafe include/copy of uploaded files, weak file type validation, and executable destination risk.
+  - id: path_handling_detection
+    weight: 2
+    description: Detects unslashed template_name input, missing filename allowlist, traversal risk, and missing wp_normalize_path()/realpath() boundary checks.
+  - id: severity_calibration
+    weight: 1
+    description: Calibrates severity to caller role, executable file path, include behavior, and hosting assumptions without claiming malware scanning.
+  - id: verification_specificity
+    weight: 2
+    description: Requires PHPUnit, PHPCS/WPCS, WP-CLI or manual upload smoke coverage for denied and allowed paths.
+domain_signals:
+  expected_wordpress_apis:
+    - "wp_handle_upload"
+    - "wp_check_filetype_and_ext"
+    - "wp_mkdir_p"
+    - "wp_normalize_path"
+    - "realpath"
+    - "plugin_dir_path"
+    - "current_user_can"
+    - "check_admin_referer"
+    - "sanitize_key"
+    - "wp_unslash"
+    - "PHPCS"
+    - "WPCS"
+    - "PHPUnit"
+    - "WP-CLI"
+  must_detect:
+    - "wp_handle_upload() does not make later include/copy safe"
+    - "missing current_user_can() capability gate"
+    - "template_name can escape the intended templates directory"
+    - "malware scanning is not provided by this code"
+  must_not_claim:
+    - "all admin uploads are automatically vulnerabilities"
+    - "antivirus or malware scanning proof"
+    - "hosting-level executable file policy is known"

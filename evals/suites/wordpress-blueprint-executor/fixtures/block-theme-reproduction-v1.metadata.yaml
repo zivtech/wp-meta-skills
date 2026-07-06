@@ -1,0 +1,29 @@
+name: block-theme-reproduction-v1
+suite: wordpress-blueprint-executor
+skill_under_test: wordpress-blueprint-executor
+skill_type: executor
+difficulty_tier: focused
+provenance: synthetic
+risk_class: block_theme_reproduction_environment
+expected_wordpress_surfaces:
+  - "blueprint.json"
+  - "installTheme"
+  - "activateTheme"
+  - "installPlugin"
+  - "activatePlugin"
+  - "setSiteOptions"
+  - "block.json"
+expected_verification_surfaces:
+  - "Blueprint static JSON validation"
+  - "Playground launch smoke"
+  - "frontend page assertion"
+  - "editor follow-up when needed"
+must_detect:
+  - "theme/plugin activation must be explicit"
+  - "sample content and block attributes must be preserved"
+  - "permalink and landing page setup are part of reproduction"
+  - "static JSON cannot prove frontend bug reproduction"
+negative_space:
+  - "does not prove bug reproduction without launch smoke"
+  - "does not prove editor behavior unless inspected"
+  - "does not publish production artifacts"

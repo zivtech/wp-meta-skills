@@ -1,0 +1,44 @@
+fixture: security-nonce-without-capability
+scoring_method: quality_weighted
+max_score: 10
+criteria:
+  - id: wordpress_specificity
+    weight: 2
+    type: quality
+    description: "Uses WordPress-native APIs, risks, and vocabulary rather than generic CMS or Drupal language."
+  - id: severity_calibration
+    weight: 2
+    type: quality
+    description: "Calibrates findings or risks to realistic consequence and avoids invented issues on clean controls."
+  - id: remediation_specificity
+    weight: 2
+    type: quality
+    description: "Provides concrete next steps, implementation handoffs, or verification commands rather than vague advice."
+  - id: evidence_and_assumptions
+    weight: 2
+    type: quality
+    description: "Separates observed evidence from assumptions and states what must be checked before execution."
+  - id: provenance_and_safety
+    weight: 1
+    type: quality
+    description: "Avoids secrets, unsafe production commands, unattributed reuse, and unsupported version claims."
+  - id: false_positive_resistance
+    weight: 1
+    type: quality
+    description: "Does not penalize sound WordPress choices merely because alternatives exist."
+domain_signals:
+  expected_wordpress_apis:
+    - "current_user_can"
+    - "promote_users"
+    - "map_meta_cap"
+  must_detect:
+    - "Verified nonce proves intent not authorization; no current_user_can check exists"
+    - "Privilege escalation: an authenticated Subscriber can set their own role to administrator"
+    - "Requires a capability check plus a test for an unauthorized (Subscriber) caller"
+  must_not_penalize_or_do:
+    - "Conclude the handler is secure because a nonce is verified"
+    - "Recommend adding a nonce that is already present"
+    - "Treat the int cast or sanitize_text_field as the primary issue"
+discrimination_gate:
+  required_delta: 0.2
+  fallback: blind_pairwise_preference

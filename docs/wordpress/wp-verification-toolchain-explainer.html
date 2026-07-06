@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WordPress Skills — a verification-first toolchain</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0d1622; --surface:#13202e; --surface-2:#182636; --recess:#0f1a26;
+    --border:rgba(120,165,205,.16); --border-strong:rgba(120,165,205,.30);
+    --text:#dde7f1; --text-dim:#8ea3b9; --text-faint:#62748a;
+    --blue:#4f93d8; --blue-dim:rgba(79,147,216,.13);
+    --gold:#d4a73a; --gold-dim:rgba(212,167,58,.13);
+    --green:#52b288; --green-dim:rgba(82,178,136,.14);
+    --red:#d96b62; --red-dim:rgba(217,107,98,.14);
+    --amber:#cf9a3e; --amber-dim:rgba(207,154,62,.14);
+    --grid:rgba(120,165,205,.055);
+    --mono:"Fira Code",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:"DM Sans",-apple-system,BlinkMacSystemFont,sans-serif;
+  }
+  @media (prefers-color-scheme:light){
+    :root{
+      --bg:#eef2f6; --surface:#ffffff; --surface-2:#f5f8fb; --recess:#e7edf3;
+      --border:rgba(30,70,110,.16); --border-strong:rgba(30,70,110,.28);
+      --text:#16222f; --text-dim:#4a5d70; --text-faint:#74889c;
+      --blue:#1f6fc0; --blue-dim:rgba(31,111,192,.10);
+      --gold:#9a7415; --gold-dim:rgba(154,116,21,.10);
+      --green:#1f7d56; --green-dim:rgba(31,125,86,.12);
+      --red:#b1483f; --red-dim:rgba(177,72,63,.12);
+      --amber:#9a6f16; --amber-dim:rgba(154,111,22,.12);
+      --grid:rgba(30,70,110,.06);
+    }
+  }
+  *{box-sizing:border-box;min-width:0}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+    line-height:1.6;-webkit-font-smoothing:antialiased;
+    background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:30px 30px;
+  }
+  .wrap{max-width:1060px;margin:0 auto;padding:0 24px}
+  .mono{font-family:var(--mono)}
+  .label{font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--text-dim);display:inline-flex;align-items:center;gap:.55em}
+  .label::before{content:"";width:7px;height:7px;border-radius:1px;background:var(--blue);transform:rotate(45deg);flex:none}
+  a{color:var(--blue);text-decoration:none;border-bottom:1px solid var(--blue-dim)}
+  a:hover{border-bottom-color:var(--blue)}
+
+  /* hero */
+  header{border-bottom:1px solid var(--border);padding:74px 0 56px;position:relative}
+  .kicker{font-family:var(--mono);font-size:.78rem;letter-spacing:.16em;text-transform:uppercase;color:var(--blue);margin-bottom:22px}
+  h1{font-size:clamp(2.1rem,5.2vw,3.5rem);line-height:1.05;margin:0 0 18px;font-weight:700;letter-spacing:-.02em}
+  h1 .em{color:var(--blue)}
+  .lede{font-size:clamp(1.05rem,2vw,1.32rem);color:var(--text-dim);max-width:64ch;margin:0}
+  .badges{display:flex;flex-wrap:wrap;gap:10px;margin-top:30px}
+  .badge{font-family:var(--mono);font-size:.74rem;padding:6px 12px;border:1px solid var(--border-strong);border-radius:2px;color:var(--text-dim);background:var(--surface)}
+  .badge.warn{color:var(--amber);border-color:var(--amber);background:var(--amber-dim)}
+
+  section{padding:60px 0;border-bottom:1px solid var(--border)}
+  .sec-head{margin-bottom:30px}
+  h2{font-size:clamp(1.5rem,3vw,2.05rem);margin:.5em 0 .15em;font-weight:700;letter-spacing:-.015em}
+  .sec-sub{color:var(--text-dim);max-width:68ch;margin:0}
+
+  /* pivot before/after */
+  .pivot{display:grid;grid-template-columns:1fr auto 1fr;gap:18px;align-items:stretch;margin-bottom:26px}
+  .pivot .arrow{align-self:center;font-family:var(--mono);color:var(--blue);font-size:1.5rem}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:20px 22px}
+  .panel.was{border-style:dashed;color:var(--text-dim)}
+  .panel.now{border-color:var(--blue);background:linear-gradient(180deg,var(--blue-dim),transparent)}
+  .panel h3{margin:0 0 6px;font-size:.78rem;font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint)}
+  .panel.now h3{color:var(--blue)}
+  .panel p{margin:0;font-size:1.02rem}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+  .chip{font-family:var(--mono);font-size:.72rem;padding:5px 10px;border:1px solid var(--border);border-radius:2px;background:var(--recess);color:var(--text-dim)}
+  .chip b{color:var(--text);font-weight:600}
+
+  /* loop diagram */
+  .loop{background:var(--recess);border:1px solid var(--border);border-radius:5px;padding:34px 26px 26px;position:relative;overflow:hidden}
+  .loop-grid{background-image:radial-gradient(var(--grid) 1.2px,transparent 1.2px);background-size:16px 16px;position:absolute;inset:0;opacity:.6;pointer-events:none}
+  .flow{display:flex;align-items:stretch;gap:0;position:relative;flex-wrap:wrap}
+  .step{flex:1 1 0;min-width:150px;background:var(--surface);border:1px solid var(--border-strong);border-radius:4px;padding:16px 16px;position:relative;z-index:2}
+  .step .n{font-family:var(--mono);font-size:.7rem;color:var(--text-faint)}
+  .step .t{font-weight:700;margin:3px 0 4px;font-size:1.05rem}
+  .step .d{font-size:.86rem;color:var(--text-dim);line-height:1.45}
+  .step.green-step{border-color:var(--green);background:linear-gradient(180deg,var(--green-dim),transparent)}
+  .step.green-step .t{color:var(--green)}
+  .step.gate{border-color:var(--gold)}
+  .conn{flex:0 0 34px;display:flex;align-items:center;justify-content:center;color:var(--blue);font-family:var(--mono);font-size:1.3rem;z-index:2}
+  .gates{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-direction:column;gap:5px}
+  .gates li{font-family:var(--mono);font-size:.74rem;color:var(--text-dim);padding-left:16px;position:relative}
+  .gates li::before{content:"▸";position:absolute;left:0;color:var(--gold)}
+  .feedback{margin-top:14px;border:1px dashed var(--red);border-radius:4px;background:var(--red-dim);padding:11px 16px;display:flex;align-items:center;gap:12px;position:relative;z-index:2}
+  .feedback .rt{font-family:var(--mono);font-size:1.25rem;color:var(--red);flex:none}
+  .feedback .txt{font-size:.9rem}
+  .feedback .txt b{color:var(--red)}
+  .loop-note{margin:16px 0 0;font-size:.85rem;color:var(--text-faint);font-family:var(--mono)}
+
+  /* provider cards */
+  .grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}
+  .pcard{background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:16px 18px}
+  .pcard .pv{font-family:var(--mono);font-size:.72rem;color:var(--blue);letter-spacing:.05em}
+  .pcard .pm{font-weight:600;margin:4px 0 2px}
+  .pcard .pd{font-size:.82rem;color:var(--text-dim)}
+  .flagline{margin-top:18px;font-family:var(--mono);font-size:.84rem;color:var(--text-dim);background:var(--recess);border:1px solid var(--border);border-left:3px solid var(--blue);border-radius:3px;padding:12px 16px;overflow-x:auto}
+  .flagline .fl{color:var(--gold)}
+
+  /* table */
+  .tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:4px}
+  table{width:100%;border-collapse:collapse;font-size:.92rem}
+  thead th{background:var(--surface-2);text-align:left;padding:12px 16px;font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim);border-bottom:1px solid var(--border-strong);position:sticky;top:0}
+  tbody td{padding:12px 16px;border-bottom:1px solid var(--border)}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:nth-child(even){background:rgba(120,165,205,.035)}
+  .tier{font-weight:600}
+  .tier small{display:block;font-weight:400;color:var(--text-faint);font-family:var(--mono);font-size:.74rem}
+  .num{font-family:var(--mono);text-align:center;font-variant-numeric:tabular-nums}
+  .pill{font-family:var(--mono);font-size:.74rem;padding:3px 9px;border-radius:2px;white-space:nowrap}
+  .pill.ok{background:var(--green-dim);color:var(--green);border:1px solid var(--green)}
+  .pill.incon{background:var(--amber-dim);color:var(--amber);border:1px solid var(--amber)}
+  .pill.no{background:var(--red-dim);color:var(--red);border:1px solid var(--red)}
+  .bar{height:8px;border-radius:1px;background:var(--blue);display:inline-block;vertical-align:middle}
+  .barwrap{display:flex;align-items:center;gap:8px}
+
+  /* insight pull quote */
+  .insight{border-left:3px solid var(--gold);padding:6px 0 6px 26px;margin:6px 0}
+  .insight .q{font-size:clamp(1.3rem,3vw,1.8rem);font-weight:700;line-height:1.25;letter-spacing:-.01em}
+  .insight .q em{color:var(--gold);font-style:normal}
+  .insight .a{color:var(--text-dim);margin-top:12px;max-width:62ch}
+
+  /* claim columns */
+  .claims{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .col{border:1px solid var(--border);border-radius:4px;padding:20px 22px}
+  .col.do{border-top:3px solid var(--green)}
+  .col.dont{border-top:3px solid var(--red)}
+  .col h3{margin:0 0 14px;font-family:var(--mono);font-size:.78rem;letter-spacing:.08em;text-transform:uppercase}
+  .col.do h3{color:var(--green)} .col.dont h3{color:var(--red)}
+  .col ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:11px}
+  .col li{position:relative;padding-left:24px;font-size:.96rem}
+  .col li::before{position:absolute;left:0;top:0;font-family:var(--mono);font-weight:600}
+  .col.do li::before{content:"+";color:var(--green)}
+  .col.dont li::before{content:"\2212";color:var(--red)}
+
+  .callout{background:var(--blue-dim);border:1px solid var(--blue);border-radius:4px;padding:22px 26px}
+  .callout p{margin:0;font-size:1.08rem}
+  .callout .big{font-size:1.18rem;font-weight:600}
+
+  footer{padding:44px 0 70px}
+  .links{display:flex;flex-wrap:wrap;gap:10px 26px;margin:14px 0 22px}
+  .links a{font-family:var(--mono);font-size:.85rem}
+  .fineprint{color:var(--text-faint);font-size:.82rem;max-width:70ch;border-top:1px solid var(--border);padding-top:20px}
+
+  .reveal{opacity:0;transform:translateY(14px)}
+  .reveal.in{opacity:1;transform:none;transition:opacity .55s ease,transform .55s ease}
+  @media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none}}
+  @media (max-width:640px){
+    .pivot{grid-template-columns:1fr}.pivot .arrow{transform:rotate(90deg)}
+    .claims{grid-template-columns:1fr}
+    .conn{flex-basis:100%;height:20px;transform:rotate(90deg)}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="kicker">WordPress Skills · internal release-staging</div>
+    <h1>A <span class="em">verification-first</span> WordPress toolchain</h1>
+    <p class="lede">Turn any model's output into gate-verified, shippable WordPress artifacts. The value is <strong>verified code</strong> — produced by a deterministic gate + repair loop — not a better prompt.</p>
+    <div class="badges">
+      <span class="badge">gate-verified output</span>
+      <span class="badge">model-agnostic</span>
+      <span class="badge">automated repair loop</span>
+      <span class="badge warn">early · internal · n=1</span>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="label">01 · the pivot</div>
+      <h2>Why verification, not better prompts</h2>
+      <p class="sec-sub">The value is verified code: a deterministic gate + repair loop that drives any model's output to a shippable artifact. The project concentrates value there because that is where it can be measured deterministically — and because five independent internal diagnostics consistently showed prompt wording is not the lever.</p>
+    </div>
+    <div class="pivot reveal">
+      <div class="panel was">
+        <h3>Was</h3>
+        <p>A collection of planner / executor / critic <em>prompts</em>, judged on review quality.</p>
+      </div>
+      <div class="arrow mono">&rarr;</div>
+      <div class="panel now">
+        <h3>Now</h3>
+        <p>A loop that drives any model's output through <em>real WordPress gates</em> until it passes.</p>
+      </div>
+    </div>
+    <div class="chips reveal">
+      <span class="chip">diagnostics that found no prompt edge:</span>
+      <span class="chip"><b>pairwise</b> judging</span>
+      <span class="chip"><b>fast</b> answer-key</span>
+      <span class="chip"><b>adversarial</b> answer-key</span>
+      <span class="chip"><b>API-naming</b> coverage</span>
+      <span class="chip"><b>runtime</b> gate-pass</span>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="label">02 · the mechanism</div>
+      <h2>The repair loop</h2>
+      <p class="sec-sub">Generate a materializable packet, certify it against real WordPress gates, feed the <em>exact</em> failures back to the model, and re-certify — until it is gate-clean or a repair budget is reached.</p>
+    </div>
+    <div class="loop reveal">
+      <div class="loop-grid"></div>
+      <div class="flow">
+        <div class="step">
+          <div class="n">step 01</div>
+          <div class="t">Generate</div>
+          <div class="d">Model writes a materializable plugin/block/theme packet from the spec.</div>
+        </div>
+        <div class="conn mono">&rarr;</div>
+        <div class="step gate">
+          <div class="n">step 02</div>
+          <div class="t">Certify</div>
+          <div class="d">Run real WordPress gates:</div>
+          <ul class="gates">
+            <li>packet contract</li>
+            <li>WPCS / PHPCS</li>
+            <li>Plugin Check</li>
+            <li>wp-env activation</li>
+            <li>Abilities / MCP / AI runtime</li>
+          </ul>
+        </div>
+        <div class="conn mono">&rarr;</div>
+        <div class="step green-step">
+          <div class="n">step 03 · exit</div>
+          <div class="t">Green</div>
+          <div class="d">WPCS-clean, Plugin Check-clean, activates in WordPress 7.0. Shippable.</div>
+        </div>
+      </div>
+      <div class="feedback">
+        <span class="rt mono">&#8630;</span>
+        <span class="txt"><b>On failure — repair:</b> feed the exact gate failures (errors <em>and</em> warnings) back to the model and regenerate. Loop to step 01.</span>
+      </div>
+      <p class="loop-note">// the generator is swappable; the gates are fixed. deterministic tooling, not an LLM judge.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="label">03 · model-agnostic</div>
+      <h2>Works with the model you have</h2>
+      <p class="sec-sub">One <span class="mono">--provider</span> flag routes generation to whatever a developer can run — frontier API, cheap API, or a local model. The loop and gates are identical across all of them.</p>
+    </div>
+    <div class="grid4 reveal">
+      <div class="pcard"><div class="pv">claude</div><div class="pm">Anthropic</div><div class="pd">Sonnet / Opus via CLI</div></div>
+      <div class="pcard"><div class="pv">codex</div><div class="pm">OpenAI / GPT</div><div class="pd">gpt-5.5, effort-tunable</div></div>
+      <div class="pcard"><div class="pv">ollama</div><div class="pm">Local</div><div class="pd">Qwen, Llama, others — offline, free</div></div>
+      <div class="pcard"><div class="pv">gemini</div><div class="pm">Google</div><div class="pd">Flash via REST API</div></div>
+    </div>
+    <div class="flagline reveal">run_executor_repair_loop.py --provider <span class="fl">gemini</span> --model gemini-2.5-flash --profile runtime --max-repairs 3</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="label">04 · evidence</div>
+      <h2>Cross-tier results</h2>
+      <p class="sec-sub"><strong>Early, internal, n=1 fixture</strong> (a WordPress 7.0 Abilities-API plugin). "Iterations to green" = repair passes needed to reach the full runtime gate. A single observation per tier — directional, not a benchmark.</p>
+    </div>
+    <div class="tablewrap reveal">
+      <table>
+        <thead>
+          <tr><th>Model tier</th><th>Reached gate-clean?</th><th class="num">Iters&nbsp;to&nbsp;green</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="tier">gpt-5.5 <small>API · medium</small></td>
+            <td><span class="pill ok">yes</span></td>
+            <td class="num"><span class="barwrap"><span class="bar" style="width:22px"></span>1</span></td>
+            <td>failed only trivial metadata</td>
+          </tr>
+          <tr>
+            <td class="tier">gpt-5.5 <small>API · low effort</small></td>
+            <td><span class="pill ok">yes</span></td>
+            <td class="num"><span class="barwrap"><span class="bar" style="width:22px"></span>1</span></td>
+            <td>lowering effort was free</td>
+          </tr>
+          <tr>
+            <td class="tier">gemini flash <small>cheap API</small></td>
+            <td><span class="pill ok">yes</span></td>
+            <td class="num"><span class="barwrap"><span class="bar" style="width:44px"></span>2</span></td>
+            <td>converged after the feedback fix</td>
+          </tr>
+          <tr>
+            <td class="tier">qwen3.5 <small>local · 262K ctx</small></td>
+            <td><span class="pill incon">inconclusive</span></td>
+            <td class="num">&mdash;</td>
+            <td>timed out — 0 output / iteration</td>
+          </tr>
+          <tr>
+            <td class="tier">qwen2.5-coder:32b <small>local · q8</small></td>
+            <td><span class="pill no">no</span></td>
+            <td class="num">&mdash;</td>
+            <td>reliably reaches the runtime gate every repair iteration; the loop now absorbs transient gen timeouts (retry + last-good preservation), exposing the real ceiling — converges to a fixed-point packet that still fails real WPCS + Plugin&nbsp;Check</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="loop-note reveal" style="margin-top:14px">// num_ctx fixed truncation; retry + last-good preservation now absorb transient gen timeouts (latest run: 3 timeouts, 0 progress lost, 6/6 iterations certified). With the infra noise gone, the local 32B reliably reaches the runtime gate but plateaus there on real WPCS/Plugin-Check findings — a clean capability read at last.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="insight reveal">
+      <div class="q">The lever is <em>feedback quality</em>, not model size.</div>
+      <p class="a">Gemini flash stalled at the repair budget until the harness was fixed to feed it the specific WPCS <em>warnings</em> — not just errors. With honest feedback, the cheap model converged. The same lever moved the local coder further: once the gate told it <em>how</em> to satisfy each verification term (not just which was missing), the local 32B cleared the entire static contract and reached real WordPress runtime checks — WPCS and Plugin Check. Then making the loop resilient — retry timed-out generations, never discard the last-good packet — stripped out the infrastructure noise: across six iterations it now reaches the runtime gate every time, but converges to a fixed-point packet it cannot push past. The real ceiling is fixing genuine findings (1 WPCS error, 6 warnings, and a Plugin Check readme issue), not infra.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="label">05 · honest stance</div>
+      <h2>What it does — and where it stops</h2>
+    </div>
+    <div class="claims reveal">
+      <div class="col do">
+        <h3>What we claim</h3>
+        <ul>
+          <li>The loop gets a cheap <em>API</em> model to gate-clean WordPress code (gpt-5.5, gemini flash).</li>
+          <li>Output is WPCS-clean, Plugin Check-clean, and activates in WordPress 7.0.</li>
+          <li>It works across model tiers via one provider flag.</li>
+          <li>The harness, gates, and repair loop are the durable value.</li>
+        </ul>
+      </div>
+      <div class="col dont">
+        <h3>Where it stops</h3>
+        <ul>
+          <li>Prompt wording isn't the lever — personas match a strong baseline.</li>
+          <li>Local models reliably reach the runtime gate but plateau on real WPCS/Plugin-Check findings — a model-capability ceiling, not infra.</li>
+          <li>Evidence is n=1 — directional, not benchmark-grade.</li>
+          <li>Gates measure shippability, not deep behavioral correctness.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="label">06 · the market</div>
+      <h2>Built for developers without frontier tooling</h2>
+    </div>
+    <div class="callout reveal">
+      <p class="big">WordPress's Open Source nature means that we cannot assume that users will have access to, or opt to adopt, more expensive frontier models.</p>
+      <p style="margin-top:10px;color:var(--text-dim)">The point of this toolchain is that it doesn't require one: a cheap API model plus a deterministic gate and repair loop already ships code that passes real WordPress checks, and a local model runs the full pipeline into that same runtime tooling. The value travels down-market — which is where the market actually is.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="label">references</div>
+    <div class="links">
+      <a href="executor-gate-pass-experiment-2026-06-22.md">executor-gate-pass-experiment</a>
+      <a href="gepa-executor-spike-2026-06-22.md">gepa-executor-spike</a>
+      <a href="skill-improvement-research-2026-06-20.md">skill-improvement-research</a>
+      <a href="api-naming-coverage-closeout-2026-06-22.md">api-naming-coverage-closeout</a>
+      <a href="lifecycle.md">lifecycle</a>
+      <a href="runtime-oracle-runbook.md">runtime-oracle-runbook</a>
+    </div>
+    <p class="fineprint">Internal release-staging artifact. Evidence is early and n=1; broader benchmarking (more fixtures, a clean local-model run off a contended GPU, variance) is pending before any public performance claim. The repair-loop harness (<span class="mono">evals/harness/run_executor_repair_loop.py</span>) is model-agnostic and unit-tested; the deterministic gates are real WordPress tooling.</p>
+  </div>
+</footer>
+
+<script>
+  const io=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{threshold:.12});
+  document.querySelectorAll('.reveal').forEach((el,i)=>{el.style.transitionDelay=(Math.min(i,4)*60)+'ms';io.observe(el)});
+</script>
+</body>
+</html>

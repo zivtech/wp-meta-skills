@@ -1,0 +1,13 @@
+name: block-deprecation-silent-break
+suite: wordpress-skill-candidate-eval
+domain: Block development
+difficulty_tier: MIGRATION_SUBTLE
+provenance: synthetic
+primary_skill_targets:
+  - wordpress-critic
+expected_behavior:
+  - Identifies the block-validation break from a missing deprecated array
+  - Distinguishes the setting-migration from a real deprecation path
+  - Requires a deprecated entry rather than a post_content rewrite
+source_notes: Adversarial fixture (2026-06-19) — a shipped activation migration creates the false impression the breaking save() change is handled; the migration only updates a setting.
+scenario_summary: "A static block's v2 renames an attribute and changes saved markup with no deprecated entry; the shipped migration only updates a plugin setting."

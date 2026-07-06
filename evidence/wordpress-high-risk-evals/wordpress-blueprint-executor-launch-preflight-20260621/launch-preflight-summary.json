@@ -1,0 +1,89 @@
+{
+  "asset_root": null,
+  "audits": [
+    {
+      "blockers": [
+        "Blueprint references VFS resources, but the required local payload files are not present in the committed evidence bundle."
+      ],
+      "blueprint_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/block-theme-reproduction-v1/generated-blueprint/blueprint.json",
+      "fixture_id": "block-theme-reproduction-v1",
+      "landing_page": "/runtime-events-demo/",
+      "launch_method": "requires-vfs-payloads",
+      "launch_url": null,
+      "missing_vfs_payloads": [
+        "/wordpress/wp-content/uploads/acme-block-theme.zip",
+        "/wordpress/wp-content/uploads/acme-events-block.zip"
+      ],
+      "status": "blocked",
+      "steps_count": 6,
+      "vfs_references": [
+        {
+          "basename": "acme-block-theme.zip",
+          "json_path": "$.steps[1].themeData",
+          "local_candidate": null,
+          "local_exists": false,
+          "path": "/wordpress/wp-content/uploads/acme-block-theme.zip"
+        },
+        {
+          "basename": "acme-events-block.zip",
+          "json_path": "$.steps[2].pluginData",
+          "local_candidate": null,
+          "local_exists": false,
+          "path": "/wordpress/wp-content/uploads/acme-events-block.zip"
+        }
+      ]
+    },
+    {
+      "blockers": [
+        "Blueprint references VFS resources, but the required local payload files are not present in the committed evidence bundle."
+      ],
+      "blueprint_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/minimal-plugin-environment-v1/generated-blueprint/blueprint.json",
+      "fixture_id": "minimal-plugin-environment-v1",
+      "landing_page": "/wp-admin/admin.php?page=acme-notice-board",
+      "launch_method": "requires-vfs-payloads",
+      "launch_url": null,
+      "missing_vfs_payloads": [
+        "/wordpress/wp-content/uploads/acme-notice-board.zip"
+      ],
+      "status": "blocked",
+      "steps_count": 4,
+      "vfs_references": [
+        {
+          "basename": "acme-notice-board.zip",
+          "json_path": "$.steps[1].pluginData",
+          "local_candidate": null,
+          "local_exists": false,
+          "path": "/wordpress/wp-content/uploads/acme-notice-board.zip"
+        }
+      ]
+    },
+    {
+      "blockers": [
+        "Blueprint references VFS resources, but the required local payload files are not present in the committed evidence bundle."
+      ],
+      "blueprint_path": "evals/results/wordpress-blueprint-executor-static-cert-20260621/unsupported-feature-boundary-v1/generated-blueprint/blueprint.json",
+      "fixture_id": "unsupported-feature-boundary-v1",
+      "landing_page": "/wp-admin/options-general.php?page=acme-crm-sync",
+      "launch_method": "requires-vfs-payloads",
+      "launch_url": null,
+      "missing_vfs_payloads": [
+        "/wordpress/wp-content/uploads/acme-crm-sync.zip"
+      ],
+      "status": "blocked",
+      "steps_count": 5,
+      "vfs_references": [
+        {
+          "basename": "acme-crm-sync.zip",
+          "json_path": "$.steps[1].pluginData",
+          "local_candidate": null,
+          "local_exists": false,
+          "path": "/wordpress/wp-content/uploads/acme-crm-sync.zip"
+        }
+      ]
+    }
+  ],
+  "created_at": "2026-06-21T08:46:09Z",
+  "overall_status": "blocked",
+  "run_id": "wordpress-blueprint-executor-launch-preflight-20260621",
+  "static_run": "wordpress-blueprint-executor-static-cert-20260621"
+}

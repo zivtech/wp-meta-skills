@@ -1,0 +1,1 @@
+Generate the requested WordPress plugin implementation packet. Follow the fixture's output requirements exactly, produce complete materializable file contents, and do not claim verification commands were run unless they actually were.

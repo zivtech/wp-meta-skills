@@ -1,0 +1,36 @@
+fixture: block-theme-reproduction-v1
+skill_under_test: wordpress-blueprint-executor
+max_score: 10
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the exact wordpress-blueprint-executor headings and emits one valid fenced JSON object under Generated Blueprint.
+  - id: reproduction_fidelity
+    weight: 3
+    description: Preserves theme activation, plugin activation, sample page content, block attributes, permalink state, and landing page behavior.
+  - id: provenance_and_safety
+    weight: 2
+    description: Lists artifact sources, avoids credentials/private endpoints, and keeps explanation outside JSON.
+  - id: verification_specificity
+    weight: 2
+    description: Names packet, materializer, static artifact validation, Playground launch, frontend assertion, and editor/manual follow-up.
+  - id: calibration
+    weight: 1
+    description: Avoids claiming the bug is reproduced without a recorded Playground launch smoke.
+domain_signals:
+  expected_surfaces:
+    - "blueprint.json"
+    - "installTheme"
+    - "activateTheme"
+    - "installPlugin"
+    - "activatePlugin"
+    - "setSiteOptions"
+    - "block.json"
+  must_detect:
+    - "sample content must preserve block attributes"
+    - "permalink and landing URL are part of the repro"
+    - "static validation is not runtime reproduction"
+  must_not_claim:
+    - "frontend bug reproduction is proven"
+    - "editor behavior is proven"
+    - "production publishing"

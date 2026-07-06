@@ -1,0 +1,32 @@
+name: upload-filesystem-boundary-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: synthetic
+risk_class: upload_filesystem_boundary
+expected_wordpress_apis:
+  - "wp_handle_upload"
+  - "wp_check_filetype_and_ext"
+  - "wp_mkdir_p"
+  - "wp_normalize_path"
+  - "realpath"
+  - "plugin_dir_path"
+  - "current_user_can"
+  - "check_admin_referer"
+  - "sanitize_key"
+  - "wp_unslash"
+expected_verification_surfaces:
+  - "PHPUnit tests for rejected file types and traversal names"
+  - "manual or WP-CLI smoke for upload denial and allowed file import"
+  - "PHPCS/WPCS review of unslashed input and filesystem operations"
+must_detect:
+  - "trusting upload extension or wp_handle_upload() alone before include/copy"
+  - "missing capability check paired with nonce"
+  - "path traversal through template_name"
+  - "unsafe local include of uploaded file"
+  - "unsupported malware-scanning claim"
+negative_space:
+  - "does not prove antivirus scanning"
+  - "does not treat every admin upload as automatically exploitable"
+  - "does not cover hosting-level file execution policy"

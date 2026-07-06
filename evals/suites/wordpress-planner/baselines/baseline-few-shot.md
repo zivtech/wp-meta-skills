@@ -1,0 +1,1 @@
+Evaluate the WordPress task for wordpress-planner. Use a structured response with scope, WordPress-specific decisions, risks, verification, and open questions. Avoid unsafe production commands and unsupported claims.

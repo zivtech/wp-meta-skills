@@ -1,0 +1,15 @@
+name: block-theme-ambiguous
+suite: wordpress-skill-candidate-eval
+domain: Block themes and theme.json
+difficulty_tier: AMBIGUOUS_TRADEOFF
+provenance: synthetic
+primary_skill_targets:
+  - wordpress-planner
+  - wordpress-critic
+expected_behavior:
+  - WordPress-native routing and terminology
+  - Explicit assumptions and tradeoffs
+  - Security, performance, and rollout awareness proportional to risk
+  - No invented findings on clean controls
+source_notes: Designed from the 2026-06-16 WordPress candidate catalog and Zivtech V1 plan.
+scenario_summary: "A university network wants one parent block theme with school-specific style variations and occasional child-theme overrides."

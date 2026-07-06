@@ -1,0 +1,21 @@
+{
+  "asset_root": null,
+  "audits": [
+    {
+      "blockers": [],
+      "blueprint_path": "evals/results/wordpress-blueprint-executor-self-contained-static-cert-20260621/self-contained-plugin-launch-v1/generated-blueprint/blueprint.json",
+      "fixture_id": "self-contained-plugin-launch-v1",
+      "landing_page": "/wp-admin/admin.php?page=acme-inline-blueprint-smoke",
+      "launch_method": "url-fragment",
+      "launch_url": "https://playground.wordpress.net/#%7B%22%24schema%22%3A%22https%3A%2F%2Fplayground.wordpress.net%2Fblueprint-schema.json%22%2C%22features%22%3A%7B%22networking%22%3Afalse%7D%2C%22landingPage%22%3A%22%2Fwp-admin%2Fadmin.php%3Fpage%3Dacme-inline-blueprint-smoke%22%2C%22preferredVersions%22%3A%7B%22php%22%3A%228.2%22%2C%22wp%22%3A%22latest%22%7D%2C%22steps%22%3A%5B%7B%22step%22%3A%22login%22%2C%22username%22%3A%22admin%22%7D%2C%7B%22path%22%3A%22%2Fwordpress%2Fwp-content%2Fplugins%2Facme-inline-blueprint-smoke%22%2C%22step%22%3A%22mkdir%22%7D%2C%7B%22data%22%3A%22%3C%3Fphp%5Cn%2F%2A%2A%5Cn%20%2A%20Plugin%20Name%3A%20Acme%20Inline%20Blueprint%20Smoke%5Cn%20%2A%20Description%3A%20Disposable%20admin%20page%20for%20a%20self-contained%20WordPress%20Playground%20Blueprint%20smoke.%5Cn%20%2A%20Version%3A%200.1.0%5Cn%20%2A%20Author%3A%20Zivtech%5Cn%20%2A%20License%3A%20GPL-2.0-or-later%5Cn%20%2A%2F%5Cn%5Cnadd_action%28%20%27admin_menu%27%2C%20%27acme_inline_blueprint_smoke_menu%27%20%29%3B%5Cn%5Cnfunction%20acme_inline_blueprint_smoke_menu%28%29%20%7B%5Cn%5Ctadd_menu_page%28%5Cn%5Ct%5Ct%27Inline%20Blueprint%20Smoke%27%2C%5Cn%5Ct%5Ct%27Inline%20Blueprint%20Smoke%27%2C%5Cn%5Ct%5Ct%27manage_options%27%2C%5Cn%5Ct%5Ct%27acme-inline-blueprint-smoke%27%2C%5Cn%5Ct%5Ct%27acme_inline_blueprint_smoke_render%27%5Cn%5Ct%29%3B%5Cn%7D%5Cn%5Cnfunction%20acme_inline_blueprint_smoke_render%28%29%20%7B%5Cn%5Ctif%20%28%20%21%20current_user_can%28%20%27manage_options%27%20%29%20%29%20%7B%5Cn%5Ct%5Ctwp_die%28%20esc_html__%28%20%27You%20do%20not%20have%20permission%20to%20view%20this%20smoke%20page.%27%2C%20%27acme-inline-blueprint-smoke%27%20%29%20%29%3B%5Cn%5Ct%7D%5Cn%5Cn%5Ctecho%20%27%3Cdiv%20class%3D%5C%22wrap%5C%22%3E%3Ch1%3EInline%20Blueprint%20Smoke%20Ready%3C%2Fh1%3E%3Cp%3ESelf-contained%20Playground%20launch%20fixture%20loaded%20without%20VFS%20payloads.%3C%2Fp%3E%3C%2Fdiv%3E%27%3B%5Cn%7D%5Cn%22%2C%22path%22%3A%22%2Fwordpress%2Fwp-content%2Fplugins%2Facme-inline-blueprint-smoke%2Facme-inline-blueprint-smoke.php%22%2C%22step%22%3A%22writeFile%22%7D%2C%7B%22pluginName%22%3A%22Acme%20Inline%20Blueprint%20Smoke%22%2C%22pluginPath%22%3A%22acme-inline-blueprint-smoke%2Facme-inline-blueprint-smoke.php%22%2C%22step%22%3A%22activatePlugin%22%7D%2C%7B%22options%22%3A%7B%22blogname%22%3A%22Acme%20Inline%20Blueprint%20Smoke%22%7D%2C%22step%22%3A%22setSiteOptions%22%7D%5D%7D",
+      "missing_vfs_payloads": [],
+      "status": "ready_for_manual_launch",
+      "steps_count": 5,
+      "vfs_references": []
+    }
+  ],
+  "created_at": "2026-06-21T09:35:25Z",
+  "overall_status": "ready_for_manual_launch",
+  "run_id": "wordpress-blueprint-executor-self-contained-launch-preflight-20260621",
+  "static_run": "wordpress-blueprint-executor-self-contained-static-cert-20260621"
+}

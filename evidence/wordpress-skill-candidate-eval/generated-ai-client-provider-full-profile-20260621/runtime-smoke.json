@@ -1,0 +1,468 @@
+{
+  "ability_name": null,
+  "ability_smoke_status": "not_run",
+  "ai_client_expected_output": "AI Client smoke: deterministic provider response",
+  "ai_client_gate": {
+    "checks": [
+      {
+        "detail": "artifact declares a deterministic AI Client provider and helper",
+        "id": "ai_client_static_provider_surface",
+        "status": "pass"
+      },
+      {
+        "detail": "AI Client runtime command completed",
+        "id": "ai_client_command_completed",
+        "status": "pass"
+      },
+      {
+        "detail": "AI Client runtime command emitted JSON evidence",
+        "id": "ai_client_output_json",
+        "status": "pass"
+      },
+      {
+        "detail": "WordPress AI Client prompt and provider registry are available",
+        "id": "ai_client_core_available",
+        "status": "pass"
+      },
+      {
+        "detail": "provider acme-ai-client-smoke is registered",
+        "id": "ai_client_provider_registered",
+        "status": "pass"
+      },
+      {
+        "detail": "provider acme-ai-client-smoke is configured",
+        "id": "ai_client_provider_configured",
+        "status": "pass"
+      },
+      {
+        "detail": "connector acme-ai-client-smoke is registered",
+        "id": "ai_client_connector_registered",
+        "status": "pass"
+      },
+      {
+        "detail": "helper AcmeAIClientSmoke\\generate_summary returned expected provider output",
+        "id": "ai_client_provider_output",
+        "status": "pass"
+      }
+    ],
+    "evidence": {
+      "ai_client_registry": true,
+      "connector_registered": true,
+      "helper_function": "AcmeAIClientSmoke\\generate_summary",
+      "model_id": "acme-deterministic-text",
+      "output": "AI Client smoke: deterministic provider response",
+      "provider_configured": true,
+      "provider_id": "acme-ai-client-smoke",
+      "provider_registered": true,
+      "wp_ai_client_prompt": true
+    },
+    "expected_output": "AI Client smoke: deterministic provider response",
+    "helper_function": "AcmeAIClientSmoke\\generate_summary",
+    "model_id": "acme-deterministic-text",
+    "pass": true,
+    "provider_id": "acme-ai-client-smoke",
+    "status": "pass"
+  },
+  "ai_client_helper_function": "AcmeAIClientSmoke\\generate_summary",
+  "ai_client_model_id": "acme-deterministic-text",
+  "ai_client_prompt": "Runtime AI Client smoke",
+  "ai_client_provider_id": "acme-ai-client-smoke",
+  "ai_client_smoke_requested": true,
+  "ai_client_smoke_status": "pass",
+  "ai_client_static_gate": {
+    "artifact_path": "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c/acme-ai-client-smoke",
+    "checks": [
+      {
+        "detail": "artifact names AI Client provider acme-ai-client-smoke",
+        "id": "ai_client_provider_id",
+        "status": "pass"
+      },
+      {
+        "detail": "artifact names AI Client model acme-deterministic-text",
+        "id": "ai_client_model_id",
+        "status": "pass"
+      },
+      {
+        "detail": "artifact calls wp_ai_client_prompt() through using_model_preference() and generate_text()",
+        "id": "ai_client_prompt_helper",
+        "status": "pass"
+      },
+      {
+        "detail": "AI Client call handles WP_Error and has a capability or prompt-prevention boundary",
+        "id": "ai_client_error_boundary",
+        "status": "pass"
+      },
+      {
+        "detail": "artifact registers a provider through AiClient::defaultRegistry()->registerProvider()",
+        "id": "ai_client_provider_registered",
+        "status": "pass"
+      },
+      {
+        "detail": "artifact implements ProviderInterface and TextGenerationModelInterface",
+        "id": "ai_client_provider_interfaces",
+        "status": "pass"
+      },
+      {
+        "detail": "artifact defines helper function AcmeAIClientSmoke\\generate_summary",
+        "id": "ai_client_helper_function",
+        "status": "pass"
+      }
+    ],
+    "helper_function": "AcmeAIClientSmoke\\generate_summary",
+    "model_id": "acme-deterministic-text",
+    "pass": true,
+    "provider_id": "acme-ai-client-smoke",
+    "status": "pass"
+  },
+  "artifact_kind": "plugin",
+  "artifact_path": "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c/acme-ai-client-smoke",
+  "block_build_gate": null,
+  "block_build_smoke_requested": false,
+  "block_build_smoke_status": "not_run",
+  "block_deprecation_smoke_requested": false,
+  "block_deprecation_smoke_status": "not_run",
+  "block_deprecation_static_gate": null,
+  "block_gate": null,
+  "block_name": null,
+  "block_smoke_status": "not_run",
+  "commands": {
+    "ability_smoke": null,
+    "activation": {
+      "command": [
+        "<user-home>/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "plugin",
+        "activate",
+        "acme-ai-client-smoke"
+      ],
+      "cwd": "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c",
+      "duration_sec": 1.196,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp plugin activate acme-ai-client-smoke' on the cli container. \n\nWarning: Plugin 'acme-ai-client-smoke' is already active.\n\u2714 Ran `wp plugin activate acme-ai-client-smoke` in 'cli'. (in 0s 479ms)\n",
+      "stdout": "Success: Plugin already activated.\n"
+    },
+    "ai_client_call": {
+      "command": [
+        "<user-home>/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "--user=admin",
+        "eval",
+        "\n$result = array(\n    'provider_id'             => \"acme-ai-client-smoke\",\n    'model_id'                => \"acme-deterministic-text\",\n    'helper_function'         => \"AcmeAIClientSmoke\\\\generate_summary\",\n    'wp_ai_client_prompt'     => function_exists( 'wp_ai_client_prompt' ),\n    'ai_client_registry'      => class_exists( 'WordPress\\\\AiClient\\\\AiClient' ),\n    'provider_registered'     => false,\n    'provider_configured'     => false,\n    'connector_registered'    => null,\n    'output'                  => null,\n);\nif ( ! $result['wp_ai_client_prompt'] || ! $result['ai_client_registry'] ) {\n    echo wp_json_encode( $result );\n    exit( 12 );\n}\n$registry = WordPress\\AiClient\\AiClient::defaultRegistry();\n$result['provider_registered'] = $registry->hasProvider( \"acme-ai-client-smoke\" );\n$result['provider_configured'] = $registry->isProviderConfigured( \"acme-ai-client-smoke\" );\nif ( function_exists( 'wp_is_connector_registered' ) ) {\n    $result['connector_registered'] = wp_is_connector_registered( \"acme-ai-client-smoke\" );\n}\nif ( ! function_exists( \"AcmeAIClientSmoke\\\\generate_summary\" ) ) {\n    $result['helper_missing'] = true;\n    echo wp_json_encode( $result );\n    exit( 13 );\n}\n$output = call_user_func( \"AcmeAIClientSmoke\\\\generate_summary\", \"Runtime AI Client smoke\" );\nif ( is_wp_error( $output ) ) {\n    $result['wp_error_code']    = $output->get_error_code();\n    $result['wp_error_message'] = $output->get_error_message();\n    echo wp_json_encode( $result );\n    exit( 14 );\n}\n$result['output'] = (string) $output;\necho wp_json_encode( $result );\n"
+      ],
+      "cwd": "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c",
+      "duration_sec": 1.24,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp --user=admin eval \n$result = array(\n    'provider_id'             => \"acme-ai-client-smoke\",\n    'model_id'                => \"acme-deterministic-text\",\n    'helper_function'         => \"AcmeAIClientSmoke\\\\generate_summary\",\n    'wp_ai_client_prompt'     => function_exists( 'wp_ai_client_prompt' ),\n    'ai_client_registry'      => class_exists( 'WordPress\\\\AiClient\\\\AiClient' ),\n    'provider_registered'     => false,\n    'provider_configured'     => false,\n    'connector_registered'    => null,\n    'output'                  => null,\n);\nif ( ! $result['wp_ai_client_prompt'] || ! $result['ai_client_registry'] ) {\n    echo wp_json_encode( $result );\n    exit( 12 );\n}\n$registry = WordPress\\AiClient\\AiClient::defaultRegistry();\n$result['provider_registered'] = $registry->hasProvider( \"acme-ai-client-smoke\" );\n$result['provider_configured'] = $registry->isProviderConfigured( \"acme-ai-client-smoke\" );\nif ( function_exists( 'wp_is_connector_registered' ) ) {\n    $result['connector_registered'] = wp_is_connector_registered( \"acme-ai-client-smoke\" );\n}\nif ( ! function_exists( \"AcmeAIClientSmoke\\\\generate_summary\" ) ) {\n    $result['helper_missing'] = true;\n    echo wp_json_encode( $result );\n    exit( 13 );\n}\n$output = call_user_func( \"AcmeAIClientSmoke\\\\generate_summary\", \"Runtime AI Client smoke\" );\nif ( is_wp_error( $output ) ) {\n    $result['wp_error_code']    = $output->get_error_code();\n    $result['wp_error_message'] = $output->get_error_message();\n    echo wp_json_encode( $result );\n    exit( 14 );\n}\n$result['output'] = (string) $output;\necho wp_json_encode( $result );\n' on the cli container. \n\n\u2714 Ran `wp --user=admin eval \n$result = array(\n    'provider_id'             => \"acme-ai-client-smoke\",\n    'model_id'                => \"acme-deterministic-text\",\n    'helper_function'         => \"AcmeAIClientSmoke\\\\generate_summary\",\n    'wp_ai_client_prompt'     => function_exists( 'wp_ai_client_prompt' ),\n    'ai_client_registry'      => class_exists( 'WordPress\\\\AiClient\\\\AiClient' ),\n    'provider_registered'     => false,\n    'provider_configured'     => false,\n    'connector_registered'    => null,\n    'output'                  => null,\n);\nif ( ! $result['wp_ai_client_prompt'] || ! $result['ai_client_registry'] ) {\n    echo wp_json_encode( $result );\n    exit( 12 );\n}\n$registry = WordPress\\AiClient\\AiClient::defaultRegistry();\n$result['provider_registered'] = $registry->hasProvider( \"acme-ai-client-smoke\" );\n$result['provider_configured'] = $registry->isProviderConfigured( \"acme-ai-client-smoke\" );\nif ( function_exists( 'wp_is_connector_registered' ) ) {\n    $result['connector_registered'] = wp_is_connector_registered( \"acme-ai-client-smoke\" );\n}\nif ( ! function_exists( \"AcmeAIClientSmoke\\\\generate_summary\" ) ) {\n    $result['helper_missing'] = true;\n    echo wp_json_encode( $result );\n    exit( 13 );\n}\n$output = call_user_func( \"AcmeAIClientSmoke\\\\generate_summary\", \"Runtime AI Client smoke\" );\nif ( is_wp_error( $output ) ) {\n    $result['wp_error_code']    = $output->get_error_code();\n    $result['wp_error_message'] = $output->get_error_message();\n    echo wp_json_encode( $result );\n    exit( 14 );\n}\n$result['output'] = (string) $output;\necho wp_json_encode( $result );\n` in 'cli'. (in 0s 495ms)\n",
+      "stdout": "{\"provider_id\":\"acme-ai-client-smoke\",\"model_id\":\"acme-deterministic-text\",\"helper_function\":\"AcmeAIClientSmoke\\\\generate_summary\",\"wp_ai_client_prompt\":true,\"ai_client_registry\":true,\"provider_registered\":true,\"provider_configured\":true,\"connector_registered\":true,\"output\":\"AI Client smoke: deterministic provider response\"}"
+    },
+    "block_deprecation_post": null,
+    "block_smoke": null,
+    "editor_smoke": null,
+    "mcp_adapter_discover": null,
+    "mcp_adapter_execute": null,
+    "mcp_adapter_install": null,
+    "mcp_adapter_list": null,
+    "mcp_adapter_tools_list": null,
+    "start": {
+      "command": [
+        "<user-home>/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "start",
+        "--auto-port"
+      ],
+      "cwd": "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c",
+      "duration_sec": 30.132,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\nWordPress development site started at http://localhost:8893\nMySQL is listening on port 32849\n\n \u2714 Done! (in 28s 984ms)\n",
+      "stdout": ""
+    },
+    "stop": {
+      "command": [
+        "<user-home>/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "stop"
+      ],
+      "cwd": "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c",
+      "duration_sec": 12.949,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2714 Stopped WordPress. (in 12s 316ms)\n",
+      "stdout": ""
+    }
+  },
+  "editor_insert_render_smoke_requested": false,
+  "editor_smoke_requested": false,
+  "editor_smoke_status": "not_run",
+  "execute_post_summary_ability": false,
+  "fixture_kind": "plugin",
+  "fixture_retained": false,
+  "fixture_root": "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c",
+  "full_plugin_runtime_profile": {
+    "artifact_path": "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c/acme-ai-client-smoke",
+    "artifact_type": "plugin",
+    "checks": [
+      {
+        "command": null,
+        "detail": "path exists: <runtime-scratch>/wp-ai-client-runtime-smoke-20260621c/acme-ai-client-smoke",
+        "id": "artifact_path",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no banned destructive command patterns found",
+        "id": "unsafe_commands",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no long secret-like assignments found",
+        "id": "hardcoded_secrets",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "plugin header found in <runtime-scratch>/wp-ai-client-runtime-smoke-20260621c/acme-ai-client-smoke/acme-ai-client-smoke.php",
+        "id": "plugin_header",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "PHP files satisfy cheap WPCS shape checks",
+        "id": "php_wpcs_shape_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "admin, REST, AJAX, and SQL heuristics passed",
+        "id": "plugin_security_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "Abilities, MCP Adapter, and AI Client heuristics passed",
+        "id": "plugin_ai_surface_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "php -l passed for 5 PHP file(s)",
+        "id": "php_lint",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": [
+          "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c/vendor/bin/phpcs",
+          "--standard=WordPress",
+          "--extensions=php",
+          "--ignore=*.asset.php,*/node_modules/*,*/vendor/*",
+          "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c/acme-ai-client-smoke"
+        ],
+        "detail": "exit 0",
+        "id": "phpcs_wpcs",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": [
+          "<user-home>/.nvm/versions/node/v24.13.0/bin/npx",
+          "--yes",
+          "@wordpress/env",
+          "run",
+          "cli",
+          "--",
+          "wp",
+          "plugin",
+          "check",
+          "acme-ai-client-smoke",
+          "--require=./wp-content/plugins/plugin-check/cli.php"
+        ],
+        "detail": "exit 0; stdout: Success: Checks complete. No errors found.; stderr: npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp plugin check acme-ai-client-smoke --require=./wp-content/plugins/plugin-check/cli.php' on the cli container. \n\n\u2714 Ran `wp plugin check acme-ai-client-smoke --require=./wp-content/plugins/plugin-check/cli.php` in 'cli'. (in 1s 321ms)",
+        "id": "plugin_check",
+        "required": true,
+        "status": "pass"
+      }
+    ],
+    "pass": true,
+    "profile": "runtime",
+    "required_tools": [],
+    "runtime_roots": {
+      "wp_env_root": "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c",
+      "wp_root": null
+    },
+    "status": "pass"
+  },
+  "generated_at": "2026-06-20T23:24:18",
+  "interactivity_smoke_requested": false,
+  "interactivity_smoke_status": "not_run",
+  "interactivity_static_gate": null,
+  "mcp_adapter_execute_args": {},
+  "mcp_adapter_expected_output": null,
+  "mcp_adapter_gate": null,
+  "mcp_adapter_smoke_requested": false,
+  "mcp_adapter_smoke_status": "not_run",
+  "mcp_adapter_static_gate": null,
+  "narrow_gate": {
+    "artifact_path": "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c/acme-ai-client-smoke",
+    "artifact_type": "plugin",
+    "checks": [
+      {
+        "command": null,
+        "detail": "path exists: <runtime-scratch>/wp-ai-client-runtime-smoke-20260621c/acme-ai-client-smoke",
+        "id": "artifact_path",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no banned destructive command patterns found",
+        "id": "unsafe_commands",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no long secret-like assignments found",
+        "id": "hardcoded_secrets",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "plugin header found in <runtime-scratch>/wp-ai-client-runtime-smoke-20260621c/acme-ai-client-smoke/acme-ai-client-smoke.php",
+        "id": "plugin_header",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "PHP files satisfy cheap WPCS shape checks",
+        "id": "php_wpcs_shape_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "admin, REST, AJAX, and SQL heuristics passed",
+        "id": "plugin_security_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "Abilities, MCP Adapter, and AI Client heuristics passed",
+        "id": "plugin_ai_surface_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "php -l passed for 5 PHP file(s)",
+        "id": "php_lint",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": [
+          "<user-home>/.nvm/versions/node/v24.13.0/bin/npx",
+          "--yes",
+          "@wordpress/env",
+          "run",
+          "cli",
+          "--",
+          "wp",
+          "core",
+          "version"
+        ],
+        "detail": "exit 0; stdout: 7.0; stderr: npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp core version' on the cli container. \n\n\u2714 Ran `wp core version` in 'cli'. (in 0s 352ms)",
+        "id": "wp_env_smoke",
+        "required": true,
+        "status": "pass"
+      }
+    ],
+    "pass": true,
+    "profile": "static",
+    "required_tools": [
+      "php-lint",
+      "wp-env"
+    ],
+    "runtime_roots": {
+      "wp_env_root": "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c",
+      "wp_root": null
+    },
+    "status": "pass"
+  },
+  "negative_space": [
+    "not PHPUnit proof",
+    "not block validation proof",
+    "not editor or browser smoke proof",
+    "not Abilities API registration proof",
+    "not Abilities API execution proof",
+    "not block runtime registration proof",
+    "not MCP Adapter runtime proof"
+  ],
+  "npx": "<user-home>/.nvm/versions/node/v24.13.0/bin/npx",
+  "pass": true,
+  "phpunit_gate": null,
+  "phpunit_smoke_requested": false,
+  "phpunit_smoke_status": "not_run",
+  "provision_full_profile": true,
+  "provisioning": {
+    "composer_install": {
+      "command": [
+        "/opt/homebrew/bin/composer",
+        "install",
+        "--no-interaction",
+        "--no-progress",
+        "--quiet"
+      ],
+      "cwd": "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c",
+      "duration_sec": 2.361,
+      "returncode": 0,
+      "stderr": "",
+      "stdout": ""
+    },
+    "plugin_check_install": {
+      "command": [
+        "<user-home>/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "plugin",
+        "install",
+        "plugin-check",
+        "--activate"
+      ],
+      "cwd": "<runtime-scratch>/wp-ai-client-runtime-smoke-20260621c",
+      "duration_sec": 4.225,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp plugin install plugin-check --activate' on the cli container. \n\n\u2714 Ran `wp plugin install plugin-check --activate` in 'cli'. (in 3s 447ms)\n",
+      "stdout": "Installing Plugin Check (PCP) (2.0.0)\nDownloading installation package from https://downloads.wordpress.org/plugin/plugin-check.2.0.0.zip...\nUnpacking the package...\nInstalling the plugin...\nPlugin installed successfully.\nActivating 'plugin-check'...\nPlugin 'plugin-check' activated.\nSuccess: Installed 1 of 1 plugins.\n"
+    }
+  },
+  "source_artifact_path": "/path/to/zivtech-meta-skills/evals/results/wordpress-skill-candidate-eval/generated-ai-client-provider-artifact-cert-20260621/generated-plugin/acme-ai-client-smoke",
+  "status": "pass",
+  "strict_full_profile": false,
+  "wrapped_block_artifact": null
+}

@@ -1,0 +1,62 @@
+skill:
+  name: wordpress-block-executor
+  type: executor
+  status: experimental-smoke
+
+fixtures:
+  directory: ./fixtures
+  count: 1
+  pattern: "*.md"
+  metadata_suffix: ".metadata.yaml"
+
+rubrics:
+  directory: ./rubrics
+  scoring_method: quality_weighted
+
+baselines:
+  directory: ./baselines
+  conditions:
+    - baseline-zero-shot
+    - baseline-few-shot
+
+evaluation:
+  status: smoke_scaffold_only
+  full_run_status: blocked_until_candidate_eval_and_test_critic_review
+
+invocation:
+  model: sonnet
+  effort: low
+  baseline_provider: codex
+  baseline_model_policy: newest-chatgpt-level-at-run-time
+  baseline_model: gpt-5.5
+  baseline_effort: medium
+  note: "Skill-agent invocation still uses the local Claude CLI because the WordPress skill packages are Claude-agent surfaces. Baseline lanes default to the newest ChatGPT-level local Codex CLI (`codex exec --model gpt-5.5`) so Sonnet is no longer the default baseline."
+
+output_contract_oracle:
+  type: deterministic_wordpress_skill_output_contract
+  command: "python3 evals/harness/validate_wordpress_skill_output.py --skill wordpress-block-executor --output <candidate-output.md>"
+  status: available
+
+oracle:
+  type: deterministic_executor_packet_contract
+  command: "python3 evals/harness/validate_wordpress_executor_packet.py --executor block --packet <candidate-output.md>"
+  status: available
+
+materializer:
+  type: deterministic_executor_packet_materializer
+  command: "python3 evals/harness/materialize_wordpress_executor_packet.py --executor block --packet <candidate-output.md> --out-dir <generated-block-dir>"
+  status: available
+
+certifier:
+  type: deterministic_executor_artifact_certification
+  command: "python3 evals/harness/certify_wordpress_executor_artifact.py --executor block --packet <candidate-output.md> --out-dir <generated-block-dir> --result-dir <result-dir> --overwrite"
+  status: available
+
+artifact_oracle:
+  type: deterministic_wordpress_artifact_static
+  command: "python3 evals/harness/validate_wordpress_artifact.py --artifact-type block --path <generated-block-dir>"
+  status: available
+  runtime_command: "python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --block-build-smoke --editor-insert-render-smoke --provision-full-profile --write --run-id <run-id> --timeout-sec 300"
+  interactivity_runtime_command: "python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --block-build-smoke --editor-insert-render-smoke --interactivity-smoke --provision-full-profile --write --run-id <run-id> --timeout-sec 300"
+  deprecation_runtime_command: "python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --block-build-smoke --deprecation-smoke --provision-full-profile --write --run-id <run-id> --timeout-sec 300"
+  runtime_status: environment_dependent

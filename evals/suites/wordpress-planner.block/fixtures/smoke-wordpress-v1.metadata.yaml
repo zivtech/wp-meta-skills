@@ -1,0 +1,11 @@
+name: smoke-wordpress-v1
+suite: wordpress-planner.block
+skill_under_test: wordpress-planner.block
+skill_type: planner
+difficulty_tier: smoke
+provenance: synthetic
+expected_behavior:
+  - Uses the required output contract
+  - Applies WordPress-native gates
+  - Separates evidence from assumptions
+  - Provides specific verification or review handoff

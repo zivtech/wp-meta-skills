@@ -1,0 +1,44 @@
+{
+  "$schema": "https://playground.wordpress.net/blueprint-schema.json",
+  "extraLibraries": [
+    "wp-cli"
+  ],
+  "features": {
+    "networking": false
+  },
+  "landingPage": "/wp-admin/options-general.php?page=acme-crm-sync",
+  "preferredVersions": {
+    "php": "8.2",
+    "wp": "latest"
+  },
+  "steps": [
+    {
+      "step": "login",
+      "username": "admin"
+    },
+    {
+      "options": {
+        "activate": true
+      },
+      "pluginData": {
+        "path": "/wordpress/wp-content/uploads/acme-crm-sync.zip",
+        "resource": "vfs"
+      },
+      "step": "installPlugin"
+    },
+    {
+      "command": "wp option update acme_crm_sync_mode playground-mock-required",
+      "step": "wp-cli"
+    },
+    {
+      "command": "wp option update acme_crm_sync_webhook_status unsupported-in-disposable-playground",
+      "step": "wp-cli"
+    },
+    {
+      "options": {
+        "blogname": "Acme CRM Sync Boundary Smoke"
+      },
+      "step": "setSiteOptions"
+    }
+  ]
+}

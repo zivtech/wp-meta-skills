@@ -1,0 +1,558 @@
+{
+  "ability_name": null,
+  "ability_smoke_status": "not_run",
+  "artifact_kind": "block",
+  "artifact_path": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter",
+  "block_build_gate": {
+    "artifact_path": "/private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter/generated",
+    "artifact_type": "block",
+    "checks": [
+      {
+        "command": null,
+        "detail": "path exists: /private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter/generated",
+        "id": "artifact_path",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no banned destructive command patterns found",
+        "id": "unsafe_commands",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no long secret-like assignments found",
+        "id": "hardcoded_secrets",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "1 block.json file(s) parsed with required keys",
+        "id": "block_metadata",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "server registration or build scripts present",
+        "id": "block_registration",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": [
+          "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npm",
+          "run",
+          "build"
+        ],
+        "detail": "exit 0; stdout: > build\n> wp-scripts build --source-path=blocks/interactive-counter --output-path=blocks/interactive-counter/build --experimental-modules\n\nassets by path *.php 1 KiB\n  asset render.php 908 bytes [emitted] [from: blocks/interactive-counter/render.php] [copied]\n  asset index.asset.php 120 bytes [emitted] (name: index)\nasset block.json 422 bytes [emitted] [from: blocks/interactive-counter/block.json] [copied]\nasset index.js 249 bytes [emitted] [minimized] (name: index)\nEntrypoint index 369 bytes = ; stderr: npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.",
+        "id": "npm_build",
+        "required": true,
+        "status": "pass"
+      }
+    ],
+    "pass": true,
+    "profile": "static",
+    "required_tools": [
+      "npm-build"
+    ],
+    "runtime_roots": {
+      "wp_env_root": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998",
+      "wp_root": null
+    },
+    "status": "pass"
+  },
+  "block_build_smoke_requested": true,
+  "block_build_smoke_status": "pass",
+  "block_gate": {
+    "artifact_path": "evals/results/wordpress-skill-candidate-eval/generated-block-interactivity-artifact-cert-20260621/generated-block",
+    "artifact_type": "block",
+    "checks": [
+      {
+        "command": null,
+        "detail": "path exists: evals/results/wordpress-skill-candidate-eval/generated-block-interactivity-artifact-cert-20260621/generated-block",
+        "id": "artifact_path",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no banned destructive command patterns found",
+        "id": "unsafe_commands",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no long secret-like assignments found",
+        "id": "hardcoded_secrets",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "1 block.json file(s) parsed with required keys",
+        "id": "block_metadata",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "server registration or build scripts present",
+        "id": "block_registration",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": [
+          "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+          "--yes",
+          "@wordpress/env",
+          "run",
+          "cli",
+          "--",
+          "wp",
+          "core",
+          "version"
+        ],
+        "detail": "exit 0; stdout: 7.0; stderr: npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp core version' on the cli container. \n\n\u2714 Ran `wp core version` in 'cli'. (in 0s 368ms)",
+        "id": "wp_env_smoke",
+        "required": true,
+        "status": "pass"
+      }
+    ],
+    "pass": true,
+    "profile": "static",
+    "required_tools": [
+      "wp-env"
+    ],
+    "runtime_roots": {
+      "wp_env_root": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998",
+      "wp_root": null
+    },
+    "status": "pass"
+  },
+  "block_name": "acme/interactive-counter",
+  "block_smoke_status": "pass",
+  "commands": {
+    "ability_smoke": null,
+    "activation": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "plugin",
+        "activate",
+        "acme-interactive-counter"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998",
+      "duration_sec": 1.531,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp plugin activate acme-interactive-counter' on the cli container. \n\nWarning: Plugin 'acme-interactive-counter' is already active.\n\u2714 Ran `wp plugin activate acme-interactive-counter` in 'cli'. (in 0s 578ms)\n",
+      "stdout": "Success: Plugin already activated.\n"
+    },
+    "block_smoke": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "eval",
+        "\n$registry = WP_Block_Type_Registry::get_instance();\n$block = $registry->get_registered( \"acme/interactive-counter\" );\nif ( ! $block ) {\n    fwrite( STDERR, 'block not registered: acme/interactive-counter' );\n    exit( 4 );\n}\necho wp_json_encode(\n    array(\n        'name'       => $block->name,\n        'title'      => $block->title,\n        'category'   => $block->category,\n        'renderable' => is_callable( $block->render_callback ),\n    )\n);\n"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998",
+      "duration_sec": 1.176,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp eval \n$registry = WP_Block_Type_Registry::get_instance();\n$block = $registry->get_registered( \"acme/interactive-counter\" );\nif ( ! $block ) {\n    fwrite( STDERR, 'block not registered: acme/interactive-counter' );\n    exit( 4 );\n}\necho wp_json_encode(\n    array(\n        'name'       => $block->name,\n        'title'      => $block->title,\n        'category'   => $block->category,\n        'renderable' => is_callable( $block->render_callback ),\n    )\n);\n' on the cli container. \n\n\u2714 Ran `wp eval \n$registry = WP_Block_Type_Registry::get_instance();\n$block = $registry->get_registered( \"acme/interactive-counter\" );\nif ( ! $block ) {\n    fwrite( STDERR, 'block not registered: acme/interactive-counter' );\n    exit( 4 );\n}\necho wp_json_encode(\n    array(\n        'name'       => $block->name,\n        'title'      => $block->title,\n        'category'   => $block->category,\n        'renderable' => is_callable( $block->render_callback ),\n    )\n);\n` in 'cli'. (in 0s 479ms)\n",
+      "stdout": "{\"name\":\"acme\\/interactive-counter\",\"title\":\"Interactive Counter\",\"category\":\"widgets\",\"renderable\":true}"
+    },
+    "editor_smoke": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/node",
+        "/path/to/zivtech-meta-skills/evals/harness/run_wordpress_editor_smoke.js",
+        "--url",
+        "http://localhost:8893",
+        "--block-name",
+        "acme/interactive-counter",
+        "--timeout-ms",
+        "300000",
+        "--insert-render-smoke",
+        "--interactivity-smoke"
+      ],
+      "cwd": "/path/to/zivtech-meta-skills",
+      "duration_sec": 3.913,
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "{\n  \"status\": \"pass\",\n  \"browser\": \"playwright-default\",\n  \"url\": \"http://localhost:8893\",\n  \"blockName\": \"acme/interactive-counter\",\n  \"block\": {\n    \"name\": \"acme/interactive-counter\",\n    \"title\": \"Interactive Counter\",\n    \"category\": \"widgets\",\n    \"icon\": \"object\"\n  },\n  \"body\": {\n    \"title\": \"Add Post \u2039 wp-meta-skills-runtime-smoke-rcoua998 \u2014 WordPress\",\n    \"bodyTextLength\": 407,\n    \"hasEditorRoot\": true\n  },\n  \"insertRenderSmoke\": true,\n  \"interactivitySmoke\": true,\n  \"interaction\": {\n    \"didSaveFail\": false,\n    \"inserted\": true,\n    \"permalink\": \"http://localhost:8893/2026/06/21/runtime-block-smoke-1782008165281/\",\n    \"postId\": 5,\n    \"savedTitle\": \"Runtime Block Smoke 1782008165281\",\n    \"serializedBlockCount\": 1,\n    \"title\": \"Runtime Block Smoke 1782008165281\",\n    \"frontendTitle\": \"Runtime Block Smoke 1782008165281 \u2013 wp-meta-skills-runtime-smoke-rcoua998\",\n    \"frontendUrl\": \"http://localhost:8893/2026/06/21/runtime-block-smoke-1782008165281/\",\n    \"frontendTextFound\": true,\n    \"wrapperClass\": \"wp-block-acme-interactive-counter\",\n    \"wrapperText\": \"Runtime block smoke\\n\\nInteractive count: 0\\n\\nIncrement\",\n    \"interactivity\": {\n      \"interactiveRootFound\": true,\n      \"beforeText\": \"0\",\n      \"afterText\": \"1\",\n      \"clickChangedText\": true\n    }\n  },\n  \"stages\": [\n    {\n      \"name\": \"launch_browser\",\n      \"status\": \"pass\",\n      \"durationMs\": 330\n    },\n    {\n      \"name\": \"new_page\",\n      \"status\": \"pass\",\n      \"durationMs\": 109\n    },\n    {\n      \"name\": \"open_login\",\n      \"status\": \"pass\",\n      \"durationMs\": 837\n    },\n    {\n      \"name\": \"fill_login\",\n      \"status\": \"pass\",\n      \"durationMs\": 39\n    },\n    {\n      \"name\": \"submit_login\",\n      \"status\": \"pass\",\n      \"durationMs\": 1163\n    },\n    {\n      \"name\": \"open_post_editor\",\n      \"status\": \"pass\",\n      \"durationMs\": 372\n    },\n    {\n      \"name\": \"wait_for_block_registry\",\n      \"status\": \"pass\",\n      \"durationMs\": 182\n    },\n    {\n      \"name\": \"wait_for_target_block\",\n      \"status\": \"pass\",\n      \"durationMs\": 92\n    },\n    {\n      \"name\": \"wait_for_editor_store\",\n      \"status\": \"pass\",\n      \"durationMs\": 81\n    },\n    {\n      \"name\": \"read_block_metadata\",\n      \"status\": \"pass\",\n      \"durationMs\": 62\n    },\n    {\n      \"name\": \"read_editor_body\",\n      \"status\": \"pass\",\n      \"durationMs\": 9\n    },\n    {\n      \"name\": \"insert_save_frontend_render\",\n      \"status\": \"pass\",\n      \"durationMs\": 358\n    }\n  ],\n  \"pageErrors\": [],\n  \"consoleErrors\": [],\n  \"errors\": []\n}\n"
+    },
+    "start": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "start",
+        "--auto-port"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998",
+      "duration_sec": 31.26,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\nWordPress development site started at http://localhost:8893\nMySQL is listening on port 32835\n\n \u2714 Done! (in 30s 24ms)\n",
+      "stdout": ""
+    },
+    "stop": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "stop"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998",
+      "duration_sec": 13.276,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2714 Stopped WordPress. (in 12s 420ms)\n",
+      "stdout": ""
+    }
+  },
+  "editor_insert_render_smoke_requested": true,
+  "editor_smoke_requested": true,
+  "editor_smoke_status": "pass",
+  "execute_post_summary_ability": false,
+  "fixture_kind": "plugin",
+  "fixture_retained": false,
+  "fixture_root": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998",
+  "full_plugin_runtime_profile": {
+    "artifact_path": "/private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter",
+    "artifact_type": "plugin",
+    "checks": [
+      {
+        "command": null,
+        "detail": "path exists: /private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter",
+        "id": "artifact_path",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no banned destructive command patterns found",
+        "id": "unsafe_commands",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no long secret-like assignments found",
+        "id": "hardcoded_secrets",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "plugin header found in /private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter/acme-interactive-counter.php",
+        "id": "plugin_header",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "PHP files satisfy cheap WPCS shape checks",
+        "id": "php_wpcs_shape_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "admin, REST, AJAX, and SQL heuristics passed",
+        "id": "plugin_security_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "Abilities, MCP Adapter, and AI Client heuristics passed",
+        "id": "plugin_ai_surface_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "php -l passed for 3 PHP file(s)",
+        "id": "php_lint",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": [
+          "/private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/vendor/bin/phpcs",
+          "--standard=WordPress",
+          "--extensions=php",
+          "--ignore=*.asset.php,*/node_modules/*,*/vendor/*",
+          "/private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter"
+        ],
+        "detail": "exit 0",
+        "id": "phpcs_wpcs",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": [
+          "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+          "--yes",
+          "@wordpress/env",
+          "run",
+          "cli",
+          "--",
+          "wp",
+          "plugin",
+          "check",
+          "acme-interactive-counter",
+          "--require=./wp-content/plugins/plugin-check/cli.php"
+        ],
+        "detail": "exit 0; stdout: Success: Checks complete. No errors found.; stderr: npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp plugin check acme-interactive-counter --require=./wp-content/plugins/plugin-check/cli.php' on the cli container. \n\n\u2714 Ran `wp plugin check acme-interactive-counter --require=./wp-content/plugins/plugin-check/cli.php` in 'cli'. (in 4s 46ms)",
+        "id": "plugin_check",
+        "required": true,
+        "status": "pass"
+      }
+    ],
+    "pass": true,
+    "profile": "runtime",
+    "required_tools": [],
+    "runtime_roots": {
+      "wp_env_root": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998",
+      "wp_root": null
+    },
+    "status": "pass"
+  },
+  "generated_at": "2026-06-20T22:16:41",
+  "interactivity_smoke_requested": true,
+  "interactivity_smoke_status": "pass",
+  "interactivity_static_gate": {
+    "artifact_path": "/private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter/generated",
+    "block_json": "/private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter/generated/blocks/interactive-counter/build/block.json",
+    "checks": [
+      {
+        "detail": "block.json supports.interactivity is true",
+        "id": "supports_interactivity",
+        "status": "pass"
+      },
+      {
+        "detail": "viewScriptModule resolves to blocks/interactive-counter/build/view.js",
+        "id": "view_script_module_declared",
+        "status": "pass"
+      },
+      {
+        "detail": "viewScriptModule target file(s) exist",
+        "id": "view_script_module_exists",
+        "status": "pass"
+      },
+      {
+        "detail": "frontend module imports @wordpress/interactivity",
+        "id": "interactivity_import",
+        "status": "pass"
+      },
+      {
+        "detail": "frontend module defines an Interactivity API store",
+        "id": "interactivity_store",
+        "status": "pass"
+      },
+      {
+        "detail": "frontend markup includes data-wp-interactive",
+        "id": "wp_interactive_directive",
+        "status": "pass"
+      },
+      {
+        "detail": "frontend markup includes data-wp-on--click",
+        "id": "wp_click_directive",
+        "status": "pass"
+      },
+      {
+        "detail": "frontend markup includes data-wp-text",
+        "id": "wp_text_directive",
+        "status": "pass"
+      },
+      {
+        "detail": "package build script uses --experimental-modules",
+        "id": "experimental_modules_build",
+        "status": "pass"
+      }
+    ],
+    "pass": true,
+    "status": "pass",
+    "view_script_modules": [
+      "/private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter/generated/blocks/interactive-counter/build/view.js"
+    ]
+  },
+  "narrow_gate": {
+    "artifact_path": "/private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter",
+    "artifact_type": "plugin",
+    "checks": [
+      {
+        "command": null,
+        "detail": "path exists: /private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter",
+        "id": "artifact_path",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no banned destructive command patterns found",
+        "id": "unsafe_commands",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "no long secret-like assignments found",
+        "id": "hardcoded_secrets",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "plugin header found in /private/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter/acme-interactive-counter.php",
+        "id": "plugin_header",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "PHP files satisfy cheap WPCS shape checks",
+        "id": "php_wpcs_shape_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "admin, REST, AJAX, and SQL heuristics passed",
+        "id": "plugin_security_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "Abilities, MCP Adapter, and AI Client heuristics passed",
+        "id": "plugin_ai_surface_heuristics",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": null,
+        "detail": "php -l passed for 3 PHP file(s)",
+        "id": "php_lint",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "command": [
+          "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+          "--yes",
+          "@wordpress/env",
+          "run",
+          "cli",
+          "--",
+          "wp",
+          "core",
+          "version"
+        ],
+        "detail": "exit 0; stdout: 7.0; stderr: npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\n\u2139 Starting 'wp core version' on the cli container. \n\n\u2714 Ran `wp core version` in 'cli'. (in 0s 549ms)",
+        "id": "wp_env_smoke",
+        "required": true,
+        "status": "pass"
+      }
+    ],
+    "pass": true,
+    "profile": "static",
+    "required_tools": [
+      "php-lint",
+      "wp-env"
+    ],
+    "runtime_roots": {
+      "wp_env_root": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998",
+      "wp_root": null
+    },
+    "status": "pass"
+  },
+  "negative_space": [
+    "not PHPUnit proof",
+    "not Abilities API registration proof",
+    "not Abilities API execution proof",
+    "not block deprecation proof",
+    "not MCP Adapter runtime proof",
+    "not AI Client provider-call proof"
+  ],
+  "npx": "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+  "pass": true,
+  "phpunit_gate": null,
+  "phpunit_smoke_requested": false,
+  "phpunit_smoke_status": "not_run",
+  "provision_full_profile": true,
+  "provisioning": {
+    "block_npm_install": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npm",
+        "install",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter/generated",
+      "duration_sec": 15.188,
+      "returncode": 0,
+      "stderr": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\nnpm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.\nnpm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported\nnpm warn deprecated abab@2.0.6: Use your platform's native atob() and btoa() methods instead\nnpm warn deprecated whatwg-encoding@3.1.1: Use @exodus/bytes instead for a more spec-conformant and faster implementation\nnpm warn deprecated glob@7.2.3: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me\nnpm warn deprecated uuid@8.3.2: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).\n",
+      "stdout": "\nadded 1529 packages in 15s\n"
+    },
+    "composer_install": {
+      "command": [
+        "/opt/homebrew/bin/composer",
+        "install",
+        "--no-interaction",
+        "--no-progress",
+        "--quiet"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998",
+      "duration_sec": 2.721,
+      "returncode": 0,
+      "stderr": "",
+      "stdout": ""
+    },
+    "plugin_check_install": {
+      "command": [
+        "/Users/redacted/.nvm/versions/node/v24.13.0/bin/npx",
+        "--yes",
+        "@wordpress/env",
+        "run",
+        "cli",
+        "--",
+        "wp",
+        "plugin",
+        "install",
+        "plugin-check",
+        "--activate"
+      ],
+      "cwd": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998",
+      "duration_sec": 4.107,
+      "returncode": 0,
+      "stderr": "th RecursiveIterator::hasChildren(): bool, or the #[\\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice in phar:///usr/local/bin/wp/vendor/symfony/finder/Iterator/ExcludeDirectoryFilterIterator.php on line 71\n[21-Jun-2026 02:16:00 UTC] PHP Deprecated:  Return type of Symfony\\Component\\Finder\\Iterator\\ExcludeDirectoryFilterIterator::getChildren() should either be compatible with RecursiveIterator::getChildren(): ?RecursiveIterator, or the #[\\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice in phar:///usr/local/bin/wp/vendor/symfony/finder/Iterator/ExcludeDirectoryFilterIterator.php on line 76\nDeprecated: Return type of Symfony\\Component\\Finder\\Iterator\\ExcludeDirectoryFilterIterator::getChildren() should either be compatible with RecursiveIterator::getChildren(): ?RecursiveIterator, or the #[\\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice in phar:///usr/local/bin/wp/vendor/symfony/finder/Iterator/ExcludeDirectoryFilterIterator.php on line 76\n[21-Jun-2026 02:16:00 UTC] PHP Deprecated:  Return type of Symfony\\Component\\Finder\\Iterator\\FilterIterator::rewind() should either be compatible with Iterator::rewind(): void, or the #[\\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice in phar:///usr/local/bin/wp/vendor/symfony/finder/Iterator/FilterIterator.php on line 32\nDeprecated: Return type of Symfony\\Component\\Finder\\Iterator\\FilterIterator::rewind() should either be compatible with Iterator::rewind(): void, or the #[\\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice in phar:///usr/local/bin/wp/vendor/symfony/finder/Iterator/FilterIterator.php on line 32\n[21-Jun-2026 02:16:00 UTC] PHP Deprecated:  Return type of Symfony\\Component\\Finder\\Iterator\\DateRangeFilterIterator::accept() should either be compatible with FilterIterator::accept(): bool, or the #[\\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice in phar:///usr/local/bin/wp/vendor/symfony/finder/Iterator/DateRangeFilterIterator.php on line 41\nDeprecated: Return type of Symfony\\Component\\Finder\\Iterator\\DateRangeFilterIterator::accept() should either be compatible with FilterIterator::accept(): bool, or the #[\\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice in phar:///usr/local/bin/wp/vendor/symfony/finder/Iterator/DateRangeFilterIterator.php on line 41\n[21-Jun-2026 02:16:00 UTC] PHP Deprecated:  Return type of Symfony\\Component\\Finder\\Iterator\\PathFilterIterator::accept() should either be compatible with FilterIterator::accept(): bool, or the #[\\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice in phar:///usr/local/bin/wp/vendor/symfony/finder/Iterator/PathFilterIterator.php on line 27\nDeprecated: Return type of Symfony\\Component\\Finder\\Iterator\\PathFilterIterator::accept() should either be compatible with FilterIterator::accept(): bool, or the #[\\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice in phar:///usr/local/bin/wp/vendor/symfony/finder/Iterator/PathFilterIterator.php on line 27\n[21-Jun-2026 02:16:00 UTC] PHP Deprecated:  Return type of Symfony\\Component\\Finder\\Iterator\\SortableIterator::getIterator() should either be compatible with IteratorAggregate::getIterator(): Traversable, or the #[\\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice in phar:///usr/local/bin/wp/vendor/symfony/finder/Iterator/SortableIterator.php on line 73\nDeprecated: Return type of Symfony\\Component\\Finder\\Iterator\\SortableIterator::getIterator() should either be compatible with IteratorAggregate::getIterator(): Traversable, or the #[\\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice in phar:///usr/local/bin/wp/vendor/symfony/finder/Iterator/SortableIterator.php on line 73\n\u2714 Ran `wp plugin install plugin-check --activate` in 'cli'. (in 3s 329ms)\n",
+      "stdout": "Installing Plugin Check (PCP) (2.0.0)\nDownloading installation package from https://downloads.wordpress.org/plugin/plugin-check.2.0.0.zip...\nUnpacking the package...\nInstalling the plugin...\nPlugin installed successfully.\nActivating 'plugin-check'...\nPlugin 'plugin-check' activated.\nSuccess: Installed 1 of 1 plugins.\n"
+    }
+  },
+  "source_artifact_path": "/path/to/zivtech-meta-skills/evals/results/wordpress-skill-candidate-eval/generated-block-interactivity-artifact-cert-20260621/generated-block",
+  "status": "pass",
+  "strict_full_profile": false,
+  "wrapped_block_artifact": {
+    "block_name": "acme/interactive-counter",
+    "copied_artifact_dir": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter/generated",
+    "copied_block_dir": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter/generated/blocks/interactive-counter",
+    "plugin_dir": "/var/folders/7r/jlx7wl5d0yqftslj653cz7k40000gn/T/wp-meta-skills-runtime-smoke-rcoua998/acme-interactive-counter",
+    "source_block_dir": "/path/to/zivtech-meta-skills/evals/results/wordpress-skill-candidate-eval/generated-block-interactivity-artifact-cert-20260621/generated-block/blocks/interactive-counter",
+    "textdomain": "acme-interactive-counter"
+  }
+}

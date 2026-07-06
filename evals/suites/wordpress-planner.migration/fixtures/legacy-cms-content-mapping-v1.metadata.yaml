@@ -1,0 +1,30 @@
+name: legacy-cms-content-mapping-v1
+suite: wordpress-planner.migration
+skill_under_test: wordpress-planner.migration
+skill_type: planner
+difficulty_tier: focused
+provenance: synthetic
+risk_class: legacy_cms_content_mapping
+expected_wordpress_apis:
+  - "register_post_type"
+  - "register_taxonomy"
+  - "register_post_meta"
+  - "wp_insert_post"
+  - "wp_update_post"
+  - "media_sideload_image"
+  - "wp import"
+expected_verification_surfaces:
+  - "source schema inventory"
+  - "field-transform table"
+  - "sample-row validation"
+  - "media attachment mapping"
+  - "author/byline reconciliation"
+must_detect:
+  - "source export uncertainty"
+  - "taxonomy duplicate and synonym cleanup"
+  - "media reference rewriting and dedupe"
+  - "revision preservation cannot be claimed without source export"
+negative_space:
+  - "does not prove a real migration without source extracts"
+  - "does not guarantee revision preservation"
+  - "does not finalize author mapping without stakeholder acceptance"

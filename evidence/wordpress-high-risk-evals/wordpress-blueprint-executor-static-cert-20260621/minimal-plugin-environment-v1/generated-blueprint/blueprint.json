@@ -1,0 +1,40 @@
+{
+  "$schema": "https://playground.wordpress.net/blueprint-schema.json",
+  "extraLibraries": [
+    "wp-cli"
+  ],
+  "features": {
+    "networking": false
+  },
+  "landingPage": "/wp-admin/admin.php?page=acme-notice-board",
+  "preferredVersions": {
+    "php": "8.2",
+    "wp": "latest"
+  },
+  "steps": [
+    {
+      "step": "login",
+      "username": "admin"
+    },
+    {
+      "options": {
+        "activate": true
+      },
+      "pluginData": {
+        "path": "/wordpress/wp-content/uploads/acme-notice-board.zip",
+        "resource": "vfs"
+      },
+      "step": "installPlugin"
+    },
+    {
+      "command": "wp post create --post_type=post --post_status=publish --post_title='Blueprint Notice Smoke' --post_content='Sample content for the Acme Notice Board Blueprint smoke.'",
+      "step": "wp-cli"
+    },
+    {
+      "options": {
+        "blogname": "Acme Notice Board Smoke"
+      },
+      "step": "setSiteOptions"
+    }
+  ]
+}

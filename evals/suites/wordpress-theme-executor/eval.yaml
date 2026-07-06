@@ -1,0 +1,45 @@
+skill:
+  name: wordpress-theme-executor
+  type: executor
+  status: experimental-smoke
+
+fixtures:
+  directory: ./fixtures
+  count: 1
+  pattern: "*.md"
+  metadata_suffix: ".metadata.yaml"
+
+rubrics:
+  directory: ./rubrics
+  scoring_method: quality_weighted
+
+baselines:
+  directory: ./baselines
+  conditions:
+    - baseline-zero-shot
+    - baseline-few-shot
+
+evaluation:
+  status: smoke_scaffold_only
+  full_run_status: blocked_until_candidate_eval_and_test_critic_review
+
+invocation:
+  model: sonnet
+  effort: low
+  baseline_provider: codex
+  baseline_model_policy: newest-chatgpt-level-at-run-time
+  baseline_model: gpt-5.5
+  baseline_effort: medium
+  note: "Skill-agent invocation still uses the local Claude CLI because the WordPress skill packages are Claude-agent surfaces. Baseline lanes default to the newest ChatGPT-level local Codex CLI (`codex exec --model gpt-5.5`) so Sonnet is no longer the default baseline."
+
+output_contract_oracle:
+  type: deterministic_wordpress_skill_output_contract
+  command: "python3 evals/harness/validate_wordpress_skill_output.py --skill wordpress-theme-executor --output <candidate-output.md>"
+  status: available
+
+artifact_oracle:
+  type: deterministic_wordpress_artifact_static
+  command: "python3 evals/harness/validate_wordpress_artifact.py --artifact-type theme --path <generated-theme-dir>"
+  status: available
+  runtime_command: "python3 evals/harness/validate_wordpress_artifact.py --artifact-type theme --path <generated-theme-dir> --profile runtime"
+  runtime_status: environment_dependent

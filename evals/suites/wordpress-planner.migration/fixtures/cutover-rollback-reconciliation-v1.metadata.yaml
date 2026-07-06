@@ -1,0 +1,28 @@
+name: cutover-rollback-reconciliation-v1
+suite: wordpress-planner.migration
+skill_under_test: wordpress-planner.migration
+skill_type: planner
+difficulty_tier: focused
+provenance: synthetic
+risk_class: cutover_rollback_reconciliation
+expected_wordpress_apis:
+  - "wp post list"
+  - "wp media import"
+  - "wp search-replace"
+  - "wp option get"
+  - "wp db export"
+expected_verification_surfaces:
+  - "dry-run import rerun"
+  - "row count reconciliation"
+  - "sample-record validation"
+  - "failed import queue"
+  - "rollback rehearsal"
+must_detect:
+  - "single-shot migration optimism"
+  - "missing delta migration process"
+  - "missing rollback trigger and owner"
+  - "unresolved failed media and empty fields"
+negative_space:
+  - "does not prove launch readiness without signoff"
+  - "does not prove rerunnability from one dry run"
+  - "does not hide data defects as cleanup"

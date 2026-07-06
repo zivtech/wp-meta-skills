@@ -1,0 +1,15 @@
+name: security-boundary-risk
+suite: wordpress-skill-candidate-eval
+domain: Security
+difficulty_tier: HAS_RISK
+provenance: synthetic
+primary_skill_targets:
+  - wordpress-planner
+  - wordpress-critic
+expected_behavior:
+  - WordPress-native routing and terminology
+  - Explicit assumptions and tradeoffs
+  - Security, performance, and rollout awareness proportional to risk
+  - No invented findings on clean controls
+source_notes: Designed from the 2026-06-16 WordPress candidate catalog and Zivtech V1 plan.
+scenario_summary: "An admin-ajax handler updates membership status and accepts rich text from POST data."

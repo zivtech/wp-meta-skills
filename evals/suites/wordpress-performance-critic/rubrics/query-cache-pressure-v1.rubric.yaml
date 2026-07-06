@@ -1,0 +1,40 @@
+fixture: query-cache-pressure-v1
+skill_under_test: wordpress-performance-critic
+max_score: 10
+criteria:
+  - id: contract_compliance
+    weight: 2
+    description: Output uses the exact wordpress-performance-critic headings, includes a valid verdict, and keeps measurement gaps separate from confirmed findings.
+  - id: query_shape_detection
+    weight: 3
+    description: Catches the N+1 WP_Query render path, avoidable found-row counts, expensive meta-query pressure, and cache priming decisions.
+  - id: measurement_discipline
+    weight: 2
+    description: Requires Query Monitor, query logs, wp profile where available, or controlled before/after measurements before claiming impact.
+  - id: remediation_specificity
+    weight: 2
+    description: Recommends exact WordPress surfaces such as no_found_rows, fields => 'ids', cache APIs, and invalidation triggers without jumping to custom tables prematurely.
+  - id: calibration
+    weight: 1
+    description: Avoids flagging every WP_Query as bad and names what is not proven about production latency or capacity.
+domain_signals:
+  expected_wordpress_apis:
+    - "WP_Query"
+    - "no_found_rows"
+    - "fields => 'ids'"
+    - "update_post_meta_cache"
+    - "update_post_term_cache"
+    - "pre_get_posts"
+    - "wp_cache_get"
+    - "wp_cache_set"
+    - "Query Monitor"
+    - "WP-CLI"
+  must_detect:
+    - "one query per topic creates N+1 pressure"
+    - "measurement is required before claiming performance impact"
+    - "cache recommendations need invalidation and key design"
+    - "custom tables require scale evidence"
+  must_not_claim:
+    - "all WP_Query usage is a defect"
+    - "production latency is proven"
+    - "custom tables are mandatory without scale evidence"

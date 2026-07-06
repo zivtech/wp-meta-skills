@@ -1,0 +1,26 @@
+name: unsupported-feature-boundary-v1
+suite: wordpress-blueprint-executor
+skill_under_test: wordpress-blueprint-executor
+skill_type: executor
+difficulty_tier: focused
+provenance: synthetic
+risk_class: unsupported_feature_boundary
+expected_wordpress_surfaces:
+  - "blueprint.json"
+  - "installPlugin"
+  - "activatePlugin"
+  - "wp-admin/options-general.php"
+expected_verification_surfaces:
+  - "Blueprint static JSON validation"
+  - "unsupported feature notes"
+  - "manual fallback instructions"
+  - "critic handoff"
+must_detect:
+  - "credentials cannot be embedded"
+  - "persistent webhooks need external infrastructure"
+  - "public HTTPS callbacks are outside disposable Playground"
+  - "manual fallback must be deterministic"
+negative_space:
+  - "does not reproduce live CRM behavior"
+  - "does not include secrets"
+  - "does not claim webhook persistence"

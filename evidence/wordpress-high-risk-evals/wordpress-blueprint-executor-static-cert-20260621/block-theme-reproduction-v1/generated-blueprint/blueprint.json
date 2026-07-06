@@ -1,0 +1,54 @@
+{
+  "$schema": "https://playground.wordpress.net/blueprint-schema.json",
+  "extraLibraries": [
+    "wp-cli"
+  ],
+  "features": {
+    "networking": false
+  },
+  "landingPage": "/runtime-events-demo/",
+  "preferredVersions": {
+    "php": "8.2",
+    "wp": "latest"
+  },
+  "steps": [
+    {
+      "step": "login",
+      "username": "admin"
+    },
+    {
+      "options": {
+        "activate": true
+      },
+      "step": "installTheme",
+      "themeData": {
+        "path": "/wordpress/wp-content/uploads/acme-block-theme.zip",
+        "resource": "vfs"
+      }
+    },
+    {
+      "options": {
+        "activate": true
+      },
+      "pluginData": {
+        "path": "/wordpress/wp-content/uploads/acme-events-block.zip",
+        "resource": "vfs"
+      },
+      "step": "installPlugin"
+    },
+    {
+      "options": {
+        "permalink_structure": "/%postname%/"
+      },
+      "step": "setSiteOptions"
+    },
+    {
+      "command": "wp rewrite flush --hard",
+      "step": "wp-cli"
+    },
+    {
+      "command": "wp post create --post_type=page --post_status=publish --post_title='Runtime Events Demo' --post_name='runtime-events-demo' --post_content='<!-- wp:paragraph --><p>Bug reproduction note: confirm the events wrapper remains visible.</p><!-- /wp:paragraph --><!-- wp:acme/events-list {\"limit\":3} /-->'",
+      "step": "wp-cli"
+    }
+  ]
+}

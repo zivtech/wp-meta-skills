@@ -1,0 +1,46 @@
+{
+  "all_contracts_pass": true,
+  "all_generation_ok": true,
+  "artifact_counts": {
+    "contract_results": 1,
+    "entries": 1,
+    "outputs": 1
+  },
+  "by_condition": {
+    "skill": {
+      "contract_pass": 1,
+      "count": 1,
+      "generation_ok": 1
+    }
+  },
+  "contract_pass_count": 1,
+  "entries": [
+    {
+      "condition": "skill",
+      "contract_pass": true,
+      "contract_path": "evals/results/wordpress-performance-critic-query-cache-regenerated-20260621/contracts/wordpress-performance-critic/skill/query-cache-pressure-v1.contract.json",
+      "contract_score": 1.0,
+      "duration_sec": 95.39,
+      "error": null,
+      "fixture_id": "query-cache-pressure-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-performance-critic-query-cache-regenerated-20260621/raw/wordpress-performance-critic/skill/query-cache-pressure-v1.metadata.json",
+      "output_path": "evals/results/wordpress-performance-critic-query-cache-regenerated-20260621/raw/wordpress-performance-critic/skill/query-cache-pressure-v1.md",
+      "suite": "wordpress-performance-critic"
+    }
+  ],
+  "evidence_boundary": "Saved-output contract evidence only. This is not answer-key scoring, human review, variance measurement, or public benchmark evidence.",
+  "focused_fixture_summary": {
+    "all_focused_skill_contracts_pass": true,
+    "definition": "non-smoke fixtures",
+    "entry_count": 1,
+    "skill_contract_pass_count": 1,
+    "skill_entry_count": 1
+  },
+  "generated_at": "2026-06-21T05:04:42",
+  "generation_ok_count": 1,
+  "run_dir": "evals/results/wordpress-performance-critic-query-cache-regenerated-20260621",
+  "run_id": "wordpress-performance-critic-query-cache-regenerated-20260621",
+  "skill": "wordpress-performance-critic",
+  "suite": "wordpress-performance-critic"
+}

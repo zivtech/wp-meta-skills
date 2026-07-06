@@ -1,0 +1,199 @@
+{
+  "all_contracts_pass": false,
+  "all_generation_ok": true,
+  "artifact_counts": {
+    "contract_results": 12,
+    "entries": 12,
+    "outputs": 12
+  },
+  "by_condition": {
+    "baseline-few-shot": {
+      "contract_pass": 0,
+      "count": 4,
+      "generation_ok": 4
+    },
+    "baseline-zero-shot": {
+      "contract_pass": 0,
+      "count": 4,
+      "generation_ok": 4
+    },
+    "skill": {
+      "contract_pass": 3,
+      "count": 4,
+      "generation_ok": 4
+    }
+  },
+  "contract_pass_count": 3,
+  "entries": [
+    {
+      "condition": "skill",
+      "contract_pass": true,
+      "contract_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/contracts/wordpress-security-critic/skill/input-sql-output-handling-v1.contract.json",
+      "contract_score": 1.0,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "input-sql-output-handling-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/skill/input-sql-output-handling-v1.metadata.json",
+      "output_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/skill/input-sql-output-handling-v1.md",
+      "suite": "wordpress-security-critic"
+    },
+    {
+      "condition": "baseline-zero-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/contracts/wordpress-security-critic/baseline-zero-shot/input-sql-output-handling-v1.contract.json",
+      "contract_score": 0.4737,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "input-sql-output-handling-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-zero-shot/input-sql-output-handling-v1.metadata.json",
+      "output_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-zero-shot/input-sql-output-handling-v1.md",
+      "suite": "wordpress-security-critic"
+    },
+    {
+      "condition": "baseline-few-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/contracts/wordpress-security-critic/baseline-few-shot/input-sql-output-handling-v1.contract.json",
+      "contract_score": 0.4737,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "input-sql-output-handling-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-few-shot/input-sql-output-handling-v1.metadata.json",
+      "output_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-few-shot/input-sql-output-handling-v1.md",
+      "suite": "wordpress-security-critic"
+    },
+    {
+      "condition": "skill",
+      "contract_pass": true,
+      "contract_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/contracts/wordpress-security-critic/skill/rest-ajax-authorization-v1.contract.json",
+      "contract_score": 1.0,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "rest-ajax-authorization-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/skill/rest-ajax-authorization-v1.metadata.json",
+      "output_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/skill/rest-ajax-authorization-v1.md",
+      "suite": "wordpress-security-critic"
+    },
+    {
+      "condition": "baseline-zero-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/contracts/wordpress-security-critic/baseline-zero-shot/rest-ajax-authorization-v1.contract.json",
+      "contract_score": 0.4737,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "rest-ajax-authorization-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-zero-shot/rest-ajax-authorization-v1.metadata.json",
+      "output_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-zero-shot/rest-ajax-authorization-v1.md",
+      "suite": "wordpress-security-critic"
+    },
+    {
+      "condition": "baseline-few-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/contracts/wordpress-security-critic/baseline-few-shot/rest-ajax-authorization-v1.contract.json",
+      "contract_score": 0.6316,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "rest-ajax-authorization-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-few-shot/rest-ajax-authorization-v1.metadata.json",
+      "output_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-few-shot/rest-ajax-authorization-v1.md",
+      "suite": "wordpress-security-critic"
+    },
+    {
+      "condition": "skill",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/contracts/wordpress-security-critic/skill/smoke-wordpress-v1.contract.json",
+      "contract_score": 0.2105,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "smoke-wordpress-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/skill/smoke-wordpress-v1.metadata.json",
+      "output_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/skill/smoke-wordpress-v1.md",
+      "suite": "wordpress-security-critic"
+    },
+    {
+      "condition": "baseline-zero-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/contracts/wordpress-security-critic/baseline-zero-shot/smoke-wordpress-v1.contract.json",
+      "contract_score": 0.4737,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "smoke-wordpress-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-zero-shot/smoke-wordpress-v1.metadata.json",
+      "output_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-zero-shot/smoke-wordpress-v1.md",
+      "suite": "wordpress-security-critic"
+    },
+    {
+      "condition": "baseline-few-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/contracts/wordpress-security-critic/baseline-few-shot/smoke-wordpress-v1.contract.json",
+      "contract_score": 0.6316,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "smoke-wordpress-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-few-shot/smoke-wordpress-v1.metadata.json",
+      "output_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-few-shot/smoke-wordpress-v1.md",
+      "suite": "wordpress-security-critic"
+    },
+    {
+      "condition": "skill",
+      "contract_pass": true,
+      "contract_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/contracts/wordpress-security-critic/skill/upload-filesystem-boundary-v1.contract.json",
+      "contract_score": 1.0,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "upload-filesystem-boundary-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/skill/upload-filesystem-boundary-v1.metadata.json",
+      "output_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/skill/upload-filesystem-boundary-v1.md",
+      "suite": "wordpress-security-critic"
+    },
+    {
+      "condition": "baseline-zero-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/contracts/wordpress-security-critic/baseline-zero-shot/upload-filesystem-boundary-v1.contract.json",
+      "contract_score": 0.4737,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "upload-filesystem-boundary-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-zero-shot/upload-filesystem-boundary-v1.metadata.json",
+      "output_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-zero-shot/upload-filesystem-boundary-v1.md",
+      "suite": "wordpress-security-critic"
+    },
+    {
+      "condition": "baseline-few-shot",
+      "contract_pass": false,
+      "contract_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/contracts/wordpress-security-critic/baseline-few-shot/upload-filesystem-boundary-v1.contract.json",
+      "contract_score": 0.4737,
+      "duration_sec": null,
+      "error": null,
+      "fixture_id": "upload-filesystem-boundary-v1",
+      "generation_ok": true,
+      "metadata_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-few-shot/upload-filesystem-boundary-v1.metadata.json",
+      "output_path": "evals/results/wordpress-security-critic-saved-outputs-20260621/raw/wordpress-security-critic/baseline-few-shot/upload-filesystem-boundary-v1.md",
+      "suite": "wordpress-security-critic"
+    }
+  ],
+  "evidence_boundary": "Saved-output contract evidence only. This is not answer-key scoring, human review, variance measurement, or public benchmark evidence.",
+  "focused_fixture_summary": {
+    "all_focused_skill_contracts_pass": true,
+    "definition": "non-smoke fixtures",
+    "entry_count": 9,
+    "skill_contract_pass_count": 3,
+    "skill_entry_count": 3
+  },
+  "generated_at": "2026-06-21T02:42:45",
+  "generation_ok_count": 12,
+  "run_dir": "evals/results/wordpress-security-critic-saved-outputs-20260621",
+  "run_id": "wordpress-security-critic-saved-outputs-20260621",
+  "skill": "wordpress-security-critic",
+  "suite": "wordpress-security-critic"
+}

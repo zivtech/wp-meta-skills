@@ -1,0 +1,10 @@
+name: abilities-ai-surface-v1
+skill: wordpress-plugin-executor
+fixture_type: executor_modern_surface
+risk_tier: high
+expected_outputs:
+  - materializable plugin packet
+  - WordPress 7.0+ plugin header boundary
+  - Abilities API registration with schemas and permission callback
+  - guarded AI Client helper with WP_Error handling
+  - explicit negative-space verification notes
