@@ -65,6 +65,31 @@ def validate_df_profile(output, size_bytes, nr_inodes):
     if blocks<=0 or inodes<=0 or blocks>block_limit or inodes>inode_limit: raise RuntimeError("tmpfs df profile exceeds reviewed limit")
     return {"blocks_1k":blocks,"inodes":inodes,"reviewed_size_bytes":size_bytes,"reviewed_nr_inodes":nr_inodes,"block_rounding_tolerance":1,"inode_rounding_tolerance":inode_limit-nr_inodes}
 
+def runtime_probe_specs(base):
+    browser=lambda script:base+["exec","-T","browser","node","-e",script]
+    cli=lambda *args:base+["exec","-T","cli",*args]
+    return (
+      {"name":"cli-db-ready","command":cli("sh","-c","test $(id -u) != 0; wp --info; i=0; until wp db check; do i=$((i+1)); test $i -lt 60; sleep 1; done"),"timeout":70},
+      {"name":"browser-wordpress-http","network":True,"self_timeout":True,"command":browser("fetch('http://wordpress:8080',{signal:AbortSignal.timeout(5000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"),"timeout":10},
+      {"name":"browser-public-http-denied","network":True,"self_timeout":True,"command":browser("fetch('https://example.com',{signal:AbortSignal.timeout(3000)}).then(()=>process.exit(1),()=>process.exit(0))"),"timeout":8},
+      {"name":"browser-private-http-denied","network":True,"self_timeout":True,"command":browser("const t=['http://host.docker.internal','http://169.254.169.254','http://10.0.0.1','http://127.0.0.1'];Promise.all(t.map(u=>fetch(u,{signal:AbortSignal.timeout(2000)}).then(()=>{throw Error('escaped')},()=>true))).then(()=>process.exit(0),()=>process.exit(1))"),"timeout":8},
+      {"name":"browser-public-dns-denied","network":True,"self_timeout":True,"command":browser("const {Resolver}=require('dns');const r=new Resolver({timeout:1000,tries:1});const t=setTimeout(()=>process.exit(0),2500);r.resolve4('example.com',e=>{clearTimeout(t);process.exit(e?0:1)})"),"timeout":6},
+      {"name":"browser-database-peer-denied","network":True,"self_timeout":True,"command":browser("const n=require('net');const s=n.connect(3306,'database',()=>process.exit(1));s.on('error',()=>process.exit(0));setTimeout(()=>{s.destroy();process.exit(0)},2000)"),"timeout":6},
+      {"name":"browser-public-websocket-denied","network":True,"self_timeout":True,"command":browser("const w=new WebSocket('ws://example.com');w.onopen=()=>process.exit(1);w.onerror=()=>process.exit(0);setTimeout(()=>{w.close();process.exit(0)},2500)"),"timeout":6},
+      {"name":"php-routes-denied","network":True,"self_timeout":True,"command":cli("php","-r","foreach (array('93.184.216.34','169.254.169.254','10.0.0.1','127.0.0.1') as $h) { $s=@fsockopen($h,80,$e,$m,1); if ($s) exit(1); }"),"timeout":8},
+      {"name":"php-public-dns-denied","network":True,"self_timeout":True,"allowed":{0,124},"command":cli("sh","-c","timeout 5 php -r \"exit(dns_get_record('example.com') ? 1 : 0);\""),"timeout":8},
+      {"name":"browser-byte-quota","command":browser("const f=require('fs');f.writeFileSync('/tmp/quota',Buffer.alloc(60*1024*1024));try{f.appendFileSync('/tmp/quota',Buffer.alloc(8*1024*1024));process.exit(1)}catch(e){f.unlinkSync('/tmp/quota')}"),"timeout":15},
+      {"name":"browser-inode-quota","command":browser("const f=require('fs');let failed=false;for(let i=0;i<5000;i++){try{f.writeFileSync('/tmp/i'+i,'')}catch(e){failed=true;break}}if(!failed)process.exit(1)"),"timeout":15},
+    )
+
+def run_named_probe(spec):
+    try: result=provision.run_capped(spec["command"],timeout=spec["timeout"],limit=32768)
+    except Exception as exc: raise RuntimeError(f"probe {spec['name']} raised {type(exc).__name__}") from exc
+    if result["returncode"] not in spec.get("allowed",{0}):
+        tail=((result.get("stderr") or "")+(result.get("stdout") or ""))[-2000:].replace("\x00","")
+        raise RuntimeError(f"probe {spec['name']} failed rc={result['returncode']}: {tail}")
+    return result
+
 def prove_fixture_locks(work, inv, arch):
     suites=Path(__file__).parent.parent/"suites"; fixtures=work/"fixtures"; fixtures.mkdir()
     node_image=f"node@{provision.platform_digest(inv['node'],arch)}"
@@ -219,23 +244,7 @@ def _run_linux_canary(work):
         if configured != {built["wordpress"],built["database"],playwright}: raise RuntimeError("final Compose image inventory mismatch")
         result=provision.run_capped(base+["up","-d","--wait"],timeout=300)
         if result["returncode"]: raise RuntimeError(result["stderr"])
-        probes=(
-          base+["exec","-T","cli","sh","-c","test $(id -u) != 0; wp --info; i=0; until wp db check; do i=$((i+1)); test $i -lt 60; sleep 1; done"],
-          base+["exec","-T","browser","node","-e","fetch('http://wordpress:8080').then(r=>{if(!r.ok)process.exit(1)})"],
-          base+["exec","-T","browser","node","-e","fetch('https://example.com').then(()=>process.exit(1),()=>process.exit(0))"],
-          base+["exec","-T","browser","node","-e","const targets=['http://host.docker.internal','http://169.254.169.254','http://10.0.0.1'];Promise.all(targets.map(u=>fetch(u,{signal:AbortSignal.timeout(2000)}).then(()=>{throw Error('route escaped')},()=>true))).then(()=>process.exit(0),()=>process.exit(1))"],
-          base+["exec","-T","browser","node","-e","require('dns').resolve4('example.com',e=>process.exit(e?0:1))"],
-          base+["exec","-T","browser","node","-e","fetch('http://127.0.0.1:80',{signal:AbortSignal.timeout(2000)}).then(()=>process.exit(1),()=>process.exit(0))"],
-          base+["exec","-T","browser","node","-e","const n=require('net');const s=n.connect(3306,'database',()=>process.exit(1));s.on('error',()=>process.exit(0));setTimeout(()=>process.exit(0),2000)"],
-          base+["exec","-T","browser","node","-e","const n=require('net');const s=n.connect(80,'example.com',()=>{s.write('GET / HTTP/1.1\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\n\\r\\n');process.exit(1)});s.on('error',()=>process.exit(0));setTimeout(()=>process.exit(0),2000)"],
-          base+["exec","-T","browser","node","-e","const w=new WebSocket('ws://example.com');w.onopen=()=>process.exit(1);w.onerror=()=>process.exit(0);setTimeout(()=>process.exit(0),2000)"],
-          base+["exec","-T","cli","php","-r","foreach (array('example.com','169.254.169.254','10.0.0.1') as $h) { $s=@fsockopen($h,80,$e,$m,2); if ($s) { exit(1); } }"],
-          base+["exec","-T","cli","php","-r","exit(dns_get_record('example.com') ? 1 : 0);"],
-          base+["exec","-T","browser","node","-e","const f=require('fs');f.writeFileSync('/tmp/quota',Buffer.alloc(60*1024*1024));try{f.appendFileSync('/tmp/quota',Buffer.alloc(8*1024*1024));process.exit(1)}catch(e){f.unlinkSync('/tmp/quota')}"],
-          base+["exec","-T","browser","node","-e","const f=require('fs');let failed=false;for(let i=0;i<5000;i++){try{f.writeFileSync('/tmp/i'+i,'')}catch(e){failed=true;break}}if(!failed)process.exit(1)"])
-        for command in probes:
-            result=provision.run_capped(command,timeout=60)
-            if result["returncode"]: raise RuntimeError(result["stderr"])
+        for probe in runtime_probe_specs(base): run_named_probe(probe)
         live_ids={}; gateways=set(); observed_profiles=[]; exhaustion_targets={"size":{},"inodes":{}}
         for service,image_tag in (("wordpress",wp_tag),("cli",wp_tag),("database",db_tag),("browser",playwright)):
             expected=provision.run_capped(["docker","image","inspect",image_tag,"--format","{{.Id}}"])["stdout"].strip()

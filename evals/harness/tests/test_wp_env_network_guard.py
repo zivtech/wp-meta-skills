@@ -35,6 +35,27 @@ def test_only_bounded_work_tmpfs_is_executable_for_compatibility():
 def test_network_disconnect_precedes_fixture_execute():
     assert guard.FIXTURE_PHASE_ORDER == ("create","start","install","disconnect","execute")
 
+def test_every_network_probe_has_an_internal_timeout():
+    probes=[probe for probe in guard.runtime_probe_specs(["docker","compose"]) if probe.get("network")]
+    assert probes and all(probe.get("self_timeout") is True for probe in probes)
+    for probe in probes:
+        command=" ".join(probe["command"])
+        if "fetch(" in command: assert "AbortSignal.timeout" in command
+        if "resolve4" in command: assert "Resolver({timeout:" in command and "tries:1" in command
+    php_routes=next(probe for probe in probes if probe["name"]=="php-routes-denied")
+    assert "example.com" not in " ".join(php_routes["command"])
+    php_dns=next(probe for probe in probes if probe["name"]=="php-public-dns-denied")
+    assert php_dns["allowed"]=={0,124} and "timeout 5" in " ".join(php_dns["command"])
+
+def test_named_probe_errors_identify_probe_and_bound_output(monkeypatch):
+    monkeypatch.setattr(guard.provision,"run_capped",lambda *_args,**_kwargs:{"returncode":7,"stdout":"out","stderr":"err"})
+    with pytest.raises(RuntimeError,match="probe browser-public-http-denied failed rc=7"):
+        guard.run_named_probe({"name":"browser-public-http-denied","command":["probe"],"timeout":8})
+    def timeout(*_args,**_kwargs): raise RuntimeError("command timed out")
+    monkeypatch.setattr(guard.provision,"run_capped",timeout)
+    with pytest.raises(RuntimeError,match="probe browser-public-http-denied raised RuntimeError"):
+        guard.run_named_probe({"name":"browser-public-http-denied","command":["probe"],"timeout":8})
+
 def test_fixture_build_commands_match_reviewed_packet_scripts():
     examples=HARNESS.parent / "suites" / "wordpress-block-executor" / "examples"
     for name in ("smoke","interactivity","deprecation"):
