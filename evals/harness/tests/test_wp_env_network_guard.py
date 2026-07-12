@@ -1,4 +1,4 @@
-import sys
+import json, re, sys
 from pathlib import Path
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
 import pytest, wp_env_network_guard as guard
@@ -19,9 +19,24 @@ def test_trusted_runner_workspaces_have_reviewed_separate_bounds():
     assert guard.TRUSTED_RUNNER_LIMITS["wp-env-runner"] == {"memory":"3g","size":2147483648,"inodes":200000}
 
 def test_fixture_tools_run_through_interpreters_on_noexec_workspace():
-    assert guard.BLOCK_BUILD_COMMAND.startswith("node ")
-    assert "node_modules/@wordpress/scripts/bin/wp-scripts.js" in guard.BLOCK_BUILD_COMMAND
+    assert set(guard.BLOCK_BUILD_COMMANDS) == {"smoke","interactivity","deprecation"}
+    assert all(command.startswith("node node_modules/@wordpress/scripts/bin/wp-scripts.js build") for command in guard.BLOCK_BUILD_COMMANDS.values())
+    assert "blocks/runtime-card/index.js" in guard.BLOCK_BUILD_COMMANDS["smoke"]
+    assert "--experimental-modules" in guard.BLOCK_BUILD_COMMANDS["interactivity"]
+    assert "blocks/deprecated-card/build" in guard.BLOCK_BUILD_COMMANDS["deprecation"]
     assert guard.PHPUNIT_COMMAND == "php vendor/bin/phpunit"
+
+def test_fixture_build_commands_match_reviewed_packet_scripts():
+    examples=HARNESS.parent / "suites" / "wordpress-block-executor" / "examples"
+    for name in ("smoke","interactivity","deprecation"):
+        text=(examples / f"{name}-wordpress-v1.materializable-packet.md").read_text(encoding="utf-8")
+        package=json.loads(re.search(r"### package\.json\n```json\n(.*?)\n```",text,re.S).group(1))
+        expected=package["scripts"]["build"].replace(
+            "wp-scripts",
+            "node node_modules/@wordpress/scripts/bin/wp-scripts.js",
+            1,
+        )
+        assert guard.BLOCK_BUILD_COMMANDS[name] == expected
 
 def test_compatibility_failure_names_phase_and_bounds_output():
     error=guard.compatibility_failure("smoke","execute",{"returncode":137,"stdout":"x"*4000,"stderr":""})

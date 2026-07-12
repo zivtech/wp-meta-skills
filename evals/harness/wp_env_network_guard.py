@@ -12,7 +12,11 @@ TRUSTED_RUNNER_LIMITS={
     "browser-runner":{"memory":"1g","size":536870912,"inodes":50000},
     "wp-env-runner":{"memory":"3g","size":2147483648,"inodes":200000},
 }
-BLOCK_BUILD_COMMAND="node node_modules/@wordpress/scripts/bin/wp-scripts.js build"
+BLOCK_BUILD_COMMANDS={
+    "smoke":"node node_modules/@wordpress/scripts/bin/wp-scripts.js build blocks/runtime-card/index.js --output-path=blocks/runtime-card/build",
+    "interactivity":"node node_modules/@wordpress/scripts/bin/wp-scripts.js build --source-path=blocks/interactive-counter --output-path=blocks/interactive-counter/build --experimental-modules",
+    "deprecation":"node node_modules/@wordpress/scripts/bin/wp-scripts.js build --source-path=blocks/deprecated-card --output-path=blocks/deprecated-card/build",
+}
 PHPUNIT_COMMAND="php vendor/bin/phpunit"
 
 def compatibility_failure(name, phase, result):
@@ -58,7 +62,7 @@ def prove_fixture_locks(work, inv, arch):
         if name=="phpunit":
             image=f"composer@{provision.platform_digest(inv['composer'],arch)}"; install="PATH=/usr/local/bin:/bin php /usr/bin/composer install --no-interaction --no-progress --no-scripts --no-plugins --prefer-dist"; execute=PHPUNIT_COMMAND
         else:
-            image=f"node@{provision.platform_digest(inv['node'],arch)}"; install="npm ci --ignore-scripts --no-audit --no-fund"; execute=BLOCK_BUILD_COMMAND
+            image=f"node@{provision.platform_digest(inv['node'],arch)}"; install="npm ci --ignore-scripts --no-audit --no-fund"; execute=BLOCK_BUILD_COMMANDS[name]
         container=f"wp-step0-fixture-{name}-{__import__('hashlib').sha256(str(work).encode()).hexdigest()[:8]}"
         create=["docker","create","--name",container,"--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--pids-limit","256","--memory","2g","--tmpfs","/work:size=1073741824,nr_inodes=100000,mode=0700","--tmpfs","/tmp:size=67108864,nr_inodes=4096,mode=0700","--mount",f"type=bind,src={source},dst=/input,readonly","--entrypoint","sh",image,"-c","sleep infinity"]
         try:
