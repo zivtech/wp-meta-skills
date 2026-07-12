@@ -194,12 +194,14 @@ def write_canary(path, built_images=None, identities=None):
 
 def run_linux_canary(work, result_path=None):
     if platform.system() != "Linux": return {"status":"blocked","reason":"live Docker boundary requires Linux"}
+    commit_sha=os.environ.get("CANARY_COMMIT_SHA","")
+    if os.environ.get("GITHUB_ACTIONS")=="true" and not re.fullmatch(r"[0-9a-f]{40}",commit_sha): raise RuntimeError("exact canary commit SHA is missing")
     requested=Path(work)
     lease=workspace_lease.create_named(requested.parent,requested.name,workspace_lease.WorkspacePurpose.ARTIFACT_EXECUTION)
     run_id=__import__("hashlib").sha256(str(lease.root).encode()).hexdigest()[:12]
     try:
         result=_run_linux_canary(lease.root)
-        result["commit_sha"]=os.environ.get("GITHUB_SHA","")
+        result["commit_sha"]=commit_sha
         result["workflow_url"]=(f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}" if all(key in os.environ for key in ("GITHUB_SERVER_URL","GITHUB_REPOSITORY","GITHUB_RUN_ID")) else "")
         result["inventory_sha256"]=__import__("hashlib").sha256(provision.INVENTORY.read_bytes()).hexdigest()
         if result_path is not None: Path(result_path).write_text(json.dumps(result,sort_keys=True,indent=2)+"\n",encoding="utf-8")

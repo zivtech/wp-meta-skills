@@ -120,13 +120,31 @@ def test_live_boundary_is_blocked_off_linux(monkeypatch, tmp_path):
 
 def test_linux_wrapper_uses_and_cleans_plan006_lease(monkeypatch, tmp_path):
     monkeypatch.setattr(guard.platform,"system",lambda:"Linux")
+    monkeypatch.setenv("CANARY_COMMIT_SHA","a"*40)
     def fake_run(root):
         assert (root/".workspace-lease").is_file(); (root/"evidence").write_text("ok"); return {"status":"pass"}
     monkeypatch.setattr(guard,"_run_linux_canary",fake_run)
     monkeypatch.setattr(guard.provision,"run_capped",lambda *_args,**_kwargs:{"returncode":0,"stdout":"","stderr":""})
     requested=tmp_path/"lease"
-    assert guard.run_linux_canary(requested)["status"]=="pass"
+    result=guard.run_linux_canary(requested)
+    assert result["status"]=="pass" and result["commit_sha"]=="a"*40
     assert not requested.exists()
+
+def test_github_canary_requires_explicit_head_sha(monkeypatch,tmp_path):
+    monkeypatch.setattr(guard.platform,"system",lambda:"Linux")
+    monkeypatch.setenv("GITHUB_ACTIONS","true")
+    monkeypatch.setenv("GITHUB_SHA","b"*40)
+    monkeypatch.delenv("CANARY_COMMIT_SHA",raising=False)
+    with pytest.raises(RuntimeError,match="exact canary commit SHA"): guard.run_linux_canary(tmp_path/"never-created")
+    assert not (tmp_path/"never-created").exists()
+
+def test_workflow_fetches_and_verifies_explicit_canary_sha():
+    workflow=(HARNESS.parent.parent / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+    sandbox=workflow.split("sandbox-feasibility:",1)[1].split("  validate:",1)[0]
+    assert "github.event.pull_request.head.sha || github.sha" in sandbox
+    assert 'fetch --no-tags --depth=1 origin "$CANARY_COMMIT_SHA"' in sandbox
+    assert 'test "$(git rev-parse HEAD)" = "$CANARY_COMMIT_SHA"' in sandbox
+    assert 'origin "$GITHUB_SHA"' not in sandbox
 
 def test_services_have_complete_static_resource_policy():
     for service in guard.canary_compose()["services"].values():
@@ -167,6 +185,7 @@ def test_wp_cli_verification_fails_closed():
 
 def test_outer_cleanup_preserves_inspection_failure(monkeypatch,tmp_path):
     monkeypatch.setattr(guard.platform,"system",lambda:"Linux")
+    monkeypatch.setenv("CANARY_COMMIT_SHA","a"*40)
     monkeypatch.setattr(guard,"_run_linux_canary",lambda _root:(_ for _ in ()).throw(RuntimeError("inspection failure")))
     cleanups=[]
     monkeypatch.setattr(guard.provision,"run_capped",lambda command,**_kwargs:cleanups.append(command) or {"returncode":1,"stdout":"","stderr":"cleanup failed"})
