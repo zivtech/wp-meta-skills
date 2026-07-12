@@ -47,6 +47,7 @@ python3 scripts/validate-eval-suite-integrity.py \
 python3 -m pytest \
   evals/harness/tests/test_invoke_claude_command.py \
   evals/harness/tests/test_workspace_lease.py \
+  evals/harness/tests/test_executor_repair_loop.py \
   evals/harness/tests/test_wordpress_runtime_smoke.py \
   evals/harness/tests/test_wordpress_artifact_oracle.py \
   evals/harness/tests/test_wordpress_blueprint_launch_readiness.py \
@@ -60,6 +61,8 @@ python3 -m pytest \
   evals/harness/tests/test_answer_key_score.py \
   evals/harness/tests/test_pairwise_pilot.py \
   evals/harness/tests/test_wordpress_candidate_pilot_generation.py \
+  evals/harness/tests/test_wp_api_lint.py \
+  evals/harness/tests/test_wp_security_gate.py \
   -q
 ```
 

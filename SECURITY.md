@@ -50,6 +50,8 @@ python3 scripts/validate-eval-suite-integrity.py \
   --allow-known-gaps
 python3 -m pytest \
   evals/harness/tests/test_invoke_claude_command.py \
+  evals/harness/tests/test_workspace_lease.py \
+  evals/harness/tests/test_executor_repair_loop.py \
   evals/harness/tests/test_wordpress_runtime_smoke.py \
   evals/harness/tests/test_wordpress_artifact_oracle.py \
   evals/harness/tests/test_wordpress_blueprint_launch_readiness.py \
