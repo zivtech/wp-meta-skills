@@ -143,20 +143,32 @@ def test_load_json_object_rejects_missing_empty_and_malformed(tmp_path):
 
 
 def test_stage_failure_preserves_fail_and_blocked_gates():
-    result = loop._stage_failure("runtime", "runtime_status", "blocked", [
+    result = loop._stage_failure("runtime_status", "blocked", [
         {"id": "plugin_check", "status": "fail", "detail": "ERROR broken"},
         {"id": "wp_env_smoke", "status": "blocked", "detail": "tool missing"},
         {"id": "other", "status": "pass", "detail": "ok"},
     ])
-    assert result["failing_gates"] == ["plugin_check", "wp_env_smoke"]
-    assert result["gate_vector"] == {"plugin_check": "fail", "wp_env_smoke": "blocked"}
+    assert result["failing_gates"] == ["runtime_status"]
+    assert result["gate_vector"] == {"runtime_status": "fail"}
+    assert "plugin_check" in result["failures"] and "wp_env_smoke" in result["failures"]
     assert "other" not in result["failures"]
 
 
 def test_stage_failure_names_command_return_code():
-    result = loop._stage_failure("runtime", "runtime_command", "return code 2")
+    result = loop._stage_failure("runtime_command", "return code 2")
     assert result["failing_gates"] == ["runtime_command"]
     assert "return code 2" in result["failures"]
+
+
+def test_stage_failure_sanitizes_and_bounds_subordinate_diagnostics():
+    checks = [{"id": "bad id/../../", "status": "blocked",
+               "detail": "ERROR /private/client/file.php token=supersecret " + "x" * 2000} for _ in range(40)]
+    result = loop._stage_failure("runtime_status", "blocked", checks)
+    assert result["failing_gates"] == ["runtime_status"]
+    assert "supersecret" not in result["failures"]
+    assert "/private/client" not in result["failures"]
+    assert "bad_id_.._.._" in result["failures"]
+    assert len(result["failures"].encode()) <= 12_100
 
 
 # --- new-this-sweep coverage: warning-inclusive feedback + cross-market providers ---

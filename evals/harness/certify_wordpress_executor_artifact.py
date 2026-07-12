@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import stat
 import sys
 from pathlib import Path
@@ -37,6 +38,62 @@ EVIDENCE_SCHEMA_VERSION = 1
 MAX_DIGEST_FILES = 10_000
 MAX_DIGEST_BYTES = 256 * 1024 * 1024
 MAX_DIGEST_PATH_BYTES = 4096
+EXECUTION_CLOSURE_IGNORE = frozenset({".workspace-lease", ".git", ".wp-env", "node_modules"})
+
+
+def regular_tree_paths(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    for directory, names, files in os.walk(root, topdown=True, followlinks=False):
+        base = Path(directory)
+        kept: list[str] = []
+        for name in names:
+            child = base / name
+            if name in EXECUTION_CLOSURE_IGNORE:
+                continue
+            if stat.S_ISLNK(child.lstat().st_mode):
+                raise ValueError(f"artifact contains symlink: {child}")
+            kept.append(name)
+        names[:] = kept
+        for name in files:
+            if name not in EXECUTION_CLOSURE_IGNORE:
+                paths.append((base / name).relative_to(root))
+    return sorted(paths, key=lambda item: item.as_posix())
+
+
+def read_regular_file(root: Path, relative: Path, *, max_bytes: int) -> tuple[bytes, os.stat_result]:
+    current = root
+    for component in relative.parts[:-1]:
+        current /= component
+        info = current.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"unsafe artifact path component: {current}")
+    candidate = root / relative
+    before = candidate.lstat()
+    if stat.S_ISLNK(before.st_mode):
+        raise ValueError(f"artifact contains symlink: {candidate}")
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"artifact contains non-regular file: {candidate}")
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError("secure no-follow artifact reads are unavailable")
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    fd = os.open(candidate, flags)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError(f"artifact changed while opening: {candidate}")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, min(64 * 1024, max_bytes - total + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError("artifact exceeds digest bounds")
+            chunks.append(chunk)
+        return b"".join(chunks), opened
+    finally:
+        os.close(fd)
 
 
 def digest_regular_tree(path: Path) -> str:
@@ -46,23 +103,16 @@ def digest_regular_tree(path: Path) -> str:
     root = path.resolve(strict=True)
     entries: list[dict[str, Any]] = []
     total = 0
-    candidates = [root] if root.is_file() else sorted(root.rglob("*"), key=lambda item: item.as_posix())
-    for candidate in candidates:
-        if candidate != root and ".workspace-lease" in candidate.relative_to(root).parts:
-            continue
-        info = candidate.lstat()
-        if stat.S_ISLNK(info.st_mode):
-            raise ValueError(f"artifact contains symlink: {candidate}")
-        if stat.S_ISDIR(info.st_mode):
-            continue
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError(f"artifact contains non-regular file: {candidate}")
-        if len(entries) >= MAX_DIGEST_FILES or total + info.st_size > MAX_DIGEST_BYTES:
+    relatives = [Path(root.name)] if stat.S_ISREG(root.lstat().st_mode) else regular_tree_paths(root)
+    read_root = root.parent if stat.S_ISREG(root.lstat().st_mode) else root
+    for relative_path in relatives:
+        content, info = read_regular_file(read_root, relative_path, max_bytes=MAX_DIGEST_BYTES - total)
+        if len(entries) >= MAX_DIGEST_FILES:
             raise ValueError("artifact exceeds digest bounds")
-        relative = candidate.name if root.is_file() else candidate.relative_to(root).as_posix()
+        relative = relative_path.name if root == read_root / relative_path and root.is_file() else relative_path.as_posix()
         if len(relative.encode("utf-8")) > MAX_DIGEST_PATH_BYTES:
             raise ValueError("artifact path exceeds digest bounds")
-        content_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        content_hash = hashlib.sha256(content).hexdigest()
         entries.append({"path": relative, "size": info.st_size, "sha256": content_hash})
         total += info.st_size
     lines = "\n".join(
@@ -86,9 +136,9 @@ def artifact_path_for(executor: str, out_dir: Path) -> Path:
 def execution_closure_for(executor: str, out_dir: Path) -> Path:
     if executor != "plugin":
         return artifact_path_for(executor, out_dir)
-    children = [item for item in out_dir.iterdir()
-                if item.name != ".workspace-lease" and stat.S_ISDIR(item.lstat().st_mode)]
-    if len(children) != 1:
+    children = [item for item in out_dir.iterdir() if item.name != ".workspace-lease"]
+    if (len(children) != 1 or stat.S_ISLNK(children[0].lstat().st_mode)
+            or not stat.S_ISDIR(children[0].lstat().st_mode)):
         raise ValueError("plugin materialization must contain exactly one plugin directory")
     return children[0]
 

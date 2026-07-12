@@ -24,6 +24,7 @@ import hashlib
 import json
 import secrets
 import stat
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -196,17 +197,27 @@ def _failure_text(checks: list[dict[str, Any]]) -> str:
     which warnings. Strong models hit 0 warnings, which hid the gap.
     """
     lines: list[str] = []
-    for c in checks:
-        if c["status"] != "fail":
+    total = 0
+    for c in checks[:20]:
+        if c["status"] not in {"fail", "blocked"}:
             continue
-        detail = c["detail"].replace("\\n", "\n")
+        check_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(c.get("id", "check")))[:80]
+        detail = str(c.get("detail", "")).replace("\\n", "\n")
+        detail = re.sub(r"(?i)\b(api[_-]?key|token|password|secret|authorization)\b\s*[:=]\s*\S+", r"\1=[REDACTED]", detail)
+        detail = re.sub(r"(?<![A-Za-z0-9_.-])/(?:[^\s/:]+/)+[^\s:]+", "[PATH]", detail)
         diag = [ln.strip() for ln in detail.splitlines()
                 if ln.strip() and ("ERROR" in ln or "WARNING" in ln)]
-        lines.append(f"- {c['id']}:")
+        lines.append(f"- {check_id} ({c['status']}):")
         if diag:
-            lines.extend(f"    {d}" for d in diag[:15])
+            selected = diag[:10]
         else:
-            lines.append(f"    {detail[:400]}")
+            selected = [detail[:500]]
+        for item in selected:
+            line = f"    {item[:500]}"
+            if total + len(line.encode()) > 12_000:
+                return "\n".join(lines + ["    [diagnostics truncated]"])
+            lines.append(line)
+            total += len(line.encode())
     return "\n".join(lines) if lines else "(gate failed without itemised detail)"
 
 
@@ -218,12 +229,11 @@ def _load_json_object(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _stage_failure(stage: str, gate: str, detail: str, checks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _stage_failure(gate: str, detail: str, checks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     relevant = [c for c in (checks or []) if c.get("status") in {"fail", "blocked"}]
-    gates = [str(c.get("id", gate)) for c in relevant] or [gate]
-    diagnostics = _failure_text(relevant) if relevant else f"{gate}: {detail}"
-    return {"passed": False, "failing_gates": gates, "failures": diagnostics,
-            "gate_vector": {str(c.get("id", gate)): str(c.get("status")) for c in relevant} or {gate: "fail"}}
+    diagnostics = _failure_text(relevant or [{"id": gate, "status": "fail", "detail": detail}])
+    return {"passed": False, "failing_gates": [gate], "failures": diagnostics,
+            "gate_vector": {gate: "fail"}}
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +441,7 @@ def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout
             art = create_named(run_dir, f"iter{iteration}.art", WorkspacePurpose.ARTIFACT_EXECUTION).root
             res = create_named(run_dir, f"iter{iteration}.cert", WorkspacePurpose.RESULT).root
         except FileExistsError:
-            return _stage_failure("static", "static_evidence", "iteration output already exists")
+            return _stage_failure("static_evidence", "iteration output already exists")
         evidence_id = f"{secrets.token_hex(16)}-iter{iteration}"
         packet_digest = hashlib.sha256(Path(packet).read_bytes()).hexdigest()
 
@@ -448,14 +458,15 @@ def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout
             checks = _checks_with_status(static or {})
             checks.insert(0, {"id": "static_command", "status": "fail",
                               "detail": f"return code {static_proc.returncode}"})
-            return _stage_failure("static", "static_command", f"return code {static_proc.returncode}", checks)
+            return _stage_failure("static_command", f"return code {static_proc.returncode}", checks)
         if static is None:
-            return _stage_failure("static", "static_evidence", "certification.json missing or malformed")
+            return _stage_failure("static_evidence", "certification.json missing or malformed")
         candidates: list[Path] = []
         if executor == "plugin":
-            candidates = [p for p in art.iterdir() if p.name != ".workspace-lease" and stat.S_ISDIR(p.lstat().st_mode)]
-            if len(candidates) != 1:
-                return _stage_failure("static", "static_evidence", "materialization did not produce exactly one plugin directory")
+            candidates = [p for p in art.iterdir() if p.name != ".workspace-lease"]
+            if (len(candidates) != 1 or stat.S_ISLNK(candidates[0].lstat().st_mode)
+                    or not stat.S_ISDIR(candidates[0].lstat().st_mode)):
+                return _stage_failure("static_evidence", "materialization did not produce exactly one plugin directory")
             artifact_path = candidates[0]
         elif executor == "blueprint":
             artifact_path = art / "blueprint.json"
@@ -464,7 +475,7 @@ def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout
         try:
             observed_digest = digest_regular_tree(artifact_path)
         except (OSError, ValueError) as exc:
-            return _stage_failure("static", "static_evidence", f"artifact digest failed: {exc}")
+            return _stage_failure("static_evidence", f"artifact digest failed: {exc}")
         identity_ok = (
             static.get("schema_version") == 1 and static.get("evidence_id") == evidence_id
             and static.get("executor") == executor and static.get("profile") == "static"
@@ -472,7 +483,7 @@ def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout
             and static.get("artifact_digest") == observed_digest
         )
         if not identity_ok:
-            return _stage_failure("static", "static_evidence", "identity or digest mismatch")
+            return _stage_failure("static_evidence", "identity or digest mismatch")
         static_checks = _checks_with_status(static)
         static_failing = [c["id"] for c in static_checks if c["status"] == "fail"]
         if static.get("status") != "pass" or static.get("pass") is not True:
@@ -486,7 +497,7 @@ def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout
                     "gate_vector": {c["id"]: c["status"] for c in static_checks}}
 
         if executor != "plugin":
-            return _stage_failure("runtime", "runtime_profile", "Plan 008 runtime profile supports plugin artifacts only")
+            return _stage_failure("runtime_profile", "Plan 008 runtime profile supports plugin artifacts only")
 
         # Stage B: provisioned runtime gate (WPCS + Plugin Check + wp-env activation).
         runtime_artifact = candidates[0]
@@ -509,19 +520,19 @@ def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout
             checks = _checks_with_status(data or {})
             checks.insert(0, {"id": "runtime_command", "status": "fail",
                               "detail": f"return code {runtime_proc.returncode}"})
-            return _stage_failure("runtime", "runtime_command", f"return code {runtime_proc.returncode}", checks)
+            return _stage_failure("runtime_command", f"return code {runtime_proc.returncode}", checks)
         if data is None:
-            return _stage_failure("runtime", "runtime_result", "exact runtime result missing or malformed")
+            return _stage_failure("runtime_result", "exact runtime result missing or malformed")
         if not (
             data.get("schema_version") == 1 and data.get("run_id") == run_id
             and data.get("evidence_id") == evidence_id and data.get("artifact_kind") == "plugin"
             and data.get("input_artifact_digest") == expected_digest
         ):
-            return _stage_failure("runtime", "runtime_result", "runtime identity or artifact digest mismatch")
+            return _stage_failure("runtime_result", "runtime identity or artifact digest mismatch")
         if data.get("status") != "pass":
-            return _stage_failure("runtime", "runtime_status", f"top-level status {data.get('status')}", _checks_with_status(data))
+            return _stage_failure("runtime_status", f"top-level status {data.get('status')}", _checks_with_status(data))
         if (data.get("full_plugin_runtime_profile") or {}).get("status") != "pass":
-            return _stage_failure("runtime", "runtime_profile", "required full profile did not pass", _checks_with_status(data.get("full_plugin_runtime_profile") or {}))
+            return _stage_failure("runtime_profile", "required full profile did not pass", _checks_with_status(data.get("full_plugin_runtime_profile") or {}))
         # Use only the runtime profile's check array (the one containing plugin_check / wp_env_smoke).
         runtime_checks: list[dict[str, Any]] = []
         for node in _walk_objects(data):

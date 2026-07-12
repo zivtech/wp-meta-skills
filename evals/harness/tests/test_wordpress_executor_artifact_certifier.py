@@ -422,3 +422,36 @@ def test_tree_digest_uses_versioned_canonical_jsonl(tmp_path):
     encoded = ("\n".join(json.dumps(item, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
                            for item in records) + "\n").encode()
     assert certifier.digest_regular_tree(artifact) == hashlib.sha256(encoded).hexdigest()
+
+
+def test_execution_closure_ignored_entries_do_not_change_digest(tmp_path):
+    artifact = tmp_path / "artifact"; artifact.mkdir()
+    (artifact / "plugin.php").write_text("stable", encoding="utf-8")
+    expected = certifier.digest_regular_tree(artifact)
+    for ignored in certifier.EXECUTION_CLOSURE_IGNORE:
+        directory = artifact / ignored; directory.mkdir()
+        (directory / "external.txt").write_text("ignored", encoding="utf-8")
+    assert certifier.digest_regular_tree(artifact) == expected
+
+
+def test_digest_symlink_swap_between_lstat_and_open_fails_closed(tmp_path, monkeypatch):
+    artifact = tmp_path / "artifact"; artifact.mkdir()
+    candidate = artifact / "plugin.php"; candidate.write_text("safe", encoding="utf-8")
+    external = tmp_path / "external"; external.write_text("DO-NOT-READ", encoding="utf-8")
+    original_open = certifier.os.open
+
+    def swapping_open(path, flags, *args):
+        if Path(path) == candidate:
+            candidate.unlink(); candidate.symlink_to(external)
+        return original_open(path, flags, *args)
+
+    monkeypatch.setattr(certifier.os, "open", swapping_open)
+    with pytest.raises(OSError):
+        certifier.digest_regular_tree(artifact)
+
+
+def test_plugin_execution_closure_rejects_unexpected_sibling(tmp_path):
+    out = tmp_path / "out"; out.mkdir(); (out / "plugin").mkdir()
+    (out / "unexpected.txt").write_text("no", encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly one"):
+        certifier.execution_closure_for("plugin", out)

@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import certify_wordpress_executor_artifact as certifier
 import run_wordpress_runtime_smoke as smoke
 
 HARNESS_ROOT = Path(__file__).resolve().parents[1]
@@ -570,6 +571,36 @@ def test_mutation_during_staging_blocks_before_wp_env(tmp_path, monkeypatch):
     assert result["status"] == "blocked"
     assert result["input_artifact_digest"] != expected
     assert which_called is False
+
+
+def test_staging_symlink_swap_never_copies_external_or_starts_wp_env(tmp_path, monkeypatch):
+    source = tmp_path / "source"; source.mkdir()
+    candidate = source / "plugin.php"; candidate.write_text("safe", encoding="utf-8")
+    external = tmp_path / "external"; external.write_text("DO-NOT-COPY", encoding="utf-8")
+    original_open = certifier.os.open
+    which_called = False
+
+    swapped = False
+
+    def swapping_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if Path(path) == candidate and not swapped:
+            swapped = True
+            candidate.unlink(); candidate.symlink_to(external)
+        return original_open(path, flags, *args, **kwargs)
+
+    def forbidden_which(_name):
+        nonlocal which_called
+        which_called = True
+        return "/usr/bin/npx"
+
+    monkeypatch.setattr(certifier.os, "open", swapping_open)
+    monkeypatch.setattr(smoke.shutil, "which", forbidden_which)
+    with pytest.raises(OSError):
+        smoke.run_smoke(timeout_sec=5, workdir=tmp_path / "runtime", artifact_path=source)
+    assert which_called is False
+    copied = list((tmp_path / "runtime").rglob("plugin.php"))
+    assert all(path.read_text(encoding="utf-8") != "DO-NOT-COPY" for path in copied if not path.is_symlink())
 
 
 def test_phpunit_smoke_blocks_when_artifact_composer_install_fails():

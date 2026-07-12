@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -31,7 +32,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import validate_wordpress_artifact
-from certify_wordpress_executor_artifact import EVIDENCE_SCHEMA_VERSION, digest_regular_tree
+from certify_wordpress_executor_artifact import (EVIDENCE_SCHEMA_VERSION, EXECUTION_CLOSURE_IGNORE,
+                                                  MAX_DIGEST_BYTES, digest_regular_tree,
+                                                  read_regular_file, regular_tree_paths)
 from workspace_lease import (WorkspaceCleanupError, WorkspacePurpose, cleanup as cleanup_workspace,
                              create_ephemeral, create_named, validate_safe_name)
 from workspace_lease import validate_output_parent
@@ -57,7 +60,7 @@ BASE_NEGATIVE_SPACE = (
     "not editor or browser smoke proof",
     "not proof of executor-generated artifacts",
 )
-ARTIFACT_COPY_IGNORE = {".git", ".wp-env", "node_modules"}
+ARTIFACT_COPY_IGNORE = set(EXECUTION_CLOSURE_IGNORE)
 
 
 @dataclass(frozen=True)
@@ -300,8 +303,19 @@ def wrapped_block_artifact_summary(wrapped: WrappedBlockArtifact | None) -> dict
     }
 
 
+def _write_staged_file(destination: Path, content: bytes) -> None:
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError("secure no-follow artifact staging is unavailable")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    fd = os.open(destination, flags, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(content)
+
+
 def copy_plugin_artifact(source: Path, root: Path) -> Path:
-    source = source.resolve()
+    if stat.S_ISLNK(source.lstat().st_mode):
+        raise ValueError(f"artifact root is a symlink: {source}")
+    source = source.resolve(strict=True)
     if not source.exists():
         raise FileNotFoundError(f"artifact path does not exist: {source}")
 
@@ -310,15 +324,19 @@ def copy_plugin_artifact(source: Path, root: Path) -> Path:
     if plugin_dir.exists():
         shutil.rmtree(plugin_dir)
 
-    if source.is_dir():
-        shutil.copytree(
-            source,
-            plugin_dir,
-            ignore=shutil.ignore_patterns(*sorted(ARTIFACT_COPY_IGNORE)),
-        )
+    if stat.S_ISDIR(source.lstat().st_mode):
+        plugin_dir.mkdir()
+        total = 0
+        for relative in regular_tree_paths(source):
+            content, _info = read_regular_file(source, relative, max_bytes=MAX_DIGEST_BYTES - total)
+            total += len(content)
+            destination = plugin_dir / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            _write_staged_file(destination, content)
     else:
         plugin_dir.mkdir()
-        shutil.copy2(source, plugin_dir / source.name)
+        content, _info = read_regular_file(source.parent, Path(source.name), max_bytes=MAX_DIGEST_BYTES)
+        _write_staged_file(plugin_dir / source.name, content)
 
     write_wp_env_config(root, plugin_dir.name)
     return plugin_dir
