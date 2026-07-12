@@ -33,8 +33,7 @@ from typing import Any
 
 import validate_wordpress_artifact
 from certify_wordpress_executor_artifact import (EVIDENCE_SCHEMA_VERSION, EXECUTION_CLOSURE_IGNORE,
-                                                  MAX_DIGEST_BYTES, digest_regular_tree,
-                                                  read_regular_file, regular_tree_paths)
+                                                  digest_regular_tree, snapshot_regular_tree)
 from workspace_lease import (WorkspaceCleanupError, WorkspacePurpose, cleanup as cleanup_workspace,
                              create_ephemeral, create_named, validate_safe_name)
 from workspace_lease import validate_output_parent
@@ -326,16 +325,13 @@ def copy_plugin_artifact(source: Path, root: Path) -> Path:
 
     if stat.S_ISDIR(source.lstat().st_mode):
         plugin_dir.mkdir()
-        total = 0
-        for relative in regular_tree_paths(source):
-            content, _info = read_regular_file(source, relative, max_bytes=MAX_DIGEST_BYTES - total)
-            total += len(content)
+        for relative, content, _info in snapshot_regular_tree(source):
             destination = plugin_dir / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             _write_staged_file(destination, content)
     else:
         plugin_dir.mkdir()
-        content, _info = read_regular_file(source.parent, Path(source.name), max_bytes=MAX_DIGEST_BYTES)
+        _relative, content, _info = snapshot_regular_tree(source)[0]
         _write_staged_file(plugin_dir / source.name, content)
 
     write_wp_env_config(root, plugin_dir.name)

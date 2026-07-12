@@ -149,7 +149,9 @@ def test_stage_failure_preserves_fail_and_blocked_gates():
         {"id": "other", "status": "pass", "detail": "ok"},
     ])
     assert result["failing_gates"] == ["runtime_status"]
-    assert result["gate_vector"] == {"runtime_status": "fail"}
+    assert result["gate_vector"] == {"runtime_status": {"status": "fail", "checks": [
+        {"id": "plugin_check", "status": "fail"}, {"id": "wp_env_smoke", "status": "blocked"}
+    ]}}
     assert "plugin_check" in result["failures"] and "wp_env_smoke" in result["failures"]
     assert "other" not in result["failures"]
 
@@ -169,6 +171,12 @@ def test_stage_failure_sanitizes_and_bounds_subordinate_diagnostics():
     assert "/private/client" not in result["failures"]
     assert "bad_id_.._.._" in result["failures"]
     assert len(result["failures"].encode()) <= 12_100
+
+
+def test_contradictory_enclosing_pass_cannot_hide_blocked_or_failed_checks():
+    checks = [{"id": "ok", "status": "pass"}, {"id": "blocked", "status": "blocked"},
+              {"id": "failed", "status": "fail"}]
+    assert loop._nonpassing_check_ids(checks) == ["blocked", "failed"]
 
 
 # --- new-this-sweep coverage: warning-inclusive feedback + cross-market providers ---

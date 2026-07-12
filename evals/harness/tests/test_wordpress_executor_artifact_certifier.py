@@ -440,10 +440,14 @@ def test_digest_symlink_swap_between_lstat_and_open_fails_closed(tmp_path, monke
     external = tmp_path / "external"; external.write_text("DO-NOT-READ", encoding="utf-8")
     original_open = certifier.os.open
 
-    def swapping_open(path, flags, *args):
-        if Path(path) == candidate:
+    swapped = False
+
+    def swapping_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if str(path) == candidate.name and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
             candidate.unlink(); candidate.symlink_to(external)
-        return original_open(path, flags, *args)
+        return original_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(certifier.os, "open", swapping_open)
     with pytest.raises(OSError):
@@ -455,3 +459,71 @@ def test_plugin_execution_closure_rejects_unexpected_sibling(tmp_path):
     (out / "unexpected.txt").write_text("no", encoding="utf-8")
     with pytest.raises(ValueError, match="exactly one"):
         certifier.execution_closure_for("plugin", out)
+
+
+@pytest.mark.parametrize("kind", ["file-root", "directory-root", "intermediate"])
+def test_descriptor_traversal_rejects_component_swaps(tmp_path, monkeypatch, kind):
+    artifact = tmp_path / ("plugin.php" if kind == "file-root" else "artifact")
+    if kind == "file-root":
+        artifact.write_text("safe", encoding="utf-8")
+        swap_name = artifact.name
+    else:
+        artifact.mkdir()
+        sub = artifact / "sub"; sub.mkdir()
+        (sub / "plugin.php").write_text("safe", encoding="utf-8")
+        swap_name = artifact.name if kind == "directory-root" else "sub"
+    external = tmp_path / "external-dir"; external.mkdir()
+    (external / "secret").write_text("DO-NOT-READ", encoding="utf-8")
+    original_open = certifier.os.open
+    swapped = False
+
+    def swapping_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if str(path) == swap_name and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            target = artifact if kind != "intermediate" else artifact / "sub"
+            moved = tmp_path / f"moved-{kind}"
+            target.rename(moved)
+            target.symlink_to(external, target_is_directory=True)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(certifier.os, "open", swapping_open)
+    with pytest.raises(OSError):
+        certifier.digest_regular_tree(artifact)
+
+
+def test_descriptor_traversal_rejects_symlinked_ancestor(tmp_path):
+    real = tmp_path / "real"; real.mkdir()
+    artifact = real / "artifact"; artifact.mkdir()
+    (artifact / "plugin.php").write_text("safe", encoding="utf-8")
+    linked = tmp_path / "linked"; linked.symlink_to(real, target_is_directory=True)
+    with pytest.raises(OSError):
+        certifier.digest_regular_tree(linked / "artifact")
+
+
+def test_descriptor_traversal_rejects_symlinked_intermediate_parent(tmp_path):
+    real = tmp_path / "real"; real.mkdir()
+    nested = real / "nested"; nested.mkdir()
+    artifact = nested / "plugin.php"; artifact.write_text("safe", encoding="utf-8")
+    outer = tmp_path / "outer"; outer.mkdir()
+    (outer / "nested").symlink_to(nested, target_is_directory=True)
+    with pytest.raises(OSError):
+        certifier.digest_regular_tree(outer / "nested" / "plugin.php")
+
+
+def test_regular_file_root_replacement_is_detected_by_inode(tmp_path, monkeypatch):
+    artifact = tmp_path / "plugin.php"; artifact.write_text("safe", encoding="utf-8")
+    replacement = tmp_path / "replacement.php"; replacement.write_text("different", encoding="utf-8")
+    original_open = certifier.os.open
+    swapped = False
+
+    def swapping_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if str(path) == artifact.name and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            artifact.unlink(); replacement.rename(artifact)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(certifier.os, "open", swapping_open)
+    with pytest.raises(ValueError, match="changed while opening"):
+        certifier.digest_regular_tree(artifact)

@@ -584,7 +584,7 @@ def test_staging_symlink_swap_never_copies_external_or_starts_wp_env(tmp_path, m
 
     def swapping_open(path, flags, *args, **kwargs):
         nonlocal swapped
-        if Path(path) == candidate and not swapped:
+        if str(path) == candidate.name and kwargs.get("dir_fd") is not None and not swapped:
             swapped = True
             candidate.unlink(); candidate.symlink_to(external)
         return original_open(path, flags, *args, **kwargs)

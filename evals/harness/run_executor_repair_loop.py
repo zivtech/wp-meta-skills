@@ -229,11 +229,23 @@ def _load_json_object(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _nonpassing_check_ids(checks: list[dict[str, Any]]) -> list[str]:
+    return [str(check.get("id", "check")) for check in checks
+            if check.get("status") in {"fail", "blocked"}]
+
+
 def _stage_failure(gate: str, detail: str, checks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     relevant = [c for c in (checks or []) if c.get("status") in {"fail", "blocked"}]
     diagnostics = _failure_text(relevant or [{"id": gate, "status": "fail", "detail": detail}])
+    subordinate: list[dict[str, str]] = []
+    seen: dict[str, int] = {}
+    for check in relevant[:20]:
+        base = re.sub(r"[^A-Za-z0-9_.-]", "_", str(check.get("id", "check")))[:80] or "check"
+        seen[base] = seen.get(base, 0) + 1
+        identifier = base if seen[base] == 1 else f"{base[:72]}-{seen[base]}"
+        subordinate.append({"id": identifier, "status": str(check.get("status"))})
     return {"passed": False, "failing_gates": [gate], "failures": diagnostics,
-            "gate_vector": {gate: "fail"}}
+            "gate_vector": {gate: {"status": "fail", "checks": subordinate}}}
 
 
 # ---------------------------------------------------------------------------
@@ -544,7 +556,7 @@ def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout
                 break
         if not runtime_checks:
             runtime_checks = _checks_with_status(data)
-        failing = [c["id"] for c in runtime_checks if c["status"] == "fail"]
+        failing = _nonpassing_check_ids(runtime_checks)
         passed = bool(runtime_checks) and not failing
         return {"passed": passed, "failing_gates": failing,
                 "failures": _failure_text(runtime_checks),

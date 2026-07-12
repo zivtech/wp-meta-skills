@@ -96,25 +96,111 @@ def read_regular_file(root: Path, relative: Path, *, max_bytes: int) -> tuple[by
         os.close(fd)
 
 
+def snapshot_regular_tree(path: Path) -> list[tuple[Path, bytes, os.stat_result]]:
+    """Read an execution closure using retained descriptor-relative traversal."""
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise RuntimeError("descriptor-relative no-follow traversal is unavailable")
+    supplied = path.absolute()
+    before = supplied.lstat()
+    results: list[tuple[Path, bytes, os.stat_result]] = []
+    total = 0
+
+    def read_file(parent_fd: int, name: str, relative: Path, expected_info: os.stat_result | None = None) -> None:
+        nonlocal total
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError(f"artifact contains non-regular file: {relative}")
+            if expected_info and (info.st_dev, info.st_ino) != (expected_info.st_dev, expected_info.st_ino):
+                raise ValueError(f"artifact file changed while opening: {relative}")
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(fd, min(64 * 1024, MAX_DIGEST_BYTES - total + 1))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_DIGEST_BYTES:
+                    raise ValueError("artifact exceeds digest bounds")
+                chunks.append(chunk)
+            if len(results) >= MAX_DIGEST_FILES:
+                raise ValueError("artifact exceeds digest bounds")
+            results.append((relative, b"".join(chunks), info))
+        finally:
+            os.close(fd)
+
+    def walk(directory_fd: int, relative_dir: Path) -> None:
+        for name in sorted(os.listdir(directory_fd)):
+            if name in EXECUTION_CLOSURE_IGNORE:
+                continue
+            relative = relative_dir / name
+            if len(relative.as_posix().encode()) > MAX_DIGEST_PATH_BYTES:
+                raise ValueError("artifact path exceeds digest bounds")
+            info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode):
+                raise ValueError(f"artifact contains symlink: {relative}")
+            if stat.S_ISDIR(info.st_mode):
+                child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd)
+                try:
+                    opened = os.fstat(child_fd)
+                    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                        raise ValueError(f"artifact directory changed while opening: {relative}")
+                    walk(child_fd, relative)
+                finally:
+                    os.close(child_fd)
+            elif stat.S_ISREG(info.st_mode):
+                read_file(directory_fd, name, relative)
+            else:
+                raise ValueError(f"artifact contains non-regular file: {relative}")
+
+    parent_fd = open_directory_nofollow(supplied.parent)
+    try:
+        if stat.S_ISREG(before.st_mode):
+            read_file(parent_fd, supplied.name, Path(supplied.name), before)
+        elif stat.S_ISDIR(before.st_mode):
+            root_fd = os.open(supplied.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            try:
+                opened = os.fstat(root_fd)
+                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                    raise ValueError("artifact root changed while opening")
+                walk(root_fd, Path())
+            finally:
+                os.close(root_fd)
+        else:
+            raise ValueError("artifact root is not regular")
+    finally:
+        os.close(parent_fd)
+    return results
+
+
+def open_directory_nofollow(path: Path) -> int:
+    """Open an absolute directory by walking every component without following links."""
+    absolute = path.absolute()
+    fd = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for component in absolute.parts[1:]:
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            opened = os.fstat(next_fd)
+            if not stat.S_ISDIR(opened.st_mode):
+                os.close(next_fd)
+                raise ValueError(f"artifact ancestor is not a directory: {component}")
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
 def digest_regular_tree(path: Path) -> str:
     """Digest a bounded tree without following symlinks or special files."""
     if stat.S_ISLNK(path.lstat().st_mode):
         raise ValueError(f"artifact root is a symlink: {path}")
-    root = path.resolve(strict=True)
     entries: list[dict[str, Any]] = []
-    total = 0
-    relatives = [Path(root.name)] if stat.S_ISREG(root.lstat().st_mode) else regular_tree_paths(root)
-    read_root = root.parent if stat.S_ISREG(root.lstat().st_mode) else root
-    for relative_path in relatives:
-        content, info = read_regular_file(read_root, relative_path, max_bytes=MAX_DIGEST_BYTES - total)
-        if len(entries) >= MAX_DIGEST_FILES:
-            raise ValueError("artifact exceeds digest bounds")
-        relative = relative_path.name if root == read_root / relative_path and root.is_file() else relative_path.as_posix()
-        if len(relative.encode("utf-8")) > MAX_DIGEST_PATH_BYTES:
-            raise ValueError("artifact path exceeds digest bounds")
+    for relative_path, content, info in snapshot_regular_tree(path):
+        relative = relative_path.as_posix()
         content_hash = hashlib.sha256(content).hexdigest()
         entries.append({"path": relative, "size": info.st_size, "sha256": content_hash})
-        total += info.st_size
     lines = "\n".join(
         json.dumps(record, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
         for record in entries
