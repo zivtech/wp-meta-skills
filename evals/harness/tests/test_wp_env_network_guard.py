@@ -23,6 +23,12 @@ def test_fixture_tools_run_through_interpreters_on_noexec_workspace():
     assert "node_modules/@wordpress/scripts/bin/wp-scripts.js" in guard.BLOCK_BUILD_COMMAND
     assert guard.PHPUNIT_COMMAND == "php vendor/bin/phpunit"
 
+def test_compatibility_failure_names_phase_and_bounds_output():
+    error=guard.compatibility_failure("smoke","execute",{"returncode":137,"stdout":"x"*4000,"stderr":""})
+    message=str(error)
+    assert "smoke execute failed with return code 137" in message
+    assert len(message) < 2200
+
 def test_canary_is_internal_digest_only_and_bounded():
     assert guard.validate_compose(guard.canary_compose())
 

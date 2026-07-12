@@ -14,6 +14,10 @@ TRUSTED_RUNNER_LIMITS={
 }
 BLOCK_BUILD_COMMAND="node node_modules/@wordpress/scripts/bin/wp-scripts.js build"
 PHPUNIT_COMMAND="php vendor/bin/phpunit"
+
+def compatibility_failure(name, phase, result):
+    tail=(result.get("stderr") or result.get("stdout") or "")[-2000:].replace("\x00", "")
+    return RuntimeError(f"{name} {phase} failed with return code {result.get('returncode')}: {tail}")
 WRITABLE_PATHS={"database":{"/var/lib/mysql","/run/mysqld","/tmp"},"wordpress":{"/tmp","/var/www/html/wp-content/uploads"},"cli":{"/tmp"},"browser":{"/tmp"}}
 SERVICE_NETWORKS={"database":["wp_db"],"wordpress":["wp_db","browser_wp"],"cli":["wp_db"],"browser":["browser_wp"]}
 
@@ -58,9 +62,16 @@ def prove_fixture_locks(work, inv, arch):
         container=f"wp-step0-fixture-{name}-{__import__('hashlib').sha256(str(work).encode()).hexdigest()[:8]}"
         create=["docker","create","--name",container,"--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--pids-limit","256","--memory","2g","--tmpfs","/work:size=1073741824,nr_inodes=100000,mode=0700","--tmpfs","/tmp:size=67108864,nr_inodes=4096,mode=0700","--mount",f"type=bind,src={source},dst=/input,readonly","--entrypoint","sh",image,"-c","sleep infinity"]
         try:
-            for command in (create,["docker","start",container],["docker","exec",container,"sh","-eu","-c",f"{COPY_INPUT_COMMAND}; {PREPARE_WORK_ENV}; cd /work; {install}"],["docker","network","disconnect","bridge",container],["docker","exec",container,"sh","-eu","-c",f"{PREPARE_WORK_ENV}; cd /work; {execute}"]):
+            phases=(
+                ("create",create),
+                ("start",["docker","start",container]),
+                ("install",["docker","exec",container,"sh","-eu","-c",f"{COPY_INPUT_COMMAND}; {PREPARE_WORK_ENV}; cd /work; {install}"]),
+                ("disconnect",["docker","network","disconnect","bridge",container]),
+                ("execute",["docker","exec",container,"sh","-eu","-c",f"{PREPARE_WORK_ENV}; cd /work; {execute}"]),
+            )
+            for phase,command in phases:
                 result=provision.run_capped(command,timeout=900,limit=1048576)
-                if result["returncode"]: raise RuntimeError(f"{name} compatibility failed: {result['stderr']}")
+                if result["returncode"]: raise compatibility_failure(name,phase,result)
         finally: provision.run_capped(["docker","rm","-f",container],timeout=120)
 
 def canary_compose(built_images=None, identities=None):
