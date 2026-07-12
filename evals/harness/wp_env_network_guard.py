@@ -60,6 +60,12 @@ def validate_wordpress_image_config(config):
     if active != WORDPRESS_IMAGE_ACTIVE_CONFIG: raise RuntimeError("WordPress image active metadata drift")
     return True
 
+def validate_live_tmpfs_inventory(inspected, service, expected):
+    if inspected.get("Mounts"): raise RuntimeError(f"{service} live non-tmpfs mount detected")
+    actual={path:set(options.split(",")) for path,options in inspected["HostConfig"].get("Tmpfs",{}).items()}
+    if set(actual) != WRITABLE_PATHS[service] or actual != expected: raise RuntimeError(f"{service} live tmpfs options mismatch")
+    return actual
+
 def parse_tag_manifest(payload, arch):
     resolved=json.loads(payload)
     children={item["platform"]["architecture"]:item["digest"] for item in resolved.get("manifests",[]) if item.get("platform",{}).get("os")=="linux"}
@@ -276,11 +282,8 @@ def _run_linux_canary(work):
             if host["Privileged"] or host.get("Binds") or host.get("Devices") or host.get("PortBindings") or host.get("ExtraHosts") or host.get("Dns") or host.get("DnsSearch"): raise RuntimeError(f"{service} live forbidden host surface")
             if host.get("Ulimits") != [{"Name":"nofile","Hard":1024,"Soft":1024}]: raise RuntimeError(f"{service} live nofile drift")
             if any(item.split("=",1)[0].lower().endswith("proxy") for item in inspected["Config"].get("Env",[])): raise RuntimeError(f"{service} inherited proxy environment")
-            mounts={mount["Destination"] for mount in inspected["Mounts"] if mount["Type"]=="tmpfs"}
-            if mounts != WRITABLE_PATHS[service] or any(mount["Type"] != "tmpfs" for mount in inspected["Mounts"]): raise RuntimeError(f"{service} live writable inventory mismatch")
             expected_tmpfs={entry.split(":",1)[0]:set(entry.split(":",1)[1].split(",")) for entry in canary_compose(built,identities)["services"][service]["tmpfs"]}
-            actual_tmpfs={path:set(options.split(",")) for path,options in host.get("Tmpfs",{}).items()}
-            if actual_tmpfs != expected_tmpfs: raise RuntimeError(f"{service} live tmpfs options mismatch")
+            validate_live_tmpfs_inventory(inspected,service,expected_tmpfs)
             if not inspected["Config"]["User"].split(":")[0].isdigit(): raise RuntimeError(f"{service} live user is not numeric")
             networks={name.rsplit("_",1)[-1] for name in inspected["NetworkSettings"]["Networks"]}
             gateways.update(value.get("Gateway") for value in inspected["NetworkSettings"]["Networks"].values() if value.get("Gateway"))

@@ -91,6 +91,13 @@ def test_flat_wordpress_image_metadata_allowlist_rejects_inherited_runtime_state
         mutated=dict(config); mutated[field]=value
         with pytest.raises(RuntimeError,match="metadata"): guard.validate_wordpress_image_config(mutated)
 
+def test_live_writable_inventory_uses_hostconfig_tmpfs_and_rejects_mounts():
+    expected={"/tmp":{"uid=1000","gid=1000","mode=0700","size=1","nr_inodes=1"}}
+    inspected={"Mounts":[],"HostConfig":{"Tmpfs":{"/tmp":"uid=1000,gid=1000,mode=0700,size=1,nr_inodes=1"}}}
+    assert guard.validate_live_tmpfs_inventory(inspected,"cli",expected)==expected
+    with pytest.raises(RuntimeError,match="non-tmpfs"): guard.validate_live_tmpfs_inventory({**inspected,"Mounts":[{"Type":"volume","Destination":"/var/www/html"}]},"cli",expected)
+    with pytest.raises(RuntimeError,match="options"): guard.validate_live_tmpfs_inventory({"Mounts":[],"HostConfig":{"Tmpfs":{}}},"cli",expected)
+
 def test_rejects_added_service():
     spec=guard.canary_compose(); spec["services"]["surprise"]={}
     with pytest.raises(RuntimeError,match="unlisted"): guard.validate_compose(spec)
