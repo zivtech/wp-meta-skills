@@ -68,8 +68,9 @@ def validate_df_profile(output, size_bytes, nr_inodes):
 def runtime_probe_specs(base):
     browser=lambda script:base+["exec","-T","browser","node","-e",script]
     cli=lambda *args:base+["exec","-T","cli",*args]
+    db_ready="test $(id -u) != 0; wp --info; i=0; until php -r 'mysqli_report(MYSQLI_REPORT_OFF);$m=@new mysqli(\"database\",\"wordpress\",\"wordpress-canary\",\"wordpress\",3306);exit($m->connect_errno?1:0);'; do i=$((i+1)); test $i -lt 60; sleep 1; done; wp core install --url=http://wordpress:8080 --title='Sandbox Canary' --admin_user=sandbox --admin_password=not-a-secret-canary --admin_email=sandbox@example.invalid --skip-email; test \"$(wp option get siteurl)\" = http://wordpress:8080"
     return (
-      {"name":"cli-db-ready","command":cli("sh","-c","test $(id -u) != 0; wp --info; i=0; until wp db check; do i=$((i+1)); test $i -lt 60; sleep 1; done"),"timeout":70},
+      {"name":"cli-db-ready","command":cli("sh","-c",db_ready),"timeout":70},
       {"name":"browser-wordpress-http","network":True,"self_timeout":True,"command":browser("fetch('http://wordpress:8080',{signal:AbortSignal.timeout(5000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"),"timeout":10},
       {"name":"browser-public-http-denied","network":True,"self_timeout":True,"command":browser("fetch('https://example.com',{signal:AbortSignal.timeout(3000)}).then(()=>process.exit(1),()=>process.exit(0))"),"timeout":8},
       {"name":"browser-private-http-denied","network":True,"self_timeout":True,"command":browser("const t=['http://host.docker.internal','http://169.254.169.254','http://10.0.0.1','http://127.0.0.1'];Promise.all(t.map(u=>fetch(u,{signal:AbortSignal.timeout(2000)}).then(()=>{throw Error('escaped')},()=>true))).then(()=>process.exit(0),()=>process.exit(1))"),"timeout":8},

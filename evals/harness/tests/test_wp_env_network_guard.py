@@ -47,6 +47,12 @@ def test_every_network_probe_has_an_internal_timeout():
     php_dns=next(probe for probe in probes if probe["name"]=="php-public-dns-denied")
     assert php_dns["allowed"]=={0,124} and "timeout 5" in " ".join(php_dns["command"])
 
+def test_database_probe_uses_native_wordpress_database_oracle():
+    probe=next(probe for probe in guard.runtime_probe_specs(["docker","compose"]) if probe["name"]=="cli-db-ready")
+    command=" ".join(probe["command"])
+    assert "mysqli_report(MYSQLI_REPORT_OFF)" in command and "wp core install" in command and "wp option get siteurl" in command
+    assert "wp db check" not in command
+
 def test_named_probe_errors_identify_probe_and_bound_output(monkeypatch):
     monkeypatch.setattr(guard.provision,"run_capped",lambda *_args,**_kwargs:{"returncode":7,"stdout":"out","stderr":"err"})
     with pytest.raises(RuntimeError,match="probe browser-public-http-denied failed rc=7"):
