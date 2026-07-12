@@ -32,8 +32,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import validate_wordpress_artifact
-from certify_wordpress_executor_artifact import (EVIDENCE_SCHEMA_VERSION, EXECUTION_CLOSURE_IGNORE,
-                                                  digest_regular_tree, snapshot_regular_tree_with_kind)
+from certify_wordpress_executor_artifact import EVIDENCE_SCHEMA_VERSION
+from artifact_staging import EXECUTION_CLOSURE_IGNORE, digest_regular_tree, snapshot_regular_tree_with_kind
 from workspace_lease import (WorkspaceCleanupError, WorkspacePurpose, cleanup as cleanup_workspace,
                              create_ephemeral, create_named, validate_safe_name)
 from workspace_lease import validate_output_parent

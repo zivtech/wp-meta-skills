@@ -36,7 +36,7 @@ RESULTS = ROOT / "evals" / "results"
 sys.path.insert(0, str(HARNESS))
 
 import invoke  # noqa: E402  (reuse single-shot generation + provider routing)
-from certify_wordpress_executor_artifact import digest_regular_tree  # noqa: E402
+from artifact_staging import digest_regular_tree  # noqa: E402
 from workspace_lease import WorkspacePurpose, create_named  # noqa: E402
 
 # Type aliases for the injectable callables.
