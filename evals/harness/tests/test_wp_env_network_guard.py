@@ -18,6 +18,11 @@ def test_trusted_runner_workspaces_have_reviewed_separate_bounds():
     assert guard.TRUSTED_RUNNER_LIMITS["browser-runner"] == {"memory":"1g","size":536870912,"inodes":50000}
     assert guard.TRUSTED_RUNNER_LIMITS["wp-env-runner"] == {"memory":"3g","size":2147483648,"inodes":200000}
 
+def test_fixture_tools_run_through_interpreters_on_noexec_workspace():
+    assert guard.BLOCK_BUILD_COMMAND.startswith("node ")
+    assert "node_modules/@wordpress/scripts/bin/wp-scripts.js" in guard.BLOCK_BUILD_COMMAND
+    assert guard.PHPUNIT_COMMAND == "php vendor/bin/phpunit"
+
 def test_canary_is_internal_digest_only_and_bounded():
     assert guard.validate_compose(guard.canary_compose())
 

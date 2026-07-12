@@ -12,6 +12,8 @@ TRUSTED_RUNNER_LIMITS={
     "browser-runner":{"memory":"1g","size":536870912,"inodes":50000},
     "wp-env-runner":{"memory":"3g","size":2147483648,"inodes":200000},
 }
+BLOCK_BUILD_COMMAND="node node_modules/@wordpress/scripts/bin/wp-scripts.js build"
+PHPUNIT_COMMAND="php vendor/bin/phpunit"
 WRITABLE_PATHS={"database":{"/var/lib/mysql","/run/mysqld","/tmp"},"wordpress":{"/tmp","/var/www/html/wp-content/uploads"},"cli":{"/tmp"},"browser":{"/tmp"}}
 SERVICE_NETWORKS={"database":["wp_db"],"wordpress":["wp_db","browser_wp"],"cli":["wp_db"],"browser":["browser_wp"]}
 
@@ -50,9 +52,9 @@ def prove_fixture_locks(work, inv, arch):
         if not result["pass"]: raise RuntimeError(f"fixture materialization failed: {name}")
         source=target/("acme-runtime-tested" if name=="phpunit" else "")
         if name=="phpunit":
-            image=f"composer@{provision.platform_digest(inv['composer'],arch)}"; install="PATH=/usr/local/bin:/bin php /usr/bin/composer install --no-interaction --no-progress --no-scripts --no-plugins --prefer-dist"; execute="vendor/bin/phpunit"
+            image=f"composer@{provision.platform_digest(inv['composer'],arch)}"; install="PATH=/usr/local/bin:/bin php /usr/bin/composer install --no-interaction --no-progress --no-scripts --no-plugins --prefer-dist"; execute=PHPUNIT_COMMAND
         else:
-            image=f"node@{provision.platform_digest(inv['node'],arch)}"; install="npm ci --ignore-scripts --no-audit --no-fund"; execute="npm run build"
+            image=f"node@{provision.platform_digest(inv['node'],arch)}"; install="npm ci --ignore-scripts --no-audit --no-fund"; execute=BLOCK_BUILD_COMMAND
         container=f"wp-step0-fixture-{name}-{__import__('hashlib').sha256(str(work).encode()).hexdigest()[:8]}"
         create=["docker","create","--name",container,"--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--pids-limit","256","--memory","2g","--tmpfs","/work:size=1073741824,nr_inodes=100000,mode=0700","--tmpfs","/tmp:size=67108864,nr_inodes=4096,mode=0700","--mount",f"type=bind,src={source},dst=/input,readonly","--entrypoint","sh",image,"-c","sleep infinity"]
         try:
