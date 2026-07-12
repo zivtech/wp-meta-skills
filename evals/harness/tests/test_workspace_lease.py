@@ -35,27 +35,19 @@ def test_cleanup_refuses_mismatched_and_missing_sentinel(tmp_path):
     with pytest.raises(RuntimeError, match="does not match"):
         workspace_lease.cleanup(lease)
     sentinel.unlink()
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(workspace_lease.WorkspaceCleanupError, match="cleanup validation failed"):
         workspace_lease.cleanup(lease)
 
 
-def test_cleanup_refuses_forged_lease_and_dangerous_roots(tmp_path):
+def test_cleanup_refuses_reconstructed_lease_with_all_visible_fields(tmp_path):
     lease = workspace_lease.create_ephemeral(tmp_path, workspace_lease.WorkspacePurpose.RUNTIME)
-    forged = workspace_lease.WorkspaceLease(tmp_path, tmp_path, lease.purpose, lease.lease_id, True)
-    with pytest.raises(RuntimeError, match="dangerous"):
-        workspace_lease.cleanup(forged)
-    forged_home = workspace_lease.WorkspaceLease(Path.home(), tmp_path, lease.purpose, lease.lease_id, True)
-    with pytest.raises(RuntimeError):
-        workspace_lease.cleanup(forged_home)
-    forged_root = workspace_lease.WorkspaceLease(Path(Path.home().anchor), tmp_path, lease.purpose, lease.lease_id, True)
-    with pytest.raises(RuntimeError, match="dangerous"):
-        workspace_lease.cleanup(forged_root)
-    repository_root = Path(__file__).resolve().parents[3]
-    forged_repo = workspace_lease.WorkspaceLease(
-        repository_root, repository_root.parent, lease.purpose, lease.lease_id, True
+    reconstructed = workspace_lease.WorkspaceLease(
+        lease.root, lease.caller_parent, lease.purpose, lease.lease_id, lease.cleanup_allowed
     )
-    with pytest.raises(RuntimeError, match="dangerous"):
-        workspace_lease.cleanup(forged_repo, repository_root=repository_root)
+    with pytest.raises(workspace_lease.WorkspaceCleanupError, match="factory-issued live authority"):
+        workspace_lease.cleanup(reconstructed)
+    assert lease.root.is_dir()
+    workspace_lease.cleanup(lease)
 
 
 def test_cleanup_refuses_wrong_sentinel_mode(tmp_path):

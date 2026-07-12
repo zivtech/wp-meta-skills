@@ -30,7 +30,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import validate_wordpress_artifact
-from workspace_lease import WorkspacePurpose, cleanup as cleanup_workspace, create_ephemeral
+from workspace_lease import WorkspaceCleanupError, WorkspacePurpose, cleanup as cleanup_workspace, create_ephemeral
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1635,20 +1635,36 @@ def run_smoke(
     cleanup_error: str | None = None
     wrapped_block_artifact: WrappedBlockArtifact | None = None
     source_block_artifact_path: Path | None = None
-    if artifact_path:
-        if artifact_kind == "block":
-            wrapped_block_artifact = copy_block_artifact_as_plugin(artifact_path, temp_root)
-            plugin_dir = wrapped_block_artifact.plugin_dir
-            source_block_artifact_path = artifact_path.resolve()
-            block_name = block_name or wrapped_block_artifact.block_name
+    try:
+        if artifact_path:
+            if artifact_kind == "block":
+                wrapped_block_artifact = copy_block_artifact_as_plugin(artifact_path, temp_root)
+                plugin_dir = wrapped_block_artifact.plugin_dir
+                source_block_artifact_path = artifact_path.resolve()
+                block_name = block_name or wrapped_block_artifact.block_name
+            else:
+                plugin_dir = copy_plugin_artifact(artifact_path, temp_root)
+        elif fixture_kind == "block":
+            plugin_dir = write_block_runtime_fixture(temp_root)
+            block_name = block_name or "acme/runtime-card"
         else:
-            plugin_dir = copy_plugin_artifact(artifact_path, temp_root)
-    elif fixture_kind == "block":
-        plugin_dir = write_block_runtime_fixture(temp_root)
-        block_name = block_name or "acme/runtime-card"
-    else:
-        plugin_dir = write_runtime_fixture(temp_root)
-    npx = shutil.which("npx")
+            plugin_dir = write_runtime_fixture(temp_root)
+    except Exception as setup_error:
+        if not keep_artifacts and not keep_running:
+            try:
+                cleanup_workspace(lease, repository_root=ROOT)
+            except WorkspaceCleanupError as cleanup_failure:
+                raise cleanup_failure from setup_error
+        raise
+    try:
+        npx = shutil.which("npx")
+    except Exception as setup_error:
+        if not keep_artifacts and not keep_running:
+            try:
+                cleanup_workspace(lease, repository_root=ROOT)
+            except WorkspaceCleanupError as cleanup_failure:
+                raise cleanup_failure from setup_error
+        raise
     start: CommandRun | None = None
     activation: CommandRun | None = None
     stop: CommandRun | None = None
@@ -1970,7 +1986,7 @@ def run_smoke(
         if not keep_artifacts and not keep_running:
             try:
                 cleanup_workspace(lease, repository_root=ROOT)
-            except (OSError, RuntimeError) as exc:
+            except WorkspaceCleanupError as exc:
                 cleanup_error = str(exc)
 
     status = status_from_gates(

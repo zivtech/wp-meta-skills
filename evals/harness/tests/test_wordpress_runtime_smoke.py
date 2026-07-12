@@ -459,7 +459,11 @@ def test_runtime_smoke_deletes_only_leased_child(tmp_path, monkeypatch):
 
 def test_runtime_smoke_blocks_and_retains_child_when_cleanup_refuses(tmp_path, monkeypatch):
     monkeypatch.setattr(smoke.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(smoke, "cleanup_workspace", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("ownership mismatch")))
+    monkeypatch.setattr(
+        smoke,
+        "cleanup_workspace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(smoke.WorkspaceCleanupError("ownership mismatch")),
+    )
 
     result = smoke.run_smoke(timeout_sec=5, workdir=tmp_path / "caller")
 
@@ -467,6 +471,44 @@ def test_runtime_smoke_blocks_and_retains_child_when_cleanup_refuses(tmp_path, m
     assert result["pass"] is False
     assert result["cleanup_error"] == "ownership mismatch"
     assert Path(result["runtime_root"]).is_dir()
+
+
+def test_runtime_smoke_blocks_on_non_utf8_lease_sentinel(tmp_path, monkeypatch):
+    monkeypatch.setattr(smoke.shutil, "which", lambda _name: None)
+    original_write = smoke.write_runtime_fixture
+
+    def corrupt_sentinel(root):
+        plugin_dir = original_write(root)
+        (root / ".workspace-lease").write_bytes(b"\xff\xfe")
+        return plugin_dir
+
+    monkeypatch.setattr(smoke, "write_runtime_fixture", corrupt_sentinel)
+    result = smoke.run_smoke(timeout_sec=5, workdir=tmp_path / "caller")
+
+    assert result["status"] == "blocked"
+    assert result["fixture_retained"] is True
+    assert "cleanup validation failed" in result["cleanup_error"]
+    assert Path(result["runtime_root"]).is_dir()
+
+
+def test_setup_failure_cleans_child_and_preserves_parent_and_siblings(tmp_path, monkeypatch):
+    parent = tmp_path / "caller"
+    parent.mkdir()
+    marker = parent / "owned.txt"
+    sibling = parent / "unrelated"
+    marker.write_text("keep", encoding="utf-8")
+    sibling.mkdir()
+
+    def fail_setup(_root):
+        raise ValueError("fixture setup failed")
+
+    monkeypatch.setattr(smoke, "write_runtime_fixture", fail_setup)
+    with pytest.raises(ValueError, match="fixture setup failed"):
+        smoke.run_smoke(timeout_sec=5, workdir=parent)
+
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert sibling.is_dir()
+    assert sorted(path.name for path in parent.iterdir()) == ["owned.txt", "unrelated"]
 
 
 def test_phpunit_smoke_blocks_when_artifact_composer_install_fails():

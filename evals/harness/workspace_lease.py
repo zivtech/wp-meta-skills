@@ -14,6 +14,11 @@ from pathlib import Path
 
 NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 SENTINEL_NAME = ".workspace-lease"
+_LIVE_LEASES: dict[str, "WorkspaceLease"] = {}
+
+
+class WorkspaceCleanupError(RuntimeError):
+    """A lease could not safely authorize cleanup."""
 
 
 class WorkspacePurpose(str, Enum):
@@ -60,7 +65,9 @@ def _create(parent: Path, name: str, purpose: WorkspacePurpose, caller_parent: P
     except Exception:
         shutil.rmtree(root)
         raise
-    return WorkspaceLease(root, caller_parent, purpose, lease_id, True)
+    lease = WorkspaceLease(root, caller_parent, purpose, lease_id, True)
+    _LIVE_LEASES[lease_id] = lease
+    return lease
 
 
 def create_ephemeral(parent: Path | None, purpose: WorkspacePurpose) -> WorkspaceLease:
@@ -81,28 +88,36 @@ def create_named(parent: Path, safe_name: str, purpose: WorkspacePurpose) -> Wor
 
 
 def cleanup(lease: WorkspaceLease, *, repository_root: Path | None = None) -> None:
-    if not isinstance(lease, WorkspaceLease) or not lease.cleanup_allowed:
-        raise RuntimeError("workspace cleanup requires a live lease")
-    root = lease.root
-    root_stat = root.lstat()
-    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
-        raise RuntimeError("workspace lease root is not a real directory")
-    resolved_root = root.resolve()
-    parent = (lease.caller_parent or Path(tempfile.gettempdir())).resolve()
-    dangerous = {Path(resolved_root.anchor), Path.home().resolve(), parent}
-    if repository_root is not None:
-        dangerous.add(repository_root.resolve())
-    if resolved_root in dangerous or resolved_root.parent != parent:
-        raise RuntimeError("workspace lease root is outside its authorized parent or is dangerous")
-    sentinel = root / SENTINEL_NAME
-    sentinel_stat = sentinel.lstat()
-    if (
-        stat.S_ISLNK(sentinel_stat.st_mode)
-        or not stat.S_ISREG(sentinel_stat.st_mode)
-        or stat.S_IMODE(sentinel_stat.st_mode) != 0o600
-    ):
-        raise RuntimeError("workspace lease sentinel is not a mode-0600 regular file")
-    expected = f"{lease.lease_id}\n{lease.purpose.value}\n"
-    if sentinel.read_text(encoding="utf-8") != expected:
-        raise RuntimeError("workspace lease sentinel does not match the lease")
-    shutil.rmtree(root)
+    try:
+        if not isinstance(lease, WorkspaceLease) or not lease.cleanup_allowed:
+            raise WorkspaceCleanupError("workspace cleanup requires a live lease")
+        if _LIVE_LEASES.get(lease.lease_id) is not lease:
+            raise WorkspaceCleanupError("workspace cleanup requires factory-issued live authority")
+        root = lease.root
+        root_stat = root.lstat()
+        if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+            raise WorkspaceCleanupError("workspace lease root is not a real directory")
+        resolved_root = root.resolve()
+        parent = (lease.caller_parent or Path(tempfile.gettempdir())).resolve()
+        dangerous = {Path(resolved_root.anchor), Path.home().resolve(), parent}
+        if repository_root is not None:
+            dangerous.add(repository_root.resolve())
+        if resolved_root in dangerous or resolved_root.parent != parent:
+            raise WorkspaceCleanupError("workspace lease root is outside its authorized parent or is dangerous")
+        sentinel = root / SENTINEL_NAME
+        sentinel_stat = sentinel.lstat()
+        if (
+            stat.S_ISLNK(sentinel_stat.st_mode)
+            or not stat.S_ISREG(sentinel_stat.st_mode)
+            or stat.S_IMODE(sentinel_stat.st_mode) != 0o600
+        ):
+            raise WorkspaceCleanupError("workspace lease sentinel is not a mode-0600 regular file")
+        expected = f"{lease.lease_id}\n{lease.purpose.value}\n"
+        if sentinel.read_text(encoding="utf-8") != expected:
+            raise WorkspaceCleanupError("workspace lease sentinel does not match the lease")
+        shutil.rmtree(root)
+        del _LIVE_LEASES[lease.lease_id]
+    except WorkspaceCleanupError:
+        raise
+    except Exception as exc:
+        raise WorkspaceCleanupError(f"workspace cleanup validation failed: {exc}") from exc
