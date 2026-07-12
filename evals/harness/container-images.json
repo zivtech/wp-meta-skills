@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "verified_at": "2026-07-12",
+  "images": {
+    "node": {"tag":"node:22-bookworm-slim","index":"sha256:53ada149d435c38b14476cb57e4a7da73c15595aba79bd6971b547ceb6d018bf","amd64":"sha256:a149cd71dccd68704a07d4e4ca3e610c27301852b0f556865cfdb6e2856f8bed","arm64":"sha256:6db9be2ebb4bafb687a078ef5ba1b1dd256e8004d246a31fd210b6b848ab6be2","license":"MIT","purpose":"generated npm commands"},
+    "composer": {"tag":"composer:2.8","index":"sha256:5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c","amd64":"sha256:0d264a0f1e5be23ba363447768df7b30c33d542711ea12e37770ed7b13bf4eaa","arm64":"sha256:cc2fd435c5dd57485421bc19c3e9226c29417f8065c00dcef2b2e361090f3c2f","license":"MIT","purpose":"generated Composer commands"},
+    "python": {"tag":"python:3.13-slim-bookworm","index":"sha256:fcbd8dfc2605ba7c2eca646846c5e892b2931e41f6227985154a596f26ab8ed7","amd64":"sha256:129f9f5d5729767916d79f0021ba4fe56ff113332b08ef1213ecf529a9da7ebb","arm64":"sha256:f2c0cbd763245b6de85ecbbf17b07a4802e847cecd9b9e2807a2cef330bd8245","license":"PSF-2.0","purpose":"trusted proxy"},
+    "playwright": {"tag":"mcr.microsoft.com/playwright:v1.58.0-noble","index":"sha256:35c7d48b4ccaf3aca5018f5f1bf7f50c7da7d61d176c530741f4f2e9ca336c34","amd64":"sha256:e3dca7b3c921ce1ebf45a50a6ac77982532c987e5926eb06535b5f56b363b94f","arm64":"sha256:a77fdf84adbfc1f42cc07c5ef38e6efeb495d91f35022ec41b0f7f85545e81e9","license":"Apache-2.0","purpose":"isolated browser"},
+    "wordpress": {"tag":"wordpress:7.0.1-php8.3-apache","index":"sha256:e36cd332ae0de78f3c3691e468c54c5540c0a74286b51eb9b5964fa1e9c916cd","amd64":"sha256:f8580bac34ed96e335d57eb39ef4b56d6567b80d1d49d372f96e381acbe7e772","arm64":"sha256:bb54e279e60f68aa53b168dad09d9db6d109de15e7790805c509654e94407090","license":"GPL-2.0-or-later","purpose":"WordPress runtime"},
+    "wordpress_cli": {"tag":"wordpress:cli-2.12.0-php8.3","index":"sha256:f8aeb68164c6a04f5dcc91da30d8ffa096b0f7fafb7a65f144c2dd62587caca0","amd64":"sha256:0587fa20d1fce7880f4137ece2154c92ec948dab920f8d6ca3559a50c354efe8","arm64":"sha256:846f447063dcc0e6e8e997514cb5272578ffa67dacac7ecea906ec1cad11f87d","license":"GPL-2.0-or-later","purpose":"WP-CLI source"},
+    "database": {"tag":"mariadb:11.8.5","index":"sha256:345fa26d595e8c7fe298e0c4098ed400356f502458769c8902229b3437d6da2b","amd64":"sha256:3a730f41f00d261df28a0bc1bc2845f9c0901c2e2f05e5005c7713cc43ebc1fe","arm64":"sha256:4ab5d5e770624a5fcaa5894208576ed5088f12482c1cce9b3ab419416a4b2c3c","license":"GPL-2.0-only","purpose":"seeded database"}
+  },
+  "wordpress_core":{"version":"7.0.1","url":"https://wordpress.org/wordpress-7.0.1.tar.gz","sha256":"dc10592da9b580c7525632850e0cced371b13081853ac29afe93b5d5bb00db98"},
+  "wp_cli_binary":{"version":"2.12.0","source":"https://github.com/wp-cli/wp-cli/releases/download/v2.12.0/wp-cli-2.12.0.phar","sha256":"ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c"},
+  "build_inputs": {
+    "runtime-images/wordpress/Dockerfile":"6acbc4437a42495f2f8144378b3e944772edab73e96dda92f64ddb0b55ad3381",
+    "runtime-images/wordpress/entrypoint.sh":"ffe844571f89bf8189dfc9d9aac7a0b7e4498e61c8b4e76e1c79ba5d834d2262",
+    "runtime-images/database/Dockerfile":"73469de26e85f5f63c52492a41deabeed44812f7b0a839f6434f7f30b3b9ab5e",
+    "runtime-images/database/entrypoint.sh":"d468c1baecc10517baea54a38914fcef1c8eb7e930eb03775a2464eb7a654ea4"
+  }
+}

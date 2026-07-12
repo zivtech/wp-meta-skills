@@ -32,6 +32,14 @@ python3 evals/harness/materialize_wordpress_executor_packet.py --executor bluepr
 
 For plugin and block packets, each generated file must be introduced by `### relative/path.ext` and followed immediately by one fenced code block containing the complete file contents. Paths must be relative and stay inside the artifact root. For Blueprint packets, the `## Generated Blueprint` section must include one fenced JSON object; the materializer writes it to `blueprint.json`.
 
+The four reviewed Plan 009 flagship dependency locks are the sole bounded
+exception. Their lock fence contains a fixed approved-profile ID, canonical
+lock SHA-256, and exact manifest SHA-256 instead of tens of thousands of lock
+lines. The materializer accepts only IDs in its repository registry, verifies
+the target path and manifest binding, verifies canonical bytes under
+`evals/harness/approved-locks`, and emits those bytes as the lock. Arbitrary
+paths, external profiles, and caller-selected canonical files are forbidden.
+
 This is still not runtime proof. It only proves the saved packet can be transformed into files without human interpretation.
 
 ## Combined Certification Gate
@@ -594,3 +602,25 @@ Do not use a static artifact pass as evidence for WPCS, Plugin Check, wp-env, PH
 - WordPress AI Client introduces `wp_ai_client_prompt()` and provider-backed text generation: <https://make.wordpress.org/core/2026/03/24/introducing-the-ai-client-in-wordpress-7-0/>
 - WordPress Connectors API provides the connector registry surfaced by AI providers: <https://make.wordpress.org/core/2026/03/18/introducing-the-connectors-api-in-wordpress-7-0/>
 - WordPress Coding Standards for PHPCS are maintained in WordPressCS: <https://github.com/WordPress/WordPress-Coding-Standards>
+# Plan 009 Step 0 feasibility boundary
+
+The feasibility checkpoint is intentionally not production runtime wiring.
+It establishes exact fixture and trusted-runner locks, reviewed image/core
+inventory, a bounded subprocess transport, repository-owned internal-network
+Compose policy, exact non-root Dockerfiles/entrypoints, and a separate GitHub
+Actions job with `permissions: {}` and no cache credentials or secrets.
+
+Live quota and topology claims are Linux Docker only. macOS runs static policy,
+materialization, and compatibility tests but reports live boundary execution
+as blocked. The exact checkpoint commit must pass the no-secrets GitHub-hosted
+Linux job before Plan 009 Step 1. Record the workflow URL, commit SHA, runner OS
+and architecture, and conclusion; local Docker Desktop evidence is not a
+substitute. No generated artifact is present during trusted provisioning.
+
+For every final tmpfs, Step 0 parses `df -Pk` and `df -Pi` totals and rejects a
+missing, unparseable, or oversized profile. Byte totals allow one 1 KiB block
+of filesystem rounding. Inode totals allow the larger of 16 inodes or 1% of
+the reviewed `nr_inodes`. Each distinct byte and inode profile is exhausted
+once, must contain the overflow, is cleaned, and must accept a new write
+afterward. Sanitized observed totals and recovery results are persisted in the
+Step 0 result.

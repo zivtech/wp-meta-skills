@@ -74,3 +74,16 @@ adapted section, and rationale in the reuse ledger before it lands.
 
 When in doubt, keep the production skill text clean-room and cite the upstream
 project as a comparator rather than importing its wording.
+# Sandbox inventory updates
+
+Plan 009 runtime inputs are reviewed in `evals/harness/container-images.json`.
+An update must record the immutable OCI index digest, linux/amd64 and
+linux/arm64 child manifests, source tag, verification date, purpose, and
+license. Update the repository runner lock with scripts disabled, verify its
+registry integrity, run the hermetic provisioning/materialization tests, and
+run the separate no-secrets GitHub-hosted Linux Docker feasibility job against
+the exact commit. Mutable tags, unreviewed helper images, local Docker Desktop
+results, and generated lock synthesis are not acceptable substitutes. The job
+requires at least 20 GiB free, permits at most a conservative 12 GiB post-run
+delta (leaving an 8 GiB reserve), and has a hard 30-minute timeout. A budget
+failure blocks the checkpoint.

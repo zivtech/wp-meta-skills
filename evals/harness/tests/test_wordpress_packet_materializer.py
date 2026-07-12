@@ -1,6 +1,7 @@
 """Tests for materializing saved WordPress executor packets into files."""
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -183,6 +184,64 @@ def test_good_block_packet_materializes_block_files(tmp_path):
 
 def json_loads(path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_flagship_dependency_packets_commit_exact_locks(tmp_path):
+    root = HARNESS.parent / "suites"
+    packets = (
+        ("block", root / "wordpress-block-executor/examples/smoke-wordpress-v1.materializable-packet.md", "package-lock.json"),
+        ("block", root / "wordpress-block-executor/examples/interactivity-wordpress-v1.materializable-packet.md", "package-lock.json"),
+        ("block", root / "wordpress-block-executor/examples/deprecation-wordpress-v1.materializable-packet.md", "package-lock.json"),
+        ("plugin", root / "wordpress-plugin-executor/examples/phpunit-wordpress-v1.materializable-packet.md", "acme-runtime-tested/composer.lock"),
+    )
+    for index, (executor, packet, lock) in enumerate(packets):
+        out = tmp_path / str(index)
+        result = materializer.materialize_packet(executor, packet.read_text(encoding="utf-8"), out)
+        assert result["pass"] is True
+        assert (out / lock).is_file()
+        data = json_loads(out / lock)
+        assert data.get("lockfileVersion") == 3 if lock.endswith("package-lock.json") else data.get("content-hash")
+
+
+def test_approved_lock_rejects_unknown_profile(tmp_path):
+    packet=(HARNESS.parent/"suites/wordpress-block-executor/examples/smoke-wordpress-v1.materializable-packet.md").read_text()
+    result=materializer.materialize_packet("block",packet.replace("block-scripts-32.4.1-smoke","unknown-profile"),tmp_path/"out")
+    assert result["pass"] is False
+
+
+def test_approved_lock_rejects_wrong_digest_and_manifest_binding(tmp_path):
+    packet=(HARNESS.parent/"suites/wordpress-block-executor/examples/smoke-wordpress-v1.materializable-packet.md").read_text()
+    assert not materializer.materialize_packet("block",packet.replace("990d9a6778","0000000000"),tmp_path/"digest")["pass"]
+    assert not materializer.materialize_packet("block",packet.replace("e225928234","0000000000"),tmp_path/"manifest")["pass"]
+
+
+def test_approved_lock_rejects_manifest_change_and_target_injection(tmp_path):
+    packet=(HARNESS.parent/"suites/wordpress-block-executor/examples/smoke-wordpress-v1.materializable-packet.md").read_text()
+    assert not materializer.materialize_packet("block",packet.replace('"32.4.1"','"32.4.2"',1),tmp_path/"changed")["pass"]
+    assert not materializer.materialize_packet("block",packet.replace("### package-lock.json","### ../package-lock.json"),tmp_path/"path")["pass"]
+
+
+def test_approved_lock_rejects_modified_canonical_bytes(tmp_path, monkeypatch):
+    source=materializer.APPROVED_LOCK_ROOT
+    copied=tmp_path/"locks"; shutil.copytree(source,copied)
+    target=copied/"block-scripts-32.4.1-smoke.package-lock.json"
+    target.write_bytes(target.read_bytes()+b" ")
+    monkeypatch.setattr(materializer,"APPROVED_LOCK_ROOT",copied)
+    packet=(HARNESS.parent/"suites/wordpress-block-executor/examples/smoke-wordpress-v1.materializable-packet.md").read_text()
+    assert not materializer.materialize_packet("block",packet,tmp_path/"out")["pass"]
+
+
+def test_literal_lock_remains_literal_when_no_profile_envelope(tmp_path):
+    packet=GOOD_BLOCK_PACKET.replace("### blocks/runtime-card/block.json",'### package-lock.json\n```json\n{"lockfileVersion":3}\n```\n\n### blocks/runtime-card/block.json')
+    result=materializer.materialize_packet("block",packet,tmp_path/"out")
+    assert result["pass"] is True
+    assert json_loads(tmp_path/"out/package-lock.json")=={"lockfileVersion":3}
+
+
+def test_approved_lock_rejects_envelope_field_injection(tmp_path):
+    packet=(HARNESS.parent/"suites/wordpress-block-executor/examples/smoke-wordpress-v1.materializable-packet.md").read_text()
+    packet=packet.replace('"version": 1,','"version": 1,\n  "path": "/tmp/evil",')
+    assert not materializer.materialize_packet("block",packet,tmp_path/"out")["pass"]
 
 
 def test_unsafe_path_fails_without_writing_files(tmp_path):

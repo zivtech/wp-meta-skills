@@ -40,3 +40,19 @@ introduced-in versions — no prose, descriptions, or code are copied.
 |---|---|---|---|---|
 | Function/class existence, `@deprecated` versions and replacements | php-stubs/wordpress-stubs | `v7.0.0` | MIT | Symbol names, deprecation version, successor API name (via PHP reflection over the stubs) |
 | Per-function `since` versions | johnbillion/wp-compat `symbols.json` | `trunk` (WP 7.0 data) | MIT | Function name → introduced-in version |
+# Plan 009 sandbox feasibility inventory (2026-07-12)
+
+Step 0 records the official Node, Composer, Python, Playwright, WordPress,
+WP-CLI, and MariaDB images in `evals/harness/container-images.json`. Each entry
+contains its reviewed tag (provenance only), OCI index digest, linux/amd64 and
+linux/arm64 child digests, purpose, and upstream license. Execution must select
+the platform child digest and must not resolve the tag. The WordPress 7.0.1
+source archive URL and SHA-256 are recorded in the same inventory.
+
+The npm runner locks use registry packages under their package-published
+licenses. Fixture Composer acquisition is HTTPS ZIP dist-only; inert `source`
+metadata in Composer's generated lock is not an allowed fallback.
+The no-secrets Linux job installs Pytest 8.4.2 from PyPI without a credentialed
+cache; Pytest is MIT-licensed. The boundary job uses no actions or helper
+images: it fetches the exact public `$GITHUB_SHA` over HTTPS without credentials
+and uses the GitHub-hosted runner's Python and Docker installations.

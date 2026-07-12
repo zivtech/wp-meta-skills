@@ -1,12 +1,66 @@
 name: Validate wp-meta-skills
 
 on:
+  workflow_dispatch:
   pull_request:
+    paths:
+      - "evals/harness/**"
+      - "evals/suites/wordpress-*/**"
+      - ".github/workflows/validate.yml"
+      - "pytest.ini"
+      - "CONTRIBUTING.md"
   push:
     branches:
       - main
 
+concurrency:
+  group: wp-validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  sandbox-feasibility:
+    name: No-secrets Linux Docker sandbox feasibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions: {}
+    steps:
+      - name: Check out exact public commit without credentials
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Install test dependency without cache credentials
+        run: python -m pip install --no-cache-dir pytest==8.4.2
+      - name: Verify committed locks, inventory, and topology policy
+        run: python -m pytest evals/harness/tests/test_runtime_image_provision.py evals/harness/tests/test_wp_env_network_guard.py -q
+      - name: Build and prove the exact committed runtime boundary
+        run: |
+          free_before=$(df --output=avail -B1 / | tail -1)
+          test "$free_before" -ge 21474836480
+          docker system df
+          started=$SECONDS
+          PYTHONPATH=evals/harness python -c 'import os,tempfile,wp_env_network_guard as g; result=g.run_linux_canary(tempfile.mkdtemp(prefix="wp-step0-parent-")+"/canary",os.environ["RUNNER_TEMP"]+"/wp-step0-result.json"); assert result["status"] == "pass", result'
+          elapsed=$((SECONDS-started))
+          echo "sandbox_canary_seconds=$elapsed"
+          test "$elapsed" -le 1800
+          free_after=$(df --output=avail -B1 / | tail -1)
+          used_delta=$((free_before-free_after)); test "$used_delta" -lt 0 && used_delta=0
+          echo "sandbox_post_run_disk_delta_bytes=$used_delta"
+          test "$used_delta" -le 12884901888
+          docker system df
+          cat "$RUNNER_TEMP/wp-step0-result.json"
+          { echo '```json'; cat "$RUNNER_TEMP/wp-step0-result.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove run-scoped sandbox resources
+        if: always()
+        run: |
+          docker ps -aq --filter 'name=wp-step0-' | xargs -r docker rm -f
+          docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}} {{.Id}}' | awk '$1 ~ /^wpstep0/ {print $2}' | xargs -r docker rm -f
+          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wpstep0/ {print $2}' | xargs -r docker network rm
+          docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '$1 ~ /^wp-sandbox-(wordpress|database):/ {print $2}' | sort -u | xargs -r docker image rm -f
+          test -z "$(docker ps -aq --filter 'name=wp-step0-')"
+          test -z "$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wpstep0/')"
+          test -z "$(docker image ls --format '{{.Repository}}:{{.Tag}}' | awk '$1 ~ /^wp-sandbox-(wordpress|database):/')"
   validate:
     runs-on: ubuntu-latest
 
@@ -58,6 +112,8 @@ jobs:
           python -m pytest \
             evals/harness/tests/test_invoke_claude_command.py \
             evals/harness/tests/test_workspace_lease.py \
+            evals/harness/tests/test_runtime_image_provision.py \
+            evals/harness/tests/test_wp_env_network_guard.py \
             evals/harness/tests/test_executor_repair_loop.py \
             evals/harness/tests/test_wordpress_runtime_smoke.py \
             evals/harness/tests/test_wordpress_artifact_oracle.py \

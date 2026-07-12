@@ -1,0 +1,8 @@
+{
+  "name": "wp-sandbox-wp-env-runner",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@wordpress/env": "11.10.0"
+  }
+}
