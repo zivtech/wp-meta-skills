@@ -260,6 +260,21 @@ def test_dependency_descendants_are_consumed_but_materialize_empty_root(tmp_path
     with pytest.raises(ValueError,match="dependency archive root"):
         staging.import_tar_stream(tar_bytes([("vendor",b"file","file")]),tmp_path/"bad-root")
 
+def test_strict_manifest_verifier_creates_no_lease_or_files_and_rejects_dependencies(tmp_path):
+    before=set(workspace_lease._LIVE_LEASES)
+    proof=staging.verify_tar_stream_manifest(tar_bytes([("dir/a",b"ok","file")]))
+    assert proof.manifest[0].path=="dir/a"
+    assert proof.path_kinds==(("dir","directory"),("dir/a","file"))
+    assert set(workspace_lease._LIVE_LEASES)==before and list(tmp_path.iterdir())==[]
+    injected=tar_bytes([("a",b"ok","file"),("node_modules/evil",b"bad","file")])
+    with pytest.raises(ValueError,match="dependency archive path forbidden"):
+        staging.verify_tar_stream_manifest(injected)
+    assert set(workspace_lease._LIVE_LEASES)==before and list(tmp_path.iterdir())==[]
+
+def test_strict_manifest_verifier_exposes_extra_graph_entries():
+    proof=staging.verify_tar_stream_manifest(tar_bytes([("a",b"ok","file"),("extra/",b"","file")]))
+    assert ("extra","file") in proof.path_kinds
+
 def test_import_manifest_is_rebuilt_and_exact_compared(tmp_path,monkeypatch):
     monkeypatch.setattr(staging,"_manifest_from_fd",lambda *_args,**_kwargs:())
     with pytest.raises(ValueError,match="manifest mismatch"):

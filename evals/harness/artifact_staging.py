@@ -29,6 +29,10 @@ class SnapshotState:
 class ArchiveState:
     intended:list[ManifestEntry]; total:int; registry:dict; members:set[str]; member_count:int=0
 
+@dataclass(frozen=True)
+class ArchiveVerification:
+    manifest:tuple[ManifestEntry,...]; path_kinds:tuple[tuple[str,str],...]
+
 class BoundedArchiveReader:
     def __init__(self,stream:BinaryIO,limit:int): self.stream=stream; self.limit=limit; self.total=0
     def read(self,size:int=-1):
@@ -305,6 +309,36 @@ def _consume_archive_payload(archive,member,path,normalized,materialize,root_fd,
     if written!=member.size: raise ValueError("archive size mismatch")
     if materialize: state.intended.append(ManifestEntry(normalized,mode_class,written,digest.hexdigest()))
 
+def _verify_archive_payload(archive,member,path,normalized,state):
+    if not member.isfile(): return
+    if member.size>MAX_FILE_BYTES: raise ValueError("archive file exceeds bounds")
+    state.total+=member.size
+    if state.total>MAX_TOTAL_BYTES: raise ValueError("archive exceeds bounds")
+    source=archive.extractfile(member)
+    if source is None: raise ValueError("archive file is unreadable")
+    digest=hashlib.sha256(); written=0
+    while chunk:=source.read(min(65536,member.size-written+1)):
+        written+=len(chunk)
+        if written>member.size: raise ValueError("archive size mismatch")
+        digest.update(chunk)
+    if written!=member.size: raise ValueError("archive size mismatch")
+    mode="executable" if member.mode&0o111 else "regular"
+    state.intended.append(ManifestEntry(normalized,mode,written,digest.hexdigest()))
+
+def verify_tar_stream_manifest(stream:BinaryIO)->ArchiveVerification:
+    state=ArchiveState([],0,{},set()); bounded=BoundedArchiveReader(stream,MAX_ARCHIVE_STREAM_BYTES)
+    with tarfile.open(fileobj=bounded,mode="r|") as archive:
+        for member in archive:
+            validated=_validate_archive_member(member,state)
+            if validated is None: continue
+            path,normalized,kind=validated; _register_archive_prefixes(path,kind,state)
+            if path.parts[0] in DEPENDENCY_ROOTS: raise ValueError("dependency archive path forbidden in strict mode")
+            if kind=="other": raise ValueError("archive contains link or special node")
+            _verify_archive_payload(archive,member,path,normalized,state)
+    manifest=tuple(sorted(state.intended,key=lambda item:item.path))
+    kinds=tuple(sorted((path,kind) for path,kind in state.registry.values()))
+    return ArchiveVerification(manifest,kinds)
+
 def _finalize_archive(root_fd,lease_fd,state):
     manifest=_manifest_from_fd(root_fd,"post")
     if manifest!=tuple(sorted(state.intended,key=lambda item:item.path)): raise ValueError("imported manifest mismatch")
@@ -319,10 +353,11 @@ def _finalize_archive(root_fd,lease_fd,state):
     if (current.st_dev,current.st_ino)!=(opened.st_dev,opened.st_ino): raise ValueError("import destination root changed")
     return manifest
 
-def import_tar_stream(stream:BinaryIO,parent:Path|None=None)->StagedTree:
+def import_tar_stream(stream:BinaryIO,parent:Path|None=None,*,dependency_policy:str="post")->StagedTree:
     lease=workspace_lease.create_ephemeral(parent,workspace_lease.WorkspacePurpose.ARTIFACT_EXECUTION)
     state=ArchiveState([],0,{},set())
     try:
+        if dependency_policy not in {"post","strict"}: raise ValueError("unknown archive dependency policy")
         lease_fd=_verified_lease_fd(lease); root_fd=_create_artifact_root(lease_fd); root=lease.root/"artifact"
         bounded=BoundedArchiveReader(stream,MAX_ARCHIVE_STREAM_BYTES)
         with tarfile.open(fileobj=bounded,mode="r|") as archive:
@@ -331,6 +366,7 @@ def import_tar_stream(stream:BinaryIO,parent:Path|None=None)->StagedTree:
                 if validated is None: continue
                 path,normalized,kind=validated; _register_archive_prefixes(path,kind,state)
                 dependency=path.parts[0] in DEPENDENCY_ROOTS
+                if dependency and dependency_policy=="strict": raise ValueError("dependency archive path forbidden in strict mode")
                 materialize=_prepare_archive_target(path,kind,dependency,root_fd,state)
                 _consume_archive_payload(archive,member,path,normalized,materialize,root_fd,state)
         manifest=_finalize_archive(root_fd,lease_fd,state)
