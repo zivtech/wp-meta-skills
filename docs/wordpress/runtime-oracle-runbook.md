@@ -503,6 +503,28 @@ harness calls a generated helper through `wp --user=admin eval`, requires
 provider registration/configuration, confirms connector registration when
 `wp_is_connector_registered()` exists, and requires expected provider output:
 
+### Repair-loop evidence freshness
+
+Repair certification is fail closed. Each repair run atomically leases its
+`evals/results/<run-id>` directory and refuses an existing run ID. Every
+iteration uses fresh artifact, static-certification, and runtime-result
+directories. Static evidence records schema version, a fresh opaque evidence
+ID, the exact packet SHA-256, and a deterministic no-follow digest of the
+materialized regular-file tree. The digest hashes sorted, canonical UTF-8 JSON
+Lines records (`path`, decimal `size`, lowercase `sha256`), with one record per
+line and a terminating newline.
+
+Runtime repair calls pass the same evidence ID and expected artifact digest.
+The runtime harness copies the execution closure into its fresh runtime lease,
+independently digests that staged destination, and compares it before starting
+`wp-env`. It executes only the staged destination, then writes only to the explicit
+`--results-root/<run-id>/runtime-smoke.json`. The repair loop reads that exact
+file; it does not search global results or similarly named runs. Green requires
+process exit code 0, matching identities and digests, top-level `status:
+pass`, and `full_plugin_runtime_profile.status: pass`. Missing, malformed,
+stale, `blocked`, and `fail` evidence remain non-green and are reported as
+explicit command, result, status, profile, or digest gates.
+
 `--workdir` is an optional caller-owned parent for a newly created unique run
 directory. The harness never writes runtime artifacts directly at the parent
 root. Read `runtime_root` in the JSON summary to locate the unique child;

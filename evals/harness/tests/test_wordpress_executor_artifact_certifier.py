@@ -1,8 +1,12 @@
 """Tests for the WordPress executor artifact certification pipeline."""
 
 import sys
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 
 HARNESS = Path(__file__).resolve().parent.parent
@@ -347,3 +351,74 @@ def test_certifier_passes_materializable_block_packet(tmp_path):
     assert (out_dir / "blocks" / "runtime-card" / "block.json").exists()
     assert (out_dir / "package.json").exists()
     assert (result_dir / "certification.json").exists()
+
+
+def test_certifier_records_fresh_identity_and_digests(tmp_path):
+    packet = tmp_path / "candidate.md"
+    packet.write_text(GOOD_PLUGIN_PACKET, encoding="utf-8")
+    options = args(packet, tmp_path / "generated", tmp_path / "result")
+    options.evidence_id = "fresh-evidence"
+    result = certifier.certify_executor_artifact(options)
+    assert result["schema_version"] == 1
+    assert result["evidence_id"] == "fresh-evidence"
+    assert len(result["packet_sha256"]) == 64
+    assert len(result["artifact_digest"]) == 64
+
+
+def test_tree_digest_changes_with_content(tmp_path):
+    artifact = tmp_path / "artifact"; artifact.mkdir()
+    source = artifact / "plugin.php"; source.write_text("one", encoding="utf-8")
+    first = certifier.digest_regular_tree(artifact)
+    source.write_text("two", encoding="utf-8")
+    assert certifier.digest_regular_tree(artifact) != first
+
+
+def test_tree_digest_is_stable_across_creation_order(tmp_path):
+    left, right = tmp_path / "left", tmp_path / "right"
+    left.mkdir(); right.mkdir()
+    (left / "b").write_text("2", encoding="utf-8"); (left / "a").write_text("1", encoding="utf-8")
+    (right / "a").write_text("1", encoding="utf-8"); (right / "b").write_text("2", encoding="utf-8")
+    assert certifier.digest_regular_tree(left) == certifier.digest_regular_tree(right)
+
+
+def test_tree_digest_rejects_symlink(tmp_path):
+    artifact = tmp_path / "artifact"; artifact.mkdir()
+    (artifact / "target").write_text("secret", encoding="utf-8")
+    (artifact / "link").symlink_to(artifact / "target")
+    with pytest.raises(ValueError, match="symlink"):
+        certifier.digest_regular_tree(artifact)
+
+
+def test_tree_digest_rejects_symlink_root(tmp_path):
+    target = tmp_path / "target"; target.mkdir()
+    link = tmp_path / "link"; link.symlink_to(target)
+    with pytest.raises(ValueError, match="root is a symlink"):
+        certifier.digest_regular_tree(link)
+
+
+def test_tree_digest_supports_single_regular_file(tmp_path):
+    artifact = tmp_path / "blueprint.json"
+    artifact.write_text("{}", encoding="utf-8")
+    assert len(certifier.digest_regular_tree(artifact)) == 64
+
+
+def test_tree_digest_empty_tree_is_deterministic(tmp_path):
+    left, right = tmp_path / "left", tmp_path / "right"
+    left.mkdir(); right.mkdir()
+    assert certifier.digest_regular_tree(left) == certifier.digest_regular_tree(right)
+
+
+def test_standalone_certifier_keeps_identity_backward_compatible(tmp_path):
+    packet = tmp_path / "candidate.md"
+    packet.write_text(GOOD_PLUGIN_PACKET, encoding="utf-8")
+    result = certifier.certify_executor_artifact(args(packet, tmp_path / "generated"))
+    assert result["evidence_id"] is None
+
+
+def test_tree_digest_uses_versioned_canonical_jsonl(tmp_path):
+    artifact = tmp_path / "artifact"; artifact.mkdir()
+    source = artifact / "plugin.php"; source.write_bytes(b"php")
+    records = [{"path": "plugin.php", "size": 3, "sha256": hashlib.sha256(b"php").hexdigest()}]
+    encoded = ("\n".join(json.dumps(item, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+                           for item in records) + "\n").encode()
+    assert certifier.digest_regular_tree(artifact) == hashlib.sha256(encoded).hexdigest()

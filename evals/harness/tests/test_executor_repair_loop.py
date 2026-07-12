@@ -8,6 +8,7 @@ Run: python3 evals/harness/tests/test_executor_repair_loop.py  (or via pytest)
 from __future__ import annotations
 
 import sys
+import json
 from pathlib import Path
 
 HARNESS = Path(__file__).resolve().parent.parent
@@ -122,6 +123,40 @@ def test_checks_with_status_normalises_passed_and_status():
     }
     got = {c["id"]: c["status"] for c in loop._checks_with_status(data)}
     assert got == {"a": "pass", "b": "fail", "c": "fail"}
+
+
+def test_load_json_object_accepts_only_object(tmp_path):
+    result = tmp_path / "result.json"
+    result.write_text('{"status":"pass"}', encoding="utf-8")
+    assert loop._load_json_object(result) == {"status": "pass"}
+    result.write_text('[]', encoding="utf-8")
+    assert loop._load_json_object(result) is None
+
+
+def test_load_json_object_rejects_missing_empty_and_malformed(tmp_path):
+    result = tmp_path / "result.json"
+    assert loop._load_json_object(result) is None
+    result.write_text('', encoding="utf-8")
+    assert loop._load_json_object(result) is None
+    result.write_text('{', encoding="utf-8")
+    assert loop._load_json_object(result) is None
+
+
+def test_stage_failure_preserves_fail_and_blocked_gates():
+    result = loop._stage_failure("runtime", "runtime_status", "blocked", [
+        {"id": "plugin_check", "status": "fail", "detail": "ERROR broken"},
+        {"id": "wp_env_smoke", "status": "blocked", "detail": "tool missing"},
+        {"id": "other", "status": "pass", "detail": "ok"},
+    ])
+    assert result["failing_gates"] == ["plugin_check", "wp_env_smoke"]
+    assert result["gate_vector"] == {"plugin_check": "fail", "wp_env_smoke": "blocked"}
+    assert "other" not in result["failures"]
+
+
+def test_stage_failure_names_command_return_code():
+    result = loop._stage_failure("runtime", "runtime_command", "return code 2")
+    assert result["failing_gates"] == ["runtime_command"]
+    assert "return code 2" in result["failures"]
 
 
 # --- new-this-sweep coverage: warning-inclusive feedback + cross-market providers ---

@@ -491,6 +491,40 @@ def test_runtime_smoke_blocks_on_non_utf8_lease_sentinel(tmp_path, monkeypatch):
     assert Path(result["runtime_root"]).is_dir()
 
 
+def test_write_result_uses_exact_custom_root_and_identity(tmp_path):
+    summary = {"status": "pass", "fixture_retained": False, "negative_space": [],
+               "run_id": "exact-run", "evidence_id": "fresh", "input_artifact_digest": "a" * 64}
+    out = smoke.write_result(summary, "exact-run", tmp_path)
+    data = json.loads((out / "runtime-smoke.json").read_text(encoding="utf-8"))
+    assert out == tmp_path.resolve() / "exact-run"
+    assert data["evidence_id"] == "fresh"
+    assert not (out / ".runtime-smoke.json.tmp").exists()
+
+
+def test_write_result_refuses_existing_run(tmp_path):
+    summary = {"status": "pass", "fixture_retained": False, "negative_space": []}
+    smoke.write_result(summary, "same-run", tmp_path)
+    with pytest.raises(FileExistsError):
+        smoke.write_result(summary, "same-run", tmp_path)
+
+
+def test_write_result_rejects_symlinked_results_parent(tmp_path):
+    real = tmp_path / "real"; real.mkdir()
+    linked = tmp_path / "linked"; linked.symlink_to(real, target_is_directory=True)
+    summary = {"status": "pass", "fixture_retained": False, "negative_space": []}
+    with pytest.raises(ValueError, match="symlink component"):
+        smoke.write_result(summary, "run", linked)
+    assert list(real.iterdir()) == []
+
+
+@pytest.mark.parametrize("run_id", ["../escape", "nested/run", "/absolute", "x" * 129])
+def test_write_result_rejects_unsafe_run_id_before_write(tmp_path, run_id):
+    summary = {"status": "pass", "fixture_retained": False, "negative_space": []}
+    with pytest.raises(ValueError):
+        smoke.write_result(summary, run_id, tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_setup_failure_cleans_child_and_preserves_parent_and_siblings(tmp_path, monkeypatch):
     parent = tmp_path / "caller"
     parent.mkdir()
@@ -509,6 +543,33 @@ def test_setup_failure_cleans_child_and_preserves_parent_and_siblings(tmp_path, 
     assert marker.read_text(encoding="utf-8") == "keep"
     assert sibling.is_dir()
     assert sorted(path.name for path in parent.iterdir()) == ["owned.txt", "unrelated"]
+
+
+def test_mutation_during_staging_blocks_before_wp_env(tmp_path, monkeypatch):
+    source = tmp_path / "source"; source.mkdir()
+    plugin = source / "plugin.php"; plugin.write_text("before", encoding="utf-8")
+    expected = smoke.digest_regular_tree(source)
+    original_copy = smoke.copy_plugin_artifact
+    which_called = False
+
+    def mutating_copy(path, root):
+        destination = original_copy(path, root)
+        plugin.write_text("after", encoding="utf-8")
+        (destination / "plugin.php").write_text("after", encoding="utf-8")
+        return destination
+
+    def forbidden_which(_name):
+        nonlocal which_called
+        which_called = True
+        raise AssertionError("wp-env discovery must not run after staged digest mismatch")
+
+    monkeypatch.setattr(smoke, "copy_plugin_artifact", mutating_copy)
+    monkeypatch.setattr(smoke.shutil, "which", forbidden_which)
+    result = smoke.run_smoke(timeout_sec=5, workdir=tmp_path / "runtime", artifact_path=source,
+                             expected_artifact_digest=expected)
+    assert result["status"] == "blocked"
+    assert result["input_artifact_digest"] != expected
+    assert which_called is False
 
 
 def test_phpunit_smoke_blocks_when_artifact_composer_install_fails():

@@ -67,3 +67,25 @@ def test_cleanup_refuses_symlink_root(tmp_path):
         pytest.skip(f"symlinks unavailable: {exc}")
     with pytest.raises(RuntimeError, match="real directory"):
         workspace_lease.cleanup(lease)
+
+
+def test_public_safe_name_validator_matches_factory_grammar():
+    workspace_lease.validate_safe_name("repair-run_1.2")
+    for unsafe in ("", ".", "..", "a/b", "a\\b", "/absolute", "x" * 129):
+        with pytest.raises(ValueError):
+            workspace_lease.validate_safe_name(unsafe)
+
+
+def test_named_lease_rejects_symlinked_parent_ancestor(tmp_path):
+    real = tmp_path / "real"; real.mkdir()
+    linked = tmp_path / "linked"; linked.symlink_to(real, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink component"):
+        workspace_lease.create_named(linked / "results", "run", workspace_lease.WorkspacePurpose.RESULT)
+    assert list(real.iterdir()) == []
+
+
+def test_ephemeral_lease_rejects_symlinked_parent_ancestor(tmp_path):
+    real = tmp_path / "real"; real.mkdir()
+    linked = tmp_path / "linked"; linked.symlink_to(real, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink component"):
+        workspace_lease.create_ephemeral(linked, workspace_lease.WorkspacePurpose.RUNTIME)

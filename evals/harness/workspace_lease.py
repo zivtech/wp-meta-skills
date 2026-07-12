@@ -37,16 +37,30 @@ class WorkspaceLease:
     cleanup_allowed: bool
 
 
-def _validate_name(name: str) -> None:
+def validate_safe_name(name: str) -> None:
     if not NAME_PATTERN.fullmatch(name) or name in {".", ".."}:
         raise ValueError(f"unsafe workspace name: {name!r}")
     if Path(name).is_absolute() or Path(name).drive or "/" in name or "\\" in name:
         raise ValueError(f"unsafe workspace name: {name!r}")
 
 
+def validate_output_parent(parent: Path) -> Path:
+    """Resolve an output parent only after rejecting symlinked ancestors."""
+    absolute = parent.expanduser().absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if current.exists() or current.is_symlink():
+            if stat.S_ISLNK(current.lstat().st_mode):
+                raise ValueError(f"output parent contains symlink component: {current}")
+            if not stat.S_ISDIR(current.lstat().st_mode):
+                raise ValueError(f"output parent ancestor is not a directory: {current}")
+    return absolute.resolve()
+
+
 def _create(parent: Path, name: str, purpose: WorkspacePurpose, caller_parent: Path | None) -> WorkspaceLease:
-    _validate_name(name)
-    resolved_parent = parent.expanduser().resolve()
+    validate_safe_name(name)
+    resolved_parent = validate_output_parent(parent)
     resolved_parent.mkdir(parents=True, exist_ok=True)
     root = resolved_parent / name
     root.mkdir(exist_ok=False)
@@ -71,7 +85,7 @@ def _create(parent: Path, name: str, purpose: WorkspacePurpose, caller_parent: P
 
 
 def create_ephemeral(parent: Path | None, purpose: WorkspacePurpose) -> WorkspaceLease:
-    caller_parent = parent.expanduser().resolve() if parent is not None else None
+    caller_parent = validate_output_parent(parent) if parent is not None else None
     actual_parent = caller_parent or Path(tempfile.gettempdir()).resolve()
     for _attempt in range(100):
         name = f"wp-meta-skills-{purpose.value}-{uuid.uuid4().hex[:12]}"
@@ -83,7 +97,7 @@ def create_ephemeral(parent: Path | None, purpose: WorkspacePurpose) -> Workspac
 
 
 def create_named(parent: Path, safe_name: str, purpose: WorkspacePurpose) -> WorkspaceLease:
-    resolved_parent = parent.expanduser().resolve()
+    resolved_parent = validate_output_parent(parent)
     return _create(resolved_parent, safe_name, purpose, resolved_parent)
 
 

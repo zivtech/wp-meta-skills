@@ -20,7 +20,10 @@ timeouts / empty output) are retried and never discard the last-good packet.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import secrets
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -32,6 +35,8 @@ RESULTS = ROOT / "evals" / "results"
 sys.path.insert(0, str(HARNESS))
 
 import invoke  # noqa: E402  (reuse single-shot generation + provider routing)
+from certify_wordpress_executor_artifact import digest_regular_tree  # noqa: E402
+from workspace_lease import WorkspacePurpose, create_named  # noqa: E402
 
 # Type aliases for the injectable callables.
 #   generate_fn(iteration, prior_packet, failures) -> packet token (opaque), or None on a
@@ -205,9 +210,20 @@ def _failure_text(checks: list[dict[str, Any]]) -> str:
     return "\n".join(lines) if lines else "(gate failed without itemised detail)"
 
 
-def _find_runtime_json(run_id: str) -> Path | None:
-    matches = sorted(RESULTS.glob(f"**/*{run_id}*/runtime-smoke.json"))
-    return matches[0] if matches else None
+def _load_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _stage_failure(stage: str, gate: str, detail: str, checks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    relevant = [c for c in (checks or []) if c.get("status") in {"fail", "blocked"}]
+    gates = [str(c.get("id", gate)) for c in relevant] or [gate]
+    diagnostics = _failure_text(relevant) if relevant else f"{gate}: {detail}"
+    return {"passed": False, "failing_gates": gates, "failures": diagnostics,
+            "gate_vector": {str(c.get("id", gate)): str(c.get("status")) for c in relevant} or {gate: "fail"}}
 
 
 # ---------------------------------------------------------------------------
@@ -411,23 +427,55 @@ def make_generate(suite: str, fixture: str, condition: str, run_dir: Path,
 
 def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout: int) -> CertifyFn:
     def certify(iteration: int, packet: Any) -> dict[str, Any]:
-        art = run_dir / f"iter{iteration}.art"
-        res = run_dir / f"iter{iteration}.cert"
-        art.mkdir(parents=True, exist_ok=True)
-        res.mkdir(parents=True, exist_ok=True)
+        try:
+            art = create_named(run_dir, f"iter{iteration}.art", WorkspacePurpose.ARTIFACT_EXECUTION).root
+            res = create_named(run_dir, f"iter{iteration}.cert", WorkspacePurpose.RESULT).root
+        except FileExistsError:
+            return _stage_failure("static", "static_evidence", "iteration output already exists")
+        evidence_id = f"{secrets.token_hex(16)}-iter{iteration}"
+        packet_digest = hashlib.sha256(Path(packet).read_bytes()).hexdigest()
 
         # Stage A: static certify (packet contract + materialize + static heuristics).
-        subprocess.run(
+        static_proc = subprocess.run(
             [sys.executable, str(HARNESS / "certify_wordpress_executor_artifact.py"),
              "--executor", executor, "--packet", str(packet), "--out-dir", str(art),
-             "--result-dir", str(res), "--profile", "static", "--overwrite"],
+             "--result-dir", str(res), "--profile", "static", "--evidence-id", evidence_id],
             capture_output=True, text=True, timeout=timeout, check=False,
         )
         cert_json = res / "certification.json"
-        static = json.loads(cert_json.read_text(encoding="utf-8")) if cert_json.exists() else {}
+        static = _load_json_object(cert_json)
+        if static_proc.returncode != 0:
+            checks = _checks_with_status(static or {})
+            checks.insert(0, {"id": "static_command", "status": "fail",
+                              "detail": f"return code {static_proc.returncode}"})
+            return _stage_failure("static", "static_command", f"return code {static_proc.returncode}", checks)
+        if static is None:
+            return _stage_failure("static", "static_evidence", "certification.json missing or malformed")
+        candidates: list[Path] = []
+        if executor == "plugin":
+            candidates = [p for p in art.iterdir() if p.name != ".workspace-lease" and stat.S_ISDIR(p.lstat().st_mode)]
+            if len(candidates) != 1:
+                return _stage_failure("static", "static_evidence", "materialization did not produce exactly one plugin directory")
+            artifact_path = candidates[0]
+        elif executor == "blueprint":
+            artifact_path = art / "blueprint.json"
+        else:
+            artifact_path = art
+        try:
+            observed_digest = digest_regular_tree(artifact_path)
+        except (OSError, ValueError) as exc:
+            return _stage_failure("static", "static_evidence", f"artifact digest failed: {exc}")
+        identity_ok = (
+            static.get("schema_version") == 1 and static.get("evidence_id") == evidence_id
+            and static.get("executor") == executor and static.get("profile") == "static"
+            and static.get("packet_sha256") == packet_digest
+            and static.get("artifact_digest") == observed_digest
+        )
+        if not identity_ok:
+            return _stage_failure("static", "static_evidence", "identity or digest mismatch")
         static_checks = _checks_with_status(static)
         static_failing = [c["id"] for c in static_checks if c["status"] == "fail"]
-        if static.get("status") != "pass":
+        if static.get("status") != "pass" or static.get("pass") is not True:
             repair_prompt = res / "repair-prompt.md"
             failures = repair_prompt.read_text(encoding="utf-8") if repair_prompt.exists() else _failure_text(static_checks)
             return {"passed": False, "failing_gates": static_failing or ["static_contract"],
@@ -437,21 +485,43 @@ def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout
             return {"passed": True, "failing_gates": [], "failures": "",
                     "gate_vector": {c["id"]: c["status"] for c in static_checks}}
 
+        if executor != "plugin":
+            return _stage_failure("runtime", "runtime_profile", "Plan 008 runtime profile supports plugin artifacts only")
+
         # Stage B: provisioned runtime gate (WPCS + Plugin Check + wp-env activation).
-        slug = next((p.name for p in art.iterdir() if p.is_dir()), None)
-        if not slug:
-            return {"passed": False, "failing_gates": ["materialize"],
-                    "failures": "materialization produced no plugin directory", "gate_vector": {}}
+        runtime_artifact = candidates[0]
+        expected_digest = digest_regular_tree(runtime_artifact)
         run_id = f"{run_dir.name}-iter{iteration}"
-        subprocess.run(
+        runtime_root = res / "runtime"
+        runtime_root.mkdir(exist_ok=False)
+        runtime_proc = subprocess.run(
             [sys.executable, str(HARNESS / "run_wordpress_runtime_smoke.py"),
-             "--artifact-path", str(art / slug), "--artifact-kind", "plugin",
+             "--artifact-path", str(runtime_artifact), "--artifact-kind", "plugin",
              "--provision-full-profile", "--strict-full-profile",
-             "--write", "--run-id", run_id, "--timeout-sec", str(timeout)],
+             "--write", "--run-id", run_id, "--results-root", str(runtime_root),
+             "--evidence-id", evidence_id, "--expected-artifact-digest", expected_digest,
+             "--timeout-sec", str(timeout)],
             capture_output=True, text=True, timeout=timeout + 120, check=False,
         )
-        rj = _find_runtime_json(run_id)
-        data = json.loads(rj.read_text(encoding="utf-8")) if rj else {}
+        rj = runtime_root / run_id / "runtime-smoke.json"
+        data = _load_json_object(rj)
+        if runtime_proc.returncode != 0:
+            checks = _checks_with_status(data or {})
+            checks.insert(0, {"id": "runtime_command", "status": "fail",
+                              "detail": f"return code {runtime_proc.returncode}"})
+            return _stage_failure("runtime", "runtime_command", f"return code {runtime_proc.returncode}", checks)
+        if data is None:
+            return _stage_failure("runtime", "runtime_result", "exact runtime result missing or malformed")
+        if not (
+            data.get("schema_version") == 1 and data.get("run_id") == run_id
+            and data.get("evidence_id") == evidence_id and data.get("artifact_kind") == "plugin"
+            and data.get("input_artifact_digest") == expected_digest
+        ):
+            return _stage_failure("runtime", "runtime_result", "runtime identity or artifact digest mismatch")
+        if data.get("status") != "pass":
+            return _stage_failure("runtime", "runtime_status", f"top-level status {data.get('status')}", _checks_with_status(data))
+        if (data.get("full_plugin_runtime_profile") or {}).get("status") != "pass":
+            return _stage_failure("runtime", "runtime_profile", "required full profile did not pass", _checks_with_status(data.get("full_plugin_runtime_profile") or {}))
         # Use only the runtime profile's check array (the one containing plugin_check / wp_env_smoke).
         runtime_checks: list[dict[str, Any]] = []
         for node in _walk_objects(data):
@@ -500,8 +570,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    run_dir = RESULTS / args.run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        run_dir = create_named(RESULTS, args.run_id, WorkspacePurpose.REPAIR_RUN).root
+    except (ValueError, FileExistsError) as exc:
+        print(f"repair run refused: {exc}", file=sys.stderr)
+        return 2
 
     generate = make_generate(args.suite, args.fixture, args.condition, run_dir,
                              args.model, args.effort, args.timeout_sec, provider=args.provider)

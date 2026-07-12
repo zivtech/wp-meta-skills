@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -30,7 +31,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import validate_wordpress_artifact
-from workspace_lease import WorkspaceCleanupError, WorkspacePurpose, cleanup as cleanup_workspace, create_ephemeral
+from certify_wordpress_executor_artifact import EVIDENCE_SCHEMA_VERSION, digest_regular_tree
+from workspace_lease import (WorkspaceCleanupError, WorkspacePurpose, cleanup as cleanup_workspace,
+                             create_ephemeral, create_named, validate_safe_name)
+from workspace_lease import validate_output_parent
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1601,6 +1605,7 @@ def run_smoke(
     workdir: Path | None = None,
     artifact_path: Path | None = None,
     artifact_kind: str = "plugin",
+    expected_artifact_digest: str | None = None,
     keep_artifacts: bool = False,
     keep_running: bool = False,
     provision_full_profile: bool = False,
@@ -1656,6 +1661,21 @@ def run_smoke(
             except WorkspaceCleanupError as cleanup_failure:
                 raise cleanup_failure from setup_error
         raise
+    staged_artifact_digest = digest_regular_tree(plugin_dir)
+    if expected_artifact_digest and staged_artifact_digest != expected_artifact_digest:
+        if not keep_artifacts and not keep_running:
+            cleanup_workspace(lease, repository_root=ROOT)
+        return {
+            "status": "blocked", "pass": False, "artifact_kind": artifact_kind,
+            "input_artifact_digest": staged_artifact_digest,
+            "fixture_retained": keep_artifacts or keep_running,
+            "runtime_root": str(temp_root), "workdir_parent": str(lease.caller_parent) if lease.caller_parent else None,
+            "full_plugin_runtime_profile": {"status": "blocked", "checks": [{
+                "id": "artifact_digest", "status": "blocked", "detail": "staged artifact digest mismatch"
+            }]},
+            "checks": [{"id": "artifact_digest", "status": "blocked", "detail": "staged artifact digest mismatch"}],
+            "negative_space": list(BASE_NEGATIVE_SPACE),
+        }
     try:
         npx = shutil.which("npx")
     except Exception as setup_error:
@@ -2073,6 +2093,7 @@ def run_smoke(
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "source_artifact_path": str(artifact_path.resolve()) if artifact_path else None,
         "artifact_kind": artifact_kind,
+        "input_artifact_digest": staged_artifact_digest,
         "fixture_root": str(temp_root),
         "runtime_root": str(temp_root),
         "workdir_parent": str(lease.caller_parent) if lease.caller_parent else None,
@@ -2151,10 +2172,13 @@ def run_smoke(
     }
 
 
-def write_result(summary: dict[str, Any], run_id: str) -> Path:
-    out_dir = RESULTS_ROOT / run_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "runtime-smoke.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+def write_result(summary: dict[str, Any], run_id: str, results_root: Path = RESULTS_ROOT) -> Path:
+    lease = create_named(results_root, run_id, WorkspacePurpose.RESULT)
+    out_dir = lease.root
+    payload = json.dumps(summary, indent=2, sort_keys=True) + "\n"
+    temporary = out_dir / ".runtime-smoke.json.tmp"
+    temporary.write_text(payload, encoding="utf-8")
+    os.replace(temporary, out_dir / "runtime-smoke.json")
 
     full_status = (summary.get("full_plugin_runtime_profile") or {}).get("status", "not_run")
     fixture_retained = str(summary["fixture_retained"]).lower()
@@ -2222,12 +2246,38 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ai-client-expected-output", help="Substring expected in the AI Client provider-call output.")
     parser.add_argument("--write", action="store_true", help="Write evals/results output.")
     parser.add_argument("--run-id", default=DEFAULT_RUN_ID)
+    parser.add_argument("--results-root", type=Path, default=RESULTS_ROOT)
+    parser.add_argument("--evidence-id", help="Opaque caller identity persisted with runtime evidence.")
+    parser.add_argument("--expected-artifact-digest", help="Expected digest of --artifact-path for repair certification.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:
+        validate_safe_name(args.run_id)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if bool(args.evidence_id) != bool(args.expected_artifact_digest):
+        parser.error("--evidence-id and --expected-artifact-digest must be supplied together")
+    expected_artifact_digest = None
+    if args.expected_artifact_digest:
+        if not args.artifact_path:
+            parser.error("--expected-artifact-digest requires --artifact-path")
+        try:
+            expected_artifact_digest = str(args.expected_artifact_digest)
+            digest_regular_tree(Path(args.artifact_path))
+        except (OSError, ValueError) as exc:
+            parser.error(f"cannot digest --artifact-path: {exc}")
+    try:
+        results_root = validate_output_parent(args.results_root)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.artifact_path:
+        artifact_resolved = Path(args.artifact_path).expanduser().resolve()
+        if results_root == artifact_resolved or artifact_resolved in results_root.parents:
+            parser.error("--results-root must not be inside --artifact-path")
     if args.execute_post_summary_ability and not args.ability_name:
         parser.error("--execute-post-summary-ability requires --ability-name")
     if args.mcp_adapter_smoke and not args.ability_name:
@@ -2267,6 +2317,7 @@ def main(argv: list[str] | None = None) -> int:
         workdir=Path(args.workdir) if args.workdir else None,
         artifact_path=Path(args.artifact_path) if args.artifact_path else None,
         artifact_kind=args.artifact_kind,
+        expected_artifact_digest=expected_artifact_digest,
         keep_artifacts=args.keep_artifacts,
         keep_running=args.keep_running,
         provision_full_profile=args.provision_full_profile,
@@ -2291,8 +2342,14 @@ def main(argv: list[str] | None = None) -> int:
         ai_client_prompt=args.ai_client_prompt,
         ai_client_expected_output=args.ai_client_expected_output,
     )
+    summary.update({
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
+        "run_id": args.run_id,
+        "evidence_id": args.evidence_id,
+        "input_artifact_digest": summary.get("input_artifact_digest"),
+    })
     if args.write:
-        out_dir = write_result(summary, args.run_id)
+        out_dir = write_result(summary, args.run_id, results_root)
         summary["result_dir"] = str(out_dir)
     print(json.dumps(summary, indent=2, sort_keys=True))
     if summary["status"] == "pass":
