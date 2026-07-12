@@ -19,9 +19,10 @@ BLOCK_BUILD_COMMANDS={
 }
 PHPUNIT_COMMAND="php vendor/bin/phpunit"
 
-def compatibility_failure(name, phase, result):
+def compatibility_failure(name, phase, result, state=None):
     tail=(result.get("stderr") or result.get("stdout") or "")[-2000:].replace("\x00", "")
-    return RuntimeError(f"{name} {phase} failed with return code {result.get('returncode')}: {tail}")
+    state_tail=(state or "")[-1000:].replace("\x00", "")
+    return RuntimeError(f"{name} {phase} failed with return code {result.get('returncode')}; state={state_tail}: {tail}")
 WRITABLE_PATHS={"database":{"/var/lib/mysql","/run/mysqld","/tmp"},"wordpress":{"/tmp","/var/www/html/wp-content/uploads"},"cli":{"/tmp"},"browser":{"/tmp"}}
 SERVICE_NETWORKS={"database":["wp_db"],"wordpress":["wp_db","browser_wp"],"cli":["wp_db"],"browser":["browser_wp"]}
 
@@ -75,7 +76,9 @@ def prove_fixture_locks(work, inv, arch):
             )
             for phase,command in phases:
                 result=provision.run_capped(command,timeout=900,limit=1048576)
-                if result["returncode"]: raise compatibility_failure(name,phase,result)
+                if result["returncode"]:
+                    state=provision.run_capped(["docker","inspect",container,"--format","{{json .State}}"],timeout=30,limit=4096)
+                    raise compatibility_failure(name,phase,result,state.get("stdout") or state.get("stderr"))
         finally: provision.run_capped(["docker","rm","-f",container],timeout=120)
 
 def canary_compose(built_images=None, identities=None):

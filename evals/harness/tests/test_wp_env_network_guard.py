@@ -39,10 +39,11 @@ def test_fixture_build_commands_match_reviewed_packet_scripts():
         assert guard.BLOCK_BUILD_COMMANDS[name] == expected
 
 def test_compatibility_failure_names_phase_and_bounds_output():
-    error=guard.compatibility_failure("smoke","execute",{"returncode":137,"stdout":"x"*4000,"stderr":""})
+    error=guard.compatibility_failure("smoke","execute",{"returncode":137,"stdout":"x"*4000,"stderr":""},'{"OOMKilled":true}')
     message=str(error)
     assert "smoke execute failed with return code 137" in message
-    assert len(message) < 2200
+    assert "OOMKilled" in message
+    assert len(message) < 3300
 
 def test_canary_is_internal_digest_only_and_bounded():
     assert guard.validate_compose(guard.canary_compose())
