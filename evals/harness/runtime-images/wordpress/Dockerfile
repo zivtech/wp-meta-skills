@@ -3,6 +3,7 @@ ARG CLI_BASE
 ARG WP_CLI_SHA256
 FROM ${CLI_BASE} AS cli
 FROM ${WORDPRESS_BASE}
+ARG WP_CLI_SHA256
 COPY wordpress.tar.gz /tmp/wordpress.tar.gz
 RUN rm -rf /var/www/html/* /usr/src/wordpress \
  && tar -xzf /tmp/wordpress.tar.gz --strip-components=1 -C /var/www/html \

@@ -17,6 +17,12 @@ def test_build_input_hashes_match_committed_sources():
     for relative, expected in provision.inventory()["build_inputs"].items():
         assert hashlib.sha256((HARNESS / relative).read_bytes()).hexdigest() == expected
 
+def test_wordpress_checksum_argument_is_in_final_build_stage():
+    dockerfile=(HARNESS / "runtime-images/wordpress/Dockerfile").read_text(encoding="utf-8")
+    final_stage=dockerfile.split("FROM ${WORDPRESS_BASE}",1)[1]
+    assert "ARG WP_CLI_SHA256" in final_stage.split("COPY wordpress.tar.gz",1)[0]
+    assert 'echo "$WP_CLI_SHA256  /usr/local/bin/wp" | sha256sum -c -' in final_stage
+
 def test_platform_resolution_blocks_unknown():
     item=provision.inventory()["images"]["node"]
     assert provision.platform_digest(item,"x86_64")==item["amd64"]

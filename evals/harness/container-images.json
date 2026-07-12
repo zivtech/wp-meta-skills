@@ -13,7 +13,7 @@
   "wordpress_core":{"version":"7.0.1","url":"https://wordpress.org/wordpress-7.0.1.tar.gz","sha256":"dc10592da9b580c7525632850e0cced371b13081853ac29afe93b5d5bb00db98"},
   "wp_cli_binary":{"version":"2.12.0","source":"https://github.com/wp-cli/wp-cli/releases/download/v2.12.0/wp-cli-2.12.0.phar","sha256":"ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c"},
   "build_inputs": {
-    "runtime-images/wordpress/Dockerfile":"6acbc4437a42495f2f8144378b3e944772edab73e96dda92f64ddb0b55ad3381",
+    "runtime-images/wordpress/Dockerfile":"b1dc557921a76b300f19fe905b38921c92d4cb61d94d2411fc5f75eef6ed7c6d",
     "runtime-images/wordpress/entrypoint.sh":"ffe844571f89bf8189dfc9d9aac7a0b7e4498e61c8b4e76e1c79ba5d834d2262",
     "runtime-images/database/Dockerfile":"73469de26e85f5f63c52492a41deabeed44812f7b0a839f6434f7f30b3b9ab5e",
     "runtime-images/database/entrypoint.sh":"d468c1baecc10517baea54a38914fcef1c8eb7e930eb03775a2464eb7a654ea4"
