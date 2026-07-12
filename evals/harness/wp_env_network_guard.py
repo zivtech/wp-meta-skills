@@ -45,6 +45,20 @@ def execute_failure_diagnostic(container, runtime):
     return evidence
 WRITABLE_PATHS={"database":{"/var/lib/mysql","/run/mysqld","/tmp"},"wordpress":{"/tmp","/var/www/html/wp-content/uploads"},"cli":{"/tmp"},"browser":{"/tmp"}}
 SERVICE_NETWORKS={"database":["wp_db"],"wordpress":["wp_db","browser_wp"],"cli":["wp_db"],"browser":["browser_wp"]}
+WORDPRESS_IMAGE_ACTIVE_CONFIG={
+  "User":"www-data",
+  "ExposedPorts":{"8080/tcp":{}},
+  "Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","PHP_INI_DIR=/usr/local/etc/php","APACHE_CONFDIR=/etc/apache2","APACHE_ENVVARS=/etc/apache2/envvars"],
+  "WorkingDir":"/var/www/html",
+  "Entrypoint":["/usr/local/bin/wp-sandbox-entrypoint"],
+  "StopSignal":"SIGWINCH",
+}
+
+def validate_wordpress_image_config(config):
+    if config.get("Volumes") not in (None,{}): raise RuntimeError("WordPress image inherited writable volume metadata")
+    active={key:value for key,value in config.items() if value not in (None,False,"",[],{})}
+    if active != WORDPRESS_IMAGE_ACTIVE_CONFIG: raise RuntimeError("WordPress image active metadata drift")
+    return True
 
 def parse_tag_manifest(payload, arch):
     resolved=json.loads(payload)
@@ -224,6 +238,8 @@ def _run_linux_canary(work):
             raise RuntimeError(result["stderr"])
     built={key:provision.run_capped(["docker","image","inspect",tag,"--format","{{.Id}}"])["stdout"].strip() for key,tag in (("wordpress",wp_tag),("database",db_tag))}
     if not all(value.startswith("sha256:") for value in built.values()): raise RuntimeError("missing built image ID")
+    wordpress_config=json.loads(provision.run_capped(["docker","image","inspect",built["wordpress"]])["stdout"])[0]["Config"]
+    validate_wordpress_image_config(wordpress_config)
     wp_cli=provision.run_capped(["docker","run","--rm","--entrypoint","sha256sum",built["wordpress"],"/usr/local/bin/wp"])
     verify_wp_cli_result(wp_cli,provision.inventory()["wp_cli_binary"]["sha256"])
     def identity(image,user):

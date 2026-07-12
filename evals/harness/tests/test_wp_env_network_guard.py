@@ -84,6 +84,13 @@ def test_compatibility_failure_names_phase_and_bounds_output():
 def test_canary_is_internal_digest_only_and_bounded():
     assert guard.validate_compose(guard.canary_compose())
 
+def test_flat_wordpress_image_metadata_allowlist_rejects_inherited_runtime_state():
+    config={"Hostname":"","Domainname":"","AttachStdin":False,"AttachStdout":False,"AttachStderr":False,"Tty":False,"OpenStdin":False,"StdinOnce":False,"Cmd":None,"Image":"","Volumes":None,"OnBuild":None,"Labels":None,**guard.WORDPRESS_IMAGE_ACTIVE_CONFIG}
+    assert guard.validate_wordpress_image_config(config)
+    for field,value in (("Volumes",{"/var/www/html":{}}),("Cmd",["apache2-foreground"]),("Labels",{"surprise":"true"}),("Healthcheck",{"Test":["CMD","true"]})):
+        mutated=dict(config); mutated[field]=value
+        with pytest.raises(RuntimeError,match="metadata"): guard.validate_wordpress_image_config(mutated)
+
 def test_rejects_added_service():
     spec=guard.canary_compose(); spec["services"]["surprise"]={}
     with pytest.raises(RuntimeError,match="unlisted"): guard.validate_compose(spec)

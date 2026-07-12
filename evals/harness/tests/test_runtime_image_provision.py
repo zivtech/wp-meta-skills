@@ -19,9 +19,18 @@ def test_build_input_hashes_match_committed_sources():
 
 def test_wordpress_checksum_argument_is_in_final_build_stage():
     dockerfile=(HARNESS / "runtime-images/wordpress/Dockerfile").read_text(encoding="utf-8")
-    final_stage=dockerfile.split("FROM ${WORDPRESS_BASE}",1)[1]
-    assert "ARG WP_CLI_SHA256" in final_stage.split("COPY wordpress.tar.gz",1)[0]
-    assert 'echo "$WP_CLI_SHA256  /usr/local/bin/wp" | sha256sum -c -' in final_stage
+    prepared_stage=dockerfile.split("FROM ${WORDPRESS_BASE} AS prepared",1)[1]
+    assert "ARG WP_CLI_SHA256" in prepared_stage.split("COPY wordpress.tar.gz",1)[0]
+    assert 'echo "$WP_CLI_SHA256  /usr/local/bin/wp" | sha256sum -c -' in prepared_stage
+
+def test_wordpress_final_stage_drops_inherited_volume_metadata():
+    dockerfile=(HARNESS / "runtime-images/wordpress/Dockerfile").read_text(encoding="utf-8")
+    final_stage=dockerfile.rsplit("FROM scratch",1)[1]
+    assert "COPY --from=prepared / /" in final_stage
+    assert "VOLUME" not in final_stage
+    assert "WORKDIR /var/www/html" in final_stage
+    assert "USER www-data" in final_stage
+    assert "ENTRYPOINT" in final_stage
 
 def test_database_seed_and_runtime_share_bounded_redo_log_size():
     dockerfile=(HARNESS / "runtime-images/database/Dockerfile").read_text(encoding="utf-8")

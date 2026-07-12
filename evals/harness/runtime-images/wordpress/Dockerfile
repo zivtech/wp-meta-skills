@@ -2,7 +2,7 @@ ARG WORDPRESS_BASE
 ARG CLI_BASE
 ARG WP_CLI_SHA256
 FROM ${CLI_BASE} AS cli
-FROM ${WORDPRESS_BASE}
+FROM ${WORDPRESS_BASE} AS prepared
 ARG WP_CLI_SHA256
 COPY wordpress.tar.gz /tmp/wordpress.tar.gz
 RUN rm -rf /var/www/html/* /usr/src/wordpress \
@@ -21,6 +21,15 @@ RUN chmod 0555 /usr/local/bin/wp /usr/local/bin/wp-sandbox-entrypoint \
  && test -f /usr/local/bin/wp && ! test -L /usr/local/bin/wp \
  && echo "$WP_CLI_SHA256  /usr/local/bin/wp" | sha256sum -c - \
  && wp --allow-root --info && wp --allow-root cli version
+
+FROM scratch
+COPY --from=prepared / /
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PHP_INI_DIR=/usr/local/etc/php \
+    APACHE_CONFDIR=/etc/apache2 \
+    APACHE_ENVVARS=/etc/apache2/envvars
+WORKDIR /var/www/html
 USER www-data
 EXPOSE 8080
+STOPSIGNAL SIGWINCH
 ENTRYPOINT ["/usr/local/bin/wp-sandbox-entrypoint"]
