@@ -5,7 +5,7 @@ Canonical execution record for the serial hardening program defined by the local
 | Plan | Title | Base SHA | Reviewed code tip | Packet path | Status | Notes |
 |---|---|---|---|---|---|---|
 | 006 | Introduce shared leases and protect caller workdirs | `e0ebf6a3bee38fa3477e835c45325d078adde6fa` | `1e10ee895b906db57b251bbde59352b56afa7828` | `docs/wordpress/implementation-reviews/006-review.md` | DONE | General and security critics accepted after one remediation pass. |
-| 007 | Gate the flagship repair-loop tests everywhere | — | — | `docs/wordpress/implementation-reviews/007-review.md` | TODO | Requires the committed Plan 006 packet checkpoint. |
+| 007 | Gate the flagship repair-loop tests everywhere | `e2a43067cae0639c0626eed63bd3495f685b0bd6` | `067edd57b19ea6256ac563b9e6d548b457460430` | `docs/wordpress/implementation-reviews/007-review.md` | DONE | Amended after a STOP-condition audit exposed inherited bundle drift; general and QA critics accepted. |
 | 008 | Require fresh static and runtime proof before green | — | — | `docs/wordpress/implementation-reviews/008-review.md` | TODO | — |
 | 009 | Sandbox generated package and WordPress runtime execution | — | — | `docs/wordpress/implementation-reviews/009-review.md` | TODO | — |
 | 010 | Scan the block metadata graph and generated PHP closure | — | — | `docs/wordpress/implementation-reviews/010-review.md` | TODO | — |
