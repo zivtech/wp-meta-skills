@@ -18,13 +18,22 @@ def test_trusted_runner_workspaces_have_reviewed_separate_bounds():
     assert guard.TRUSTED_RUNNER_LIMITS["browser-runner"] == {"memory":"1g","size":536870912,"inodes":50000}
     assert guard.TRUSTED_RUNNER_LIMITS["wp-env-runner"] == {"memory":"3g","size":2147483648,"inodes":200000}
 
-def test_fixture_tools_run_through_interpreters_on_noexec_workspace():
+def test_fixture_tools_match_reviewed_commands_on_exec_workspace():
     assert set(guard.BLOCK_BUILD_COMMANDS) == {"smoke","interactivity","deprecation"}
     assert all(command.startswith("node node_modules/@wordpress/scripts/bin/wp-scripts.js build") for command in guard.BLOCK_BUILD_COMMANDS.values())
     assert "blocks/runtime-card/index.js" in guard.BLOCK_BUILD_COMMANDS["smoke"]
     assert "--experimental-modules" in guard.BLOCK_BUILD_COMMANDS["interactivity"]
     assert "blocks/deprecated-card/build" in guard.BLOCK_BUILD_COMMANDS["deprecation"]
     assert guard.PHPUNIT_COMMAND == "php vendor/bin/phpunit"
+
+def test_only_bounded_work_tmpfs_is_executable_for_compatibility():
+    work=guard.executable_work_tmpfs(1024,32)
+    assert work.startswith("/work:") and "exec" in work.split(",") and "noexec" not in work
+    assert {"exec","nosuid","nodev"} <= set(work.split(","))
+    assert guard.TEMP_TMPFS.startswith("/tmp:") and {"noexec","nosuid","nodev"} <= set(guard.TEMP_TMPFS.split(",")) and ",exec" not in guard.TEMP_TMPFS
+
+def test_network_disconnect_precedes_fixture_execute():
+    assert guard.FIXTURE_PHASE_ORDER == ("create","start","install","disconnect","execute")
 
 def test_fixture_build_commands_match_reviewed_packet_scripts():
     examples=HARNESS.parent / "suites" / "wordpress-block-executor" / "examples"
