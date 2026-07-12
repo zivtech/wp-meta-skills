@@ -8,6 +8,12 @@ def test_trusted_fixture_copy_does_not_preserve_host_ownership():
     assert "cp -a" not in guard.COPY_INPUT_COMMAND
     assert "preserve" not in guard.COPY_INPUT_COMMAND
 
+def test_trusted_installs_use_only_bounded_workspace_homes_and_caches():
+    assert "HOME=/work/home" in guard.PREPARE_WORK_ENV
+    assert "npm_config_cache=/work/.npm-cache" in guard.PREPARE_WORK_ENV
+    assert "COMPOSER_HOME=/work/.composer" in guard.PREPARE_WORK_ENV
+    assert "/root" not in guard.PREPARE_WORK_ENV
+
 def test_canary_is_internal_digest_only_and_bounded():
     assert guard.validate_compose(guard.canary_compose())
 
