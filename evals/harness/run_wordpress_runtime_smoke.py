@@ -33,7 +33,7 @@ from typing import Any
 
 import validate_wordpress_artifact
 from certify_wordpress_executor_artifact import (EVIDENCE_SCHEMA_VERSION, EXECUTION_CLOSURE_IGNORE,
-                                                  digest_regular_tree, snapshot_regular_tree)
+                                                  digest_regular_tree, snapshot_regular_tree_with_kind)
 from workspace_lease import (WorkspaceCleanupError, WorkspacePurpose, cleanup as cleanup_workspace,
                              create_ephemeral, create_named, validate_safe_name)
 from workspace_lease import validate_output_parent
@@ -312,26 +312,23 @@ def _write_staged_file(destination: Path, content: bytes) -> None:
 
 
 def copy_plugin_artifact(source: Path, root: Path) -> Path:
-    if stat.S_ISLNK(source.lstat().st_mode):
-        raise ValueError(f"artifact root is a symlink: {source}")
-    source = source.resolve(strict=True)
-    if not source.exists():
-        raise FileNotFoundError(f"artifact path does not exist: {source}")
+    source = source.expanduser().absolute()
+    root_kind, snapshot = snapshot_regular_tree_with_kind(source)
 
     root.mkdir(parents=True, exist_ok=True)
     plugin_dir = root / source.name
     if plugin_dir.exists():
         shutil.rmtree(plugin_dir)
 
-    if stat.S_ISDIR(source.lstat().st_mode):
+    if root_kind == "directory":
         plugin_dir.mkdir()
-        for relative, content, _info in snapshot_regular_tree(source):
+        for relative, content, _info in snapshot:
             destination = plugin_dir / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             _write_staged_file(destination, content)
     else:
         plugin_dir.mkdir()
-        _relative, content, _info = snapshot_regular_tree(source)[0]
+        _relative, content, _info = snapshot[0]
         _write_staged_file(plugin_dir / source.name, content)
 
     write_wp_env_config(root, plugin_dir.name)

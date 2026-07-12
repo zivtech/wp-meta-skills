@@ -96,7 +96,7 @@ def read_regular_file(root: Path, relative: Path, *, max_bytes: int) -> tuple[by
         os.close(fd)
 
 
-def snapshot_regular_tree(path: Path) -> list[tuple[Path, bytes, os.stat_result]]:
+def snapshot_regular_tree_with_kind(path: Path) -> tuple[str, list[tuple[Path, bytes, os.stat_result]]]:
     """Read an execution closure using retained descriptor-relative traversal."""
     if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
         raise RuntimeError("descriptor-relative no-follow traversal is unavailable")
@@ -170,7 +170,11 @@ def snapshot_regular_tree(path: Path) -> list[tuple[Path, bytes, os.stat_result]
             raise ValueError("artifact root is not regular")
     finally:
         os.close(parent_fd)
-    return results
+    return ("file" if stat.S_ISREG(before.st_mode) else "directory"), results
+
+
+def snapshot_regular_tree(path: Path) -> list[tuple[Path, bytes, os.stat_result]]:
+    return snapshot_regular_tree_with_kind(path)[1]
 
 
 def open_directory_nofollow(path: Path) -> int:

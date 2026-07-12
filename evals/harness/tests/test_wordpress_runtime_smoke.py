@@ -603,6 +603,36 @@ def test_staging_symlink_swap_never_copies_external_or_starts_wp_env(tmp_path, m
     assert all(path.read_text(encoding="utf-8") != "DO-NOT-COPY" for path in copied if not path.is_symlink())
 
 
+def test_staging_root_swap_at_open_never_copies_external_or_starts_wp_env(tmp_path, monkeypatch):
+    source = tmp_path / "source"; source.mkdir()
+    (source / "plugin.php").write_text("safe", encoding="utf-8")
+    external = tmp_path / "external"; external.mkdir()
+    (external / "secret.php").write_text("DO-NOT-COPY", encoding="utf-8")
+    original_open = certifier.os.open
+    swapped = False
+    which_called = False
+
+    def swapping_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if str(path) == source.name and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            moved = tmp_path / "moved-source"; source.rename(moved)
+            source.symlink_to(external, target_is_directory=True)
+        return original_open(path, flags, *args, **kwargs)
+
+    def forbidden_which(_name):
+        nonlocal which_called
+        which_called = True
+        return "/usr/bin/npx"
+
+    monkeypatch.setattr(certifier.os, "open", swapping_open)
+    monkeypatch.setattr(smoke.shutil, "which", forbidden_which)
+    with pytest.raises(OSError):
+        smoke.run_smoke(timeout_sec=5, workdir=tmp_path / "runtime", artifact_path=source)
+    assert which_called is False
+    assert not any(path.name == "secret.php" for path in (tmp_path / "runtime").rglob("*"))
+
+
 def test_phpunit_smoke_blocks_when_artifact_composer_install_fails():
     ok_command = smoke.CommandRun(["ok"], "/tmp", 0, "ok", "", 0.01)
     failed_composer = smoke.CommandRun(["composer", "install"], "/tmp", 1, "", "failed", 0.01)
