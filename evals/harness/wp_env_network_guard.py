@@ -118,9 +118,9 @@ def run_linux_canary(work, result_path=None):
 def _run_linux_canary(work):
     archive=work/"wordpress.tar.gz"; provision.download_core(archive)
     inv=provision.inventory()["images"]; arch=platform.machine()
-    arch_key={"x86_64":"amd64","aarch64":"arm64","arm64":"arm64"}.get(arch)
+    arch_key=provision.normalize_arch(arch)
     engine_arch=provision.run_capped(["docker","info","--format","{{.Architecture}}"])["stdout"].strip()
-    if arch_key is None or engine_arch != arch_key: raise RuntimeError("Docker engine architecture mismatch")
+    if provision.normalize_arch(engine_arch) != arch_key: raise RuntimeError("Docker engine architecture mismatch")
     upstream={key:f"{item['tag'].split(':')[0]}@{provision.platform_digest(item,arch)}" for key,item in inv.items()}
     for key,reference in upstream.items():
         manifest=provision.run_capped(["docker","buildx","imagetools","inspect",inv[key]["tag"],"--format","{{json .Manifest}}"],timeout=300,limit=1048576)

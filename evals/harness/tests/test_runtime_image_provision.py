@@ -23,6 +23,12 @@ def test_platform_resolution_blocks_unknown():
     import pytest
     with pytest.raises(RuntimeError): provision.platform_digest(item,"riscv64")
 
+def test_architecture_aliases_normalize_for_host_and_docker_reports():
+    assert provision.normalize_arch("x86_64") == "amd64"
+    assert provision.normalize_arch("amd64") == "amd64"
+    assert provision.normalize_arch("aarch64") == "arm64"
+    assert provision.normalize_arch("arm64") == "arm64"
+
 def test_capped_transport():
     result=provision.run_capped(["/bin/sh","-c","printf ok"])
     assert result == {"returncode":0,"stdout":"ok","stderr":""}

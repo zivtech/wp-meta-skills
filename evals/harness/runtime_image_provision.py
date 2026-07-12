@@ -9,9 +9,13 @@ INVENTORY = ROOT / "container-images.json"
 def inventory():
     return json.loads(INVENTORY.read_text(encoding="utf-8"))
 
-def platform_digest(item, machine):
-    key = {"x86_64":"amd64", "aarch64":"arm64", "arm64":"arm64"}.get(machine)
+def normalize_arch(machine):
+    key = {"x86_64":"amd64", "amd64":"amd64", "aarch64":"arm64", "arm64":"arm64"}.get(machine)
     if not key: raise RuntimeError(f"unsupported Docker platform: {machine}")
+    return key
+
+def platform_digest(item, machine):
+    key = normalize_arch(machine)
     return item[key]
 
 def download_core(destination):
