@@ -134,6 +134,14 @@ python3 evals/harness/run_wordpress_runtime_smoke.py --write --run-id wp-env-run
 
 This harness creates a temporary plugin fixture, starts `@wordpress/env` with automatic port selection, runs `validate_wordpress_artifact.py` with `--require-tool php-lint --require-tool wp-env`, records the full plugin runtime profile as informational, then stops the environment.
 
+`--workdir` selects an optional caller-owned parent, not the fixture root. Each
+invocation creates a unique leased child beneath that parent and writes all
+runtime files there. Callers must not expect files at the parent root. The JSON
+summary reports the child as `runtime_root` and the supplied parent as
+`workdir_parent`. `--keep-artifacts` and `--keep-running` retain the unique
+child; otherwise the harness verifies its ownership sentinel before removing
+only that child.
+
 To provision and require the full disposable plugin runtime profile, including Composer-installed WPCS and Plugin Check inside `wp-env`, run:
 
 ```bash

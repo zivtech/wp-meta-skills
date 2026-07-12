@@ -503,6 +503,13 @@ harness calls a generated helper through `wp --user=admin eval`, requires
 provider registration/configuration, confirms connector registration when
 `wp_is_connector_registered()` exists, and requires expected provider output:
 
+`--workdir` is an optional caller-owned parent for a newly created unique run
+directory. The harness never writes runtime artifacts directly at the parent
+root. Read `runtime_root` in the JSON summary to locate the unique child;
+`workdir_parent` records the supplied parent. `--keep-artifacts` or
+`--keep-running` retains the child. Without either flag, sentinel-verified
+cleanup removes only the child.
+
 ```bash
 python3 evals/harness/run_wordpress_runtime_smoke.py \
   --workdir /tmp/wp-ai-client-runtime-smoke-YYYYMMDD \
@@ -528,9 +535,9 @@ registration/configuration, connector registration, model preference selection,
 `generate_text()` output, WPCS/PHPCS, and Plugin Check for the generated
 artifact. It does not prove credentialed OpenAI/Anthropic/Google provider
 behavior, browser/editor behavior, PHPUnit behavior, long-run model variance,
-broad integration coverage, or release readiness. Use a hyphen-only explicit
-`--workdir` if `@wordpress/env` derives an invalid Docker image reference from a
-random temporary path.
+broad integration coverage, or release readiness. A supplied `--workdir`
+still receives a Docker-safe unique child name; callers must not rely on files
+being written at the parent root.
 
 To provision and require the full disposable plugin runtime profile, including Composer-installed WPCS and Plugin Check inside `wp-env`, run:
 

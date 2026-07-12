@@ -332,7 +332,7 @@ def test_create_wp_env_temp_root_uses_docker_safe_basename(tmp_path, monkeypatch
 
     try:
         assert temp_root.exists()
-        assert re.fullmatch(r"wp-meta-skills-runtime-smoke-[a-f0-9]{12}", temp_root.name)
+        assert re.fullmatch(r"wp-meta-skills-runtime-[a-f0-9]{12}", temp_root.name)
         assert "_" not in temp_root.name
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
@@ -428,13 +428,45 @@ def test_runtime_smoke_passes_narrow_gate_and_records_full_profile(tmp_path, mon
     result = smoke.run_smoke(timeout_sec=5, workdir=tmp_path / "fixture", keep_artifacts=True)
 
     assert result["status"] == "pass"
-    assert result["narrow_gate"]["runtime_roots"]["wp_env_root"] == str((tmp_path / "fixture").resolve())
+    runtime_root = Path(result["runtime_root"])
+    assert runtime_root.parent == (tmp_path / "fixture").resolve()
+    assert result["workdir_parent"] == str((tmp_path / "fixture").resolve())
+    assert result["narrow_gate"]["runtime_roots"]["wp_env_root"] == str(runtime_root)
     assert result["full_plugin_runtime_profile"]["status"] == "blocked"
     assert "not WPCS proof" in result["negative_space"]
     assert commands[0][0][:3] == ["/usr/bin/npx", "--yes", "@wordpress/env"]
     assert commands[0][0][-2:] == ["start", "--auto-port"]
     assert commands[1][0][-3:] == ["plugin", "activate", "acme-runtime-smoke"]
     assert commands[-1][0][-1] == "stop"
+
+
+def test_runtime_smoke_deletes_only_leased_child(tmp_path, monkeypatch):
+    parent = tmp_path / "caller"
+    parent.mkdir()
+    marker = parent / "caller-owned.txt"
+    sibling = tmp_path / "wp-meta-skills-runtime-lookalike"
+    marker.write_text("keep", encoding="utf-8")
+    sibling.mkdir()
+    monkeypatch.setattr(smoke.shutil, "which", lambda _name: None)
+
+    result = smoke.run_smoke(timeout_sec=5, workdir=parent)
+
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert sibling.is_dir()
+    assert not Path(result["runtime_root"]).exists()
+    assert result["workdir_parent"] == str(parent.resolve())
+
+
+def test_runtime_smoke_blocks_and_retains_child_when_cleanup_refuses(tmp_path, monkeypatch):
+    monkeypatch.setattr(smoke.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(smoke, "cleanup_workspace", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("ownership mismatch")))
+
+    result = smoke.run_smoke(timeout_sec=5, workdir=tmp_path / "caller")
+
+    assert result["status"] == "blocked"
+    assert result["pass"] is False
+    assert result["cleanup_error"] == "ownership mismatch"
+    assert Path(result["runtime_root"]).is_dir()
 
 
 def test_phpunit_smoke_blocks_when_artifact_composer_install_fails():
@@ -501,7 +533,7 @@ def test_runtime_smoke_can_provision_full_profile(tmp_path, monkeypatch):
     assert result["status"] == "pass"
     assert sorted(result["provisioning"]) == ["composer_install", "plugin_check_install"]
     assert "not WPCS proof" not in result["negative_space"]
-    assert "acme-runtime-smoke" in (tmp_path / "fixture" / "composer.json").read_text(encoding="utf-8")
+    assert "acme-runtime-smoke" in (Path(result["runtime_root"]) / "composer.json").read_text(encoding="utf-8")
     assert commands[0][0][:2] == ["/usr/bin/composer", "install"]
     assert commands[2][0][-3:] == ["plugin", "activate", "acme-runtime-smoke"]
     assert commands[3][0][-4:] == ["plugin", "install", "plugin-check", "--activate"]
@@ -775,7 +807,7 @@ def test_runtime_smoke_runs_generated_block_build_gate_on_disposable_copy(tmp_pa
         editor_insert_render_smoke=True,
     )
 
-    copied_artifact = tmp_path / "fixture" / "acme-runtime-card" / "generated"
+    copied_artifact = Path(result["runtime_root"]) / "acme-runtime-card" / "generated"
     npm_install = next(command for command, cwd in commands if command[:3] == ["/usr/bin/npm", "install", "--no-audit"])
 
     assert npm_install == ["/usr/bin/npm", "install", "--no-audit", "--no-fund"]
@@ -974,7 +1006,7 @@ def test_runtime_smoke_runs_generated_plugin_phpunit_gate_on_disposable_copy(tmp
         phpunit_smoke=True,
     )
 
-    copied_artifact = tmp_path / "fixture" / "acme-generated"
+    copied_artifact = Path(result["runtime_root"]) / "acme-generated"
     composer_install = next(command for command, cwd in commands if command[:2] == ["/usr/bin/composer", "install"])
 
     assert composer_install == ["/usr/bin/composer", "install", "--no-interaction", "--no-progress", "--quiet"]

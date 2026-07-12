@@ -23,7 +23,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +30,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import validate_wordpress_artifact
+from workspace_lease import WorkspacePurpose, cleanup as cleanup_workspace, create_ephemeral
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,15 +46,7 @@ WPCS_REQUIRE_DEV = {
 
 def create_wp_env_temp_root() -> Path:
     """Create a temp root whose basename is safe for wp-env Docker names."""
-    temp_parent = Path(tempfile.gettempdir())
-    for _attempt in range(100):
-        candidate = temp_parent / f"wp-meta-skills-runtime-smoke-{uuid.uuid4().hex[:12]}"
-        try:
-            candidate.mkdir(parents=True, exist_ok=False)
-        except FileExistsError:
-            continue
-        return candidate
-    raise RuntimeError("could not create a unique wp-env temp root")
+    return create_ephemeral(Path(tempfile.gettempdir()), WorkspacePurpose.RUNTIME).root
 BASE_NEGATIVE_SPACE = (
     "not PHPUnit proof",
     "not block validation proof",
@@ -1638,7 +1630,9 @@ def run_smoke(
         raise ValueError("interactivity_smoke requires editor_insert_render_smoke")
     if artifact_kind not in {"plugin", "block"}:
         raise ValueError(f"unsupported artifact_kind: {artifact_kind}")
-    temp_root = workdir.resolve() if workdir else create_wp_env_temp_root()
+    lease = create_ephemeral(workdir, WorkspacePurpose.RUNTIME)
+    temp_root = lease.root
+    cleanup_error: str | None = None
     wrapped_block_artifact: WrappedBlockArtifact | None = None
     source_block_artifact_path: Path | None = None
     if artifact_path:
@@ -1974,7 +1968,10 @@ def run_smoke(
         if npx and start and start.ok and not keep_running:
             stop = run_command([npx, "--yes", "@wordpress/env", "stop"], temp_root, timeout_sec)
         if not keep_artifacts and not keep_running:
-            shutil.rmtree(temp_root, ignore_errors=True)
+            try:
+                cleanup_workspace(lease, repository_root=ROOT)
+            except (OSError, RuntimeError) as exc:
+                cleanup_error = str(exc)
 
     status = status_from_gates(
         npx=npx,
@@ -2003,7 +2000,9 @@ def run_smoke(
         stop=stop,
         strict_full_profile=strict_full_profile,
     )
-    retained = keep_artifacts or keep_running
+    if cleanup_error:
+        status = "blocked"
+    retained = keep_artifacts or keep_running or cleanup_error is not None
     negative_space = [
         item for item in BASE_NEGATIVE_SPACE if not artifact_path or item != "not proof of executor-generated artifacts"
     ]
@@ -2059,7 +2058,10 @@ def run_smoke(
         "source_artifact_path": str(artifact_path.resolve()) if artifact_path else None,
         "artifact_kind": artifact_kind,
         "fixture_root": str(temp_root),
+        "runtime_root": str(temp_root),
+        "workdir_parent": str(lease.caller_parent) if lease.caller_parent else None,
         "fixture_retained": retained,
+        "cleanup_error": cleanup_error,
         "artifact_path": str(plugin_dir),
         "wrapped_block_artifact": wrapped_block_artifact_summary(wrapped_block_artifact),
         "npx": npx,
@@ -2173,7 +2175,10 @@ def write_result(summary: dict[str, Any], run_id: str) -> Path:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a disposable WordPress wp-env runtime smoke.")
     parser.add_argument("--timeout-sec", type=int, default=300)
-    parser.add_argument("--workdir", help="Optional fixture root. Defaults to a temporary directory.")
+    parser.add_argument(
+        "--workdir",
+        help="Optional parent for a newly created unique run directory; files are not written at the parent root.",
+    )
     parser.add_argument("--artifact-path", help="Existing generated artifact directory or PHP file to copy into the wp-env project.")
     parser.add_argument("--artifact-kind", choices=("plugin", "block"), default="plugin", help="Interpret --artifact-path as a full plugin or generated block files.")
     parser.add_argument("--fixture-kind", choices=("plugin", "block"), default="plugin", help="Disposable fixture type to create when --artifact-path is omitted.")
