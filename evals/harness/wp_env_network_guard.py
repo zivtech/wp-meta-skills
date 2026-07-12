@@ -6,6 +6,7 @@ from pathlib import Path
 import runtime_image_provision as provision
 import materialize_wordpress_executor_packet as materializer
 import workspace_lease
+COPY_INPUT_COMMAND="cp -R /input/. /work/"
 WRITABLE_PATHS={"database":{"/var/lib/mysql","/run/mysqld","/tmp"},"wordpress":{"/tmp","/var/www/html/wp-content/uploads"},"cli":{"/tmp"},"browser":{"/tmp"}}
 SERVICE_NETWORKS={"database":["wp_db"],"wordpress":["wp_db","browser_wp"],"cli":["wp_db"],"browser":["browser_wp"]}
 
@@ -33,7 +34,7 @@ def prove_fixture_locks(work, inv, arch):
     node_image=f"node@{provision.platform_digest(inv['node'],arch)}"
     for runner in ("browser-runner","wp-env-runner"):
         source=Path(__file__).parent/runner
-        command=["docker","run","--rm","--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--pids-limit","256","--memory","1g","--tmpfs","/work:size=536870912,nr_inodes=50000,mode=0700","--tmpfs","/tmp:size=67108864,nr_inodes=4096,mode=0700","--mount",f"type=bind,src={source},dst=/input,readonly",node_image,"sh","-eu","-c","cp -a /input/. /work/; cd /work; npm ci --ignore-scripts --no-audit --no-fund"]
+        command=["docker","run","--rm","--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--pids-limit","256","--memory","1g","--tmpfs","/work:size=536870912,nr_inodes=50000,mode=0700","--tmpfs","/tmp:size=67108864,nr_inodes=4096,mode=0700","--mount",f"type=bind,src={source},dst=/input,readonly",node_image,"sh","-eu","-c",f"{COPY_INPUT_COMMAND}; cd /work; npm ci --ignore-scripts --no-audit --no-fund"]
         result=provision.run_capped(command,timeout=900,limit=1048576)
         if result["returncode"]: raise RuntimeError(f"trusted {runner} lock failed: {result['stderr']}")
     packets=(("smoke","block","wordpress-block-executor/examples/smoke-wordpress-v1.materializable-packet.md"),("interactivity","block","wordpress-block-executor/examples/interactivity-wordpress-v1.materializable-packet.md"),("deprecation","block","wordpress-block-executor/examples/deprecation-wordpress-v1.materializable-packet.md"),("phpunit","plugin","wordpress-plugin-executor/examples/phpunit-wordpress-v1.materializable-packet.md"))
@@ -48,7 +49,7 @@ def prove_fixture_locks(work, inv, arch):
         container=f"wp-step0-fixture-{name}-{__import__('hashlib').sha256(str(work).encode()).hexdigest()[:8]}"
         create=["docker","create","--name",container,"--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--pids-limit","256","--memory","2g","--tmpfs","/work:size=1073741824,nr_inodes=100000,mode=0700","--tmpfs","/tmp:size=67108864,nr_inodes=4096,mode=0700","--mount",f"type=bind,src={source},dst=/input,readonly","--entrypoint","sh",image,"-c","sleep infinity"]
         try:
-            for command in (create,["docker","start",container],["docker","exec",container,"sh","-eu","-c",f"cp -a /input/. /work/; cd /work; {install}"],["docker","network","disconnect","bridge",container],["docker","exec",container,"sh","-eu","-c",f"cd /work; {execute}"]):
+            for command in (create,["docker","start",container],["docker","exec",container,"sh","-eu","-c",f"{COPY_INPUT_COMMAND}; cd /work; {install}"],["docker","network","disconnect","bridge",container],["docker","exec",container,"sh","-eu","-c",f"cd /work; {execute}"]):
                 result=provision.run_capped(command,timeout=900,limit=1048576)
                 if result["returncode"]: raise RuntimeError(f"{name} compatibility failed: {result['stderr']}")
         finally: provision.run_capped(["docker","rm","-f",container],timeout=120)

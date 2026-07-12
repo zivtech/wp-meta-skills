@@ -3,6 +3,11 @@ from pathlib import Path
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
 import pytest, wp_env_network_guard as guard
 
+def test_trusted_fixture_copy_does_not_preserve_host_ownership():
+    assert "cp -R" in guard.COPY_INPUT_COMMAND
+    assert "cp -a" not in guard.COPY_INPUT_COMMAND
+    assert "preserve" not in guard.COPY_INPUT_COMMAND
+
 def test_canary_is_internal_digest_only_and_bounded():
     assert guard.validate_compose(guard.canary_compose())
 
