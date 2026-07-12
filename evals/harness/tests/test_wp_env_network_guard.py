@@ -53,6 +53,13 @@ def test_database_probe_uses_native_wordpress_database_oracle():
     assert "mysqli_report(MYSQLI_REPORT_OFF)" in command and "wp core install" in command and "wp option get siteurl" in command
     assert "wp db check" not in command
 
+def test_browser_inode_exhaustion_cleans_and_proves_recovery():
+    probe=next(probe for probe in guard.runtime_probe_specs(["docker","compose"]) if probe["name"]=="browser-inode-quota")
+    command=" ".join(probe["command"])
+    assert "unlinkSync('/tmp/i'+j)" in command
+    assert ".inode-recovered" in command
+    assert probe["timeout"]==30
+
 def test_named_probe_errors_identify_probe_and_bound_output(monkeypatch):
     monkeypatch.setattr(guard.provision,"run_capped",lambda *_args,**_kwargs:{"returncode":7,"stdout":"out","stderr":"err"})
     with pytest.raises(RuntimeError,match="probe browser-public-http-denied failed rc=7"):

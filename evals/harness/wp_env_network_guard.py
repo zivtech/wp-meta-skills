@@ -100,7 +100,7 @@ def runtime_probe_specs(base):
       {"name":"php-routes-denied","network":True,"self_timeout":True,"command":cli("php","-r","foreach (array('93.184.216.34','169.254.169.254','10.0.0.1','127.0.0.1') as $h) { $s=@fsockopen($h,80,$e,$m,1); if ($s) exit(1); }"),"timeout":8},
       {"name":"php-public-dns-denied","network":True,"self_timeout":True,"allowed":{0,124},"command":cli("sh","-c","timeout 5 php -r \"exit(dns_get_record('example.com') ? 1 : 0);\""),"timeout":8},
       {"name":"browser-byte-quota","command":browser("const f=require('fs');f.writeFileSync('/tmp/quota',Buffer.alloc(60*1024*1024));try{f.appendFileSync('/tmp/quota',Buffer.alloc(8*1024*1024));process.exit(1)}catch(e){f.unlinkSync('/tmp/quota')}"),"timeout":15},
-      {"name":"browser-inode-quota","command":browser("const f=require('fs');let failed=false;for(let i=0;i<5000;i++){try{f.writeFileSync('/tmp/i'+i,'')}catch(e){failed=true;break}}if(!failed)process.exit(1)"),"timeout":15},
+      {"name":"browser-inode-quota","command":browser("const f=require('fs');let failed=false,i=0;for(;i<5000;i++){try{f.writeFileSync('/tmp/i'+i,'')}catch(e){failed=true;break}}if(!failed)process.exit(1);for(let j=0;j<i;j++)f.unlinkSync('/tmp/i'+j);f.writeFileSync('/tmp/.inode-recovered','');f.unlinkSync('/tmp/.inode-recovered')"),"timeout":30},
     )
 
 def run_named_probe(spec):
