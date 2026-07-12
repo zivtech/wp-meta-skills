@@ -23,6 +23,12 @@ def test_wordpress_checksum_argument_is_in_final_build_stage():
     assert "ARG WP_CLI_SHA256" in final_stage.split("COPY wordpress.tar.gz",1)[0]
     assert 'echo "$WP_CLI_SHA256  /usr/local/bin/wp" | sha256sum -c -' in final_stage
 
+def test_database_seed_and_runtime_share_bounded_redo_log_size():
+    dockerfile=(HARNESS / "runtime-images/database/Dockerfile").read_text(encoding="utf-8")
+    entrypoint=(HARNESS / "runtime-images/database/entrypoint.sh").read_text(encoding="utf-8")
+    assert "--innodb-log-file-size=16M" in dockerfile
+    assert "--innodb-log-file-size=16M" in entrypoint
+
 def test_platform_resolution_blocks_unknown():
     item=provision.inventory()["images"]["node"]
     assert provision.platform_digest(item,"x86_64")==item["amd64"]

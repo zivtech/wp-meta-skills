@@ -6,7 +6,7 @@ RUN set -eu; \
     mkdir -p /usr/local/share/wp-sandbox-db-seed /run/mysqld; \
     chown -R mysql:mysql /usr/local/share/wp-sandbox-db-seed /run/mysqld; \
     mariadb-install-db --user=mysql --datadir=/usr/local/share/wp-sandbox-db-seed --skip-test-db; \
-    mariadbd --user=mysql --datadir=/usr/local/share/wp-sandbox-db-seed --socket=/run/mysqld/seed.sock --pid-file=/run/mysqld/seed.pid --skip-networking & \
+    mariadbd --user=mysql --datadir=/usr/local/share/wp-sandbox-db-seed --socket=/run/mysqld/seed.sock --pid-file=/run/mysqld/seed.pid --innodb-log-file-size=16M --skip-networking & \
     daemon_pid="$!"; \
     ready=0; for i in $(seq 1 60); do if mariadb-admin --socket=/run/mysqld/seed.sock ping; then ready=1; break; fi; sleep 1; done; \
     test "$ready" = 1; \

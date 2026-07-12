@@ -15,7 +15,7 @@
   "build_inputs": {
     "runtime-images/wordpress/Dockerfile":"b1dc557921a76b300f19fe905b38921c92d4cb61d94d2411fc5f75eef6ed7c6d",
     "runtime-images/wordpress/entrypoint.sh":"ffe844571f89bf8189dfc9d9aac7a0b7e4498e61c8b4e76e1c79ba5d834d2262",
-    "runtime-images/database/Dockerfile":"73469de26e85f5f63c52492a41deabeed44812f7b0a839f6434f7f30b3b9ab5e",
-    "runtime-images/database/entrypoint.sh":"d468c1baecc10517baea54a38914fcef1c8eb7e930eb03775a2464eb7a654ea4"
+    "runtime-images/database/Dockerfile":"5cb0389069587863b53fb72ee1200ba2bfd042ba87902f834c2a8b3a78567de6",
+    "runtime-images/database/entrypoint.sh":"7ad46000daba95b2cbfba686702e509184b0eb9dae53e62c011abb1ad2145b76"
   }
 }
