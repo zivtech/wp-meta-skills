@@ -129,3 +129,25 @@ def test_df_profile_missing_or_unparsed_fails_closed(payload):
 @pytest.mark.parametrize("payload",["tmpfs 102 1 1 1% /tmp\ntmpfs 10 1 1 1% /tmp","tmpfs 1 1 1 1% /tmp\ntmpfs 100 1 1 1% /tmp"])
 def test_df_profile_oversized_fails_closed(payload):
     with pytest.raises(RuntimeError,match="exceeds"): guard.validate_df_profile(payload,1024,10)
+
+def test_execute_failure_diagnostic_is_bounded_and_nonsecret(monkeypatch):
+    calls=[]
+    def fake(command,**kwargs):
+        calls.append((command,kwargs)); return {"returncode":0,"stdout":"bounded","stderr":""}
+    monkeypatch.setattr(guard.provision,"run_capped",fake)
+    evidence=guard.execute_failure_diagnostic("fixture-123","node")
+    assert set(evidence)=={"container","runtime","state","limits","stats","processes","filesystem"}
+    assert all(kwargs=={"timeout":15,"limit":32768} for _command,kwargs in calls)
+    flattened=" ".join(" ".join(command) for command,_kwargs in calls)
+    assert "env" not in flattened.lower()
+    assert "cat /work" not in flattened
+
+def test_execute_failure_preserves_original_return_code(monkeypatch,tmp_path):
+    monkeypatch.setattr(guard.materializer,"materialize_packet",lambda *_args,**_kwargs:{"pass":True})
+    monkeypatch.setattr(guard,"execute_failure_diagnostic",lambda *_args:{"state":{"returncode":0,"stdout":"running","stderr":""}})
+    def fake(command,**_kwargs):
+        if command[:2]==["docker","exec"] and "wp-scripts.js" in " ".join(command): return {"returncode":37,"stdout":"","stderr":""}
+        return {"returncode":0,"stdout":"","stderr":""}
+    monkeypatch.setattr(guard.provision,"run_capped",fake)
+    with pytest.raises(RuntimeError,match="return code 37"):
+        guard.prove_fixture_locks(tmp_path,{"node":{"amd64":"sha256:"+"1"*64},"composer":{"amd64":"sha256:"+"2"*64}},"x86_64")

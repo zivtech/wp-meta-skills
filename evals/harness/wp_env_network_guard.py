@@ -23,6 +23,21 @@ def compatibility_failure(name, phase, result, state=None):
     tail=(result.get("stderr") or result.get("stdout") or "")[-2000:].replace("\x00", "")
     state_tail=(state or "")[-1000:].replace("\x00", "")
     return RuntimeError(f"{name} {phase} failed with return code {result.get('returncode')}; state={state_tail}: {tail}")
+
+def execute_failure_diagnostic(container, runtime):
+    commands={
+      "state":["docker","inspect","--format","{{json .State}}",container],
+      "limits":["docker","inspect","--format","{{json .HostConfig.Resources}}",container],
+      "stats":["docker","stats","--no-stream","--format","{{json .}}",container],
+      "processes":["docker","top",container,"-eo","pid,ppid,stat,comm"],
+      "filesystem":["docker","exec",container,"sh","-c","id; ulimit -a; df -Pk /work /tmp; df -Pi /work /tmp; cat /proc/self/cgroup; grep -E ' /work | /tmp ' /proc/mounts || true; for f in /sys/fs/cgroup/memory.events /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.events /sys/fs/cgroup/pids.current /sys/fs/cgroup/pids.max; do test ! -r $f || { echo $f; cat $f; }; done; stat -c '%A %U:%G %s %n' /work /tmp"],
+      "runtime":["docker","exec",container,"sh","-c",("node --version; npm --version; test -x /work/node_modules/.bin/wp-scripts; stat -c '%A %U:%G %s %n' /work/node_modules/.bin/wp-scripts" if runtime=="node" else "php --version; php -r 'echo PHP_BINARY, PHP_EOL;'; test -x /work/vendor/bin/phpunit; stat -c '%A %U:%G %s %n' /work/vendor/bin/phpunit")],
+    }
+    evidence={"container":container,"runtime":runtime}
+    for name,command in commands.items():
+        try: evidence[name]=provision.run_capped(command,timeout=15,limit=32768)
+        except Exception as exc: evidence[name]={"diagnostic_error":type(exc).__name__}
+    return evidence
 WRITABLE_PATHS={"database":{"/var/lib/mysql","/run/mysqld","/tmp"},"wordpress":{"/tmp","/var/www/html/wp-content/uploads"},"cli":{"/tmp"},"browser":{"/tmp"}}
 SERVICE_NETWORKS={"database":["wp_db"],"wordpress":["wp_db","browser_wp"],"cli":["wp_db"],"browser":["browser_wp"]}
 
@@ -77,6 +92,9 @@ def prove_fixture_locks(work, inv, arch):
             for phase,command in phases:
                 result=provision.run_capped(command,timeout=900,limit=1048576)
                 if result["returncode"]:
+                    if phase=="execute":
+                        diagnostic=execute_failure_diagnostic(container,"composer" if name=="phpunit" else "node")
+                        raise RuntimeError(f"{name} execute failed with return code {result['returncode']}; diagnostic={json.dumps(diagnostic,sort_keys=True)}")
                     state=provision.run_capped(["docker","inspect",container,"--format","{{json .State}}"],timeout=30,limit=4096)
                     raise compatibility_failure(name,phase,result,state.get("stdout") or state.get("stderr"))
         finally: provision.run_capped(["docker","rm","-f",container],timeout=120)
