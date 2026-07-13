@@ -76,33 +76,6 @@ jobs:
             evals/harness/tests/test_sandboxed_package_runner_canonical_bind.py \
             evals/harness/tests/test_workspace_lease.py \
             -m 'not docker_boundary' -q
-      - name: Observe exact zero-mount preflight serialization
-        run: |
-          PYTHONPATH=evals/harness python - <<'PY'
-          import os
-          import secrets
-          import runtime_image_provision as provision
-          import sandbox_python_preflight_diagnostic as diagnostic
-          class Ledger:
-              def __init__(self): self.events=[]
-              def record(self,*event): self.events.append(event)
-          architecture=provision.run_capped(["docker","info","--format","{{.Architecture}}"],timeout=30,limit=32768)
-          if architecture["returncode"]: raise RuntimeError("Docker architecture observation failed")
-          arch=provision.normalize_arch(architecture["stdout"].strip())
-          item=provision.inventory()["images"]["python"]
-          image=f"{item['tag'].split(':')[0]}@{item[arch]}"
-          identity=provision.run_capped(["docker","image","inspect",image,"--format","{{.Id}}"],timeout=30,limit=32768)
-          if identity["returncode"]: raise RuntimeError("pinned Python image identity unavailable")
-          try:
-              diagnostic.run(
-                  lambda command,timeout:provision.run_capped(command,timeout=timeout,limit=32768),
-                  image,identity["stdout"].strip(),f"{os.getuid()}:{os.getgid()}",secrets.token_hex(8),Ledger(),
-              )
-          except diagnostic.RawHostConfigProfile as blocked:
-              diagnostic.emit_profile(blocked,os.environ["GITHUB_STEP_SUMMARY"])
-              raise SystemExit(diagnostic.BLOCK_MESSAGE)
-          raise RuntimeError("diagnostic unexpectedly returned without a raw HostConfig profile")
-          PY
       - name: Run implemented package acquisition and endpointless boundary cases
         run: |
           evidence_dir="$RUNNER_TEMP/wp-step4-evidence"

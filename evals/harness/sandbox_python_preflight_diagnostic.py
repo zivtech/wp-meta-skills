@@ -227,27 +227,40 @@ def _validate(user, run_id):
 def run(control, image, image_id, user, run_id, ledger):
     _validate(user, run_id); name = f"wp-proxy-preflight-{run_id}"
     deadline = time.monotonic() + preflight.EXECUTION_SECONDS
-    container_id = ""; transport = None; original = None; attempted = False; candidate = None
+    container_id = ""; daemon_id = ""; transport = None
+    original = None; attempted = False; identity_tainted = False; candidate = None
     try:
-        network_id = preflight._network_id(control, deadline, ledger); engine = _engine(control, deadline, ledger)
+        daemon_id = preflight._daemon_id(control, deadline, ledger)
+        network_id = preflight._network_id(control, deadline, ledger)
+        preflight._require_daemon(control, daemon_id, deadline, ledger, "diagnostic-network-daemon-after")
+        engine = _engine(control, deadline, ledger)
+        preflight._require_daemon(control, daemon_id, deadline, ledger, "diagnostic-engine-daemon-after")
+        preflight._require_daemon(control, daemon_id, deadline, ledger, "diagnostic-create-daemon-before")
         ledger.record("container", name, "attempted"); attempted = True
         created = preflight._control(control, preflight.create_command(name, image, user), deadline, ledger, "create")
+        preflight._require_daemon(control, daemon_id, deadline, ledger, "diagnostic-create-daemon-after")
         possible = created["stdout"].strip()
         if re.fullmatch(r"[0-9a-f]{64}", possible): container_id = possible
         if created["returncode"] or not container_id: raise RuntimeError("diagnostic preflight creation failed")
-        ledger.record("container", name, "created"); before = preflight._inspect(control, name, deadline, ledger)
+        ledger.record("container", name, "created"); before = preflight._inspect(control, name, deadline, ledger, daemon_id)
         security_opt, pre_gw = _raw_gate(before, image, image_id, user, network_id)
         profiles = {"pre_start": _collect_optional(before["HostConfig"])}
-        preflight.remaining(deadline); transport = preflight.start_attached(["docker", "start", "-a", name])
+        preflight.remaining(deadline); preflight._require_daemon(control, daemon_id, deadline, ledger, "diagnostic-start-daemon-before")
+        transport = preflight.start_attached(["docker", "start", "-a", name])
         result = preflight.await_attached(transport, deadline)
+        preflight._require_daemon(control, daemon_id, deadline, ledger, "diagnostic-start-daemon-after")
         if result["returncode"] or result["stderr"]: raise RuntimeError("diagnostic preflight execution failed")
-        preflight._canonical_json(result["stdout"], os.getuid(), os.getgid()); after = preflight._inspect(control, name, deadline, ledger)
+        preflight._canonical_json(result["stdout"], os.getuid(), os.getgid()); after = preflight._inspect(control, name, deadline, ledger, daemon_id)
         _security, post_gw = _raw_gate(after, image, image_id, user, network_id, True, security_opt)
-        profiles["post_exit"] = _collect_optional(after["HostConfig"]); post_engine = _engine(control, deadline, ledger)
+        profiles["post_exit"] = _collect_optional(after["HostConfig"])
+        preflight._require_daemon(control, daemon_id, deadline, ledger, "diagnostic-post-engine-daemon-before")
+        post_engine = _engine(control, deadline, ledger)
         if post_engine != engine: raise RuntimeError("diagnostic Docker engine tuple changed")
+        preflight._require_daemon(control, daemon_id, deadline, ledger, "diagnostic-post-exit-daemon")
         candidate = {"engine": engine, "profiles": profiles, "gw_priority": {"pre_start": pre_gw, "post_exit": post_gw}}
-    except Exception as exc: original = exc
-    try: preflight._remove(control, name, container_id, ledger, transport, attempted)
+    except Exception as exc:
+        original = exc; identity_tainted = attempted and isinstance(exc, preflight.DaemonIdentityError)
+    try: preflight._remove(control, name, container_id, ledger, transport, attempted, daemon_id, identity_tainted)
     except Exception as cleanup:
         if original is not None: raise RuntimeError(f"diagnostic preflight failed ({original}); cleanup also failed ({cleanup})") from original
         raise

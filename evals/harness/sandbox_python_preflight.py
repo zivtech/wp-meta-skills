@@ -11,11 +11,46 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from types import MappingProxyType
 
 
 EXECUTION_SECONDS = 15
 CLEANUP_SECONDS = 10
 STREAM_LIMIT = 4 * 1024
+ENGINE_LIMIT = 2 * 1024
+DAEMON_ID_LIMIT = 256
+ENGINE_TEMPLATE = '{"architecture":{{json .Server.Arch}},"client_version":{{json .Client.Version}},"negotiated_api_version":{{json .Client.APIVersion}},"operating_system":{{json .Server.Os}},"server_version":{{json .Server.Version}}}'
+DAEMON_ID_TEMPLATE = "{{json .ID}}"
+ENGINE_FIELDS = {
+    "architecture", "client_version", "negotiated_api_version",
+    "operating_system", "server_version",
+}
+OPTIONAL_HOST_FIELDS = (
+    "Binds", "CapAdd", "DeviceCgroupRules", "DeviceRequests", "Devices",
+    "Dns", "DnsOptions", "DnsSearch", "ExtraHosts", "GroupAdd", "Init",
+    "Links", "PortBindings", "Tmpfs", "VolumesFrom",
+)
+OPTIONAL_LIST_FIELDS = frozenset({
+    "Binds", "CapAdd", "DeviceCgroupRules", "DeviceRequests", "Devices",
+    "Dns", "DnsOptions", "DnsSearch", "ExtraHosts", "GroupAdd", "Links",
+    "VolumesFrom",
+})
+OPTIONAL_MAP_FIELDS = frozenset({"PortBindings", "Tmpfs"})
+HOSTED_28_PROFILE = (
+    ("Binds", True, "null"), ("CapAdd", True, "null"),
+    ("DeviceCgroupRules", True, "null"), ("DeviceRequests", True, "null"),
+    ("Devices", True, "empty-array"), ("Dns", True, "empty-array"),
+    ("DnsOptions", True, "empty-array"), ("DnsSearch", True, "empty-array"),
+    ("ExtraHosts", True, "null"), ("GroupAdd", True, "null"),
+    ("Init", False, "missing"), ("Links", True, "null"),
+    ("PortBindings", True, "empty-object"), ("Tmpfs", False, "missing"),
+    ("VolumesFrom", True, "null"),
+)
+HOSTED_28_ENGINE = ("28.0.4", "28.0.4", "1.48", "linux", "amd64")
+REVIEWED_HOSTCONFIG_PROFILES = MappingProxyType({
+    (*HOSTED_28_ENGINE, "pre_start"): HOSTED_28_PROFILE,
+    (*HOSTED_28_ENGINE, "post_exit"): HOSTED_28_PROFILE,
+})
 PYTHON = "/usr/local/bin/python"
 PYTHON_EXE = "/usr/local/bin/python3.13"
 ENV = (
@@ -24,6 +59,11 @@ ENV = (
     "PYTHON_VERSION=3.13.14",
     "PYTHON_SHA256=639e43243c620a308f968213df9e00f2f8f62332f7adbaa7a7eeb9783057c690",
 )
+
+
+class DaemonIdentityError(RuntimeError):
+    """Docker daemon identity was lost after an owned operation."""
+
 
 PREFLIGHT_PROBE = """import json,os,signal,sys
 d={"capabilities":{"os_getgid":callable(os.getgid),"os_getuid":callable(os.getuid),"os_kill":callable(os.kill)},"environment":dict(sorted(os.environ.items())),"flags":{"ignore_environment":sys.flags.ignore_environment,"isolated":sys.flags.isolated,"no_site":sys.flags.no_site,"no_user_site":sys.flags.no_user_site,"safe_path":sys.flags.safe_path},"gid":os.getgid(),"os_name":os.name,"proc_self_exe":os.readlink("/proc/self/exe"),"schema":"wp-proxy-python-preflight.v1","signals":{"KILL":int(signal.SIGKILL),"TERM":int(signal.SIGTERM)},"sys_executable":sys.executable,"sys_platform":sys.platform,"uid":os.getuid()}
@@ -277,6 +317,147 @@ def _control(control, command, deadline, ledger, state):
     return result
 
 
+def _unique_object(items):
+    if len({key for key, _value in items}) != len(items):
+        raise ValueError("duplicate key")
+    return dict(items)
+
+
+def _strict_engine(payload):
+    if not isinstance(payload, str) or len(payload.encode("utf-8")) > ENGINE_LIMIT:
+        raise RuntimeError("preflight Docker engine tuple limit exceeded")
+    if not payload.endswith("\n") or payload.count("\n") != 1:
+        raise RuntimeError("preflight Docker engine tuple framing drift")
+    try:
+        value = json.loads(
+            payload, object_pairs_hook=_unique_object,
+            parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)),
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("preflight Docker engine tuple is not strict JSON") from exc
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+    valid = isinstance(value, dict) and set(value) == ENGINE_FIELDS and payload == canonical
+    if not valid:
+        raise RuntimeError("preflight Docker engine tuple shape drift")
+    strings = all(type(value[key]) is str for key in ENGINE_FIELDS)
+    versions = all(re.fullmatch(r"[0-9A-Za-z._+\-]{1,64}", value[key]) for key in ("client_version", "server_version")) if strings else False
+    api = strings and re.fullmatch(r"[0-9.]{1,16}", value["negotiated_api_version"])
+    platform = strings and re.fullmatch(r"[0-9A-Za-z._+\-]{1,32}", value["architecture"]) and value["operating_system"] == "linux"
+    if not (strings and versions and api and platform):
+        raise RuntimeError("preflight Docker engine tuple value drift")
+    return (
+        value["client_version"], value["server_version"],
+        value["negotiated_api_version"], value["operating_system"],
+        value["architecture"],
+    )
+
+
+def _engine(control, deadline, ledger):
+    command = ["docker", "version", "--format", ENGINE_TEMPLATE]
+    result = _control(control, command, deadline, ledger, "engine-tuple")
+    stderr = result.get("stderr")
+    bounded = isinstance(stderr, str) and len(stderr.encode("utf-8")) <= ENGINE_LIMIT
+    if result.get("returncode") != 0 or not bounded or stderr:
+        raise RuntimeError("preflight Docker engine tuple command failed")
+    return _strict_engine(result.get("stdout"))
+
+
+def _strict_daemon_id(payload):
+    if not isinstance(payload, str) or len(payload.encode("utf-8")) > DAEMON_ID_LIMIT:
+        raise RuntimeError("preflight Docker daemon identity limit exceeded")
+    if not payload.endswith("\n") or payload.count("\n") != 1:
+        raise RuntimeError("preflight Docker daemon identity framing drift")
+    try:
+        value = json.loads(payload, parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("preflight Docker daemon identity is not strict JSON") from exc
+    canonical = json.dumps(value, separators=(",", ":"), allow_nan=False) + "\n"
+    if type(value) is not str or payload != canonical or not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z:._\-]{7,127}", value):
+        raise RuntimeError("preflight Docker daemon identity value drift")
+    return value
+
+
+def _daemon_id(control, deadline, ledger, state="daemon-identity"):
+    command = ["docker", "info", "--format", DAEMON_ID_TEMPLATE]
+    result = _control(control, command, deadline, ledger, state)
+    stderr = result.get("stderr")
+    bounded = isinstance(stderr, str) and len(stderr.encode("utf-8")) <= DAEMON_ID_LIMIT
+    if result.get("returncode") != 0 or not bounded or stderr:
+        raise RuntimeError("preflight Docker daemon identity command failed")
+    return _strict_daemon_id(result.get("stdout"))
+
+
+def _require_daemon(control, expected, deadline, ledger, state):
+    try:
+        observed = _daemon_id(control, deadline, ledger, state)
+    except Exception as exc:
+        raise DaemonIdentityError("Docker daemon identity unavailable; cleanup unverified") from exc
+    if observed != expected:
+        raise DaemonIdentityError("Docker daemon identity changed; cleanup unverified")
+
+
+def _cleanup_control(control, command, deadline, ledger, daemon_id, state, cap=None):
+    _require_daemon(control, daemon_id, deadline, ledger, f"{state}-daemon-before")
+    timeout = remaining(deadline)
+    result = control(command, min(cap, timeout) if cap is not None else timeout)
+    _require_daemon(control, daemon_id, deadline, ledger, f"{state}-daemon-after")
+    return result
+
+
+def _reviewed_profiles(engine):
+    try:
+        before = REVIEWED_HOSTCONFIG_PROFILES[(*engine, "pre_start")]
+        after = REVIEWED_HOSTCONFIG_PROFILES[(*engine, "post_exit")]
+    except KeyError as exc:
+        raise RuntimeError("preflight Docker engine tuple is not reviewed") from exc
+    return _validate_reviewed_profile(before), _validate_reviewed_profile(after)
+
+
+def _validate_reviewed_profile(profile):
+    if type(profile) is not tuple or len(profile) != len(OPTIONAL_HOST_FIELDS):
+        raise RuntimeError("preflight reviewed HostConfig profile shape drift")
+    for record, field in zip(profile, OPTIONAL_HOST_FIELDS):
+        if type(record) is not tuple or len(record) != 3:
+            raise RuntimeError("preflight reviewed HostConfig profile record drift")
+        name, present, encoding = record
+        allowed = {"missing", "null"}
+        if field in OPTIONAL_LIST_FIELDS:
+            allowed.add("empty-array")
+        if field in OPTIONAL_MAP_FIELDS:
+            allowed.add("empty-object")
+        if field == "Init":
+            allowed.add("false")
+        valid = name == field and type(present) is bool and encoding in allowed
+        if not valid or present != (encoding != "missing"):
+            raise RuntimeError("preflight reviewed HostConfig profile record drift")
+    return profile
+
+
+def _optional_encoding(field, present, value):
+    if not present:
+        return "missing"
+    if value is None:
+        return "null"
+    if field in OPTIONAL_LIST_FIELDS and type(value) is list and not value:
+        return "empty-array"
+    if field in OPTIONAL_MAP_FIELDS and type(value) is dict and not value:
+        return "empty-object"
+    if field == "Init" and value is False:
+        return "false"
+    return "invalid-redacted"
+
+
+def _assert_optional_profile(host, expected, phase):
+    if not isinstance(host, dict):
+        raise RuntimeError(f"preflight {phase} HostConfig object drift")
+    for field, expected_present, expected_encoding in expected:
+        present = field in host
+        encoding = _optional_encoding(field, present, host.get(field))
+        if (present, encoding) != (expected_present, expected_encoding):
+            observed = f"present={str(present).lower()} encoding={encoding}"
+            raise RuntimeError(f"preflight {phase} HostConfig.{field} {observed} drift")
+
+
 def _network_id(control, deadline, ledger) -> str:
     result = _control(control, ["docker", "network", "inspect", "none"], deadline, ledger, "network-inspect")
     try:
@@ -307,13 +488,17 @@ def _none_network(value, network_id, post):
         "IPAMConfig": None, "Links": None, "Aliases": None, "MacAddress": "",
         "NetworkID": network_id if post else "", "EndpointID": "", "Gateway": "",
         "IPAddress": "", "IPPrefixLen": 0, "IPv6Gateway": "",
-        "GlobalIPv6Address": "", "GlobalIPv6PrefixLen": 0, "DriverOpts": None, "DNSNames": None,
+        "GlobalIPv6Address": "", "GlobalIPv6PrefixLen": 0, "DriverOpts": None,
+        "DNSNames": None, "GwPriority": 0,
     }
+    endpoint = value.get("none") if isinstance(value, dict) else None
+    if not isinstance(endpoint, dict) or type(endpoint.get("GwPriority")) is not int:
+        raise RuntimeError("preflight none-network GwPriority drift")
     if value != {"none": expected}:
         raise RuntimeError("preflight none-network state drift")
 
 
-def _host_gate(host, security_opt):
+def _host_gate(host, expected_profile, phase, security_opt):
     exact = {
         "NetworkMode": "none", "ReadonlyRootfs": True, "CapDrop": ["ALL"],
         "Privileged": False, "AutoRemove": False, "PidsLimit": 16,
@@ -322,13 +507,12 @@ def _host_gate(host, security_opt):
         "LogConfig": {"Type": "none", "Config": {}},
         "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0},
         "IpcMode": "private", "CgroupnsMode": "private", "PidMode": "",
-        "UTSMode": "", "UsernsMode": "", "Binds": None, "Tmpfs": None,
-        "Devices": [], "PortBindings": {}, "ExtraHosts": None, "Links": None,
-        "Dns": [], "DnsSearch": [], "DnsOptions": [], "Init": None, "ShmSize": 1048576,
+        "UTSMode": "", "UsernsMode": "", "ShmSize": 1048576,
     }
     for key, expected in exact.items():
         if key not in host or host[key] != expected:
             raise RuntimeError(f"preflight HostConfig.{key} drift")
+    _assert_optional_profile(host, expected_profile, phase)
     if "SecurityOpt" not in host:
         raise RuntimeError("preflight no-new-privileges drift")
     observed = host["SecurityOpt"]
@@ -338,14 +522,10 @@ def _host_gate(host, security_opt):
         security_opt = tuple(observed)
     elif tuple(observed or ()) != security_opt:
         raise RuntimeError("preflight no-new-privileges serialization drift")
-    if any(key not in host or host[key] not in (None, []) for key in ("CapAdd", "GroupAdd")):
-        raise RuntimeError("preflight added privilege drift")
-    if any(key not in host or host[key] is not None for key in ("DeviceRequests", "DeviceCgroupRules")):
-        raise RuntimeError("preflight device surface drift")
     return security_opt
 
 
-def inspect_gate(data, image, image_id, user, network_id, post=False, security_opt=None):
+def inspect_gate(data, image, image_id, user, network_id, host_profile, post=False, security_opt=None):
     if data.get("Image") != image_id or data.get("Mounts") != []:
         raise RuntimeError("preflight image identity or zero-mount drift")
     config = data.get("Config") or {}
@@ -359,7 +539,8 @@ def inspect_gate(data, image, image_id, user, network_id, post=False, security_o
         if key not in config or config[key] != expected:
             raise RuntimeError(f"preflight Config.{key} drift")
     assert_image_environment(config.get("Env"))
-    security_opt = _host_gate(data.get("HostConfig") or {}, security_opt)
+    phase = "post_exit" if post else "pre_start"
+    security_opt = _host_gate(data.get("HostConfig") or {}, host_profile, phase, security_opt)
     _none_network((data.get("NetworkSettings") or {}).get("Networks"), network_id, post)
     state = data.get("State") or {}
     expected_state={"Status":"exited" if post else "created","Running":False,"ExitCode":0,"OOMKilled":False,"Error":""}
@@ -368,8 +549,12 @@ def inspect_gate(data, image, image_id, user, network_id, post=False, security_o
     return security_opt
 
 
-def _inspect(control, name, deadline, ledger):
+def _inspect(control, name, deadline, ledger, daemon_id=""):
+    if daemon_id:
+        _require_daemon(control, daemon_id, deadline, ledger, "inspect-daemon-before")
     result = _control(control, ["docker", "inspect", name], deadline, ledger, "inspect")
+    if daemon_id:
+        _require_daemon(control, daemon_id, deadline, ledger, "inspect-daemon-after")
     try:
         values = json.loads(result["stdout"])
     except json.JSONDecodeError as exc:
@@ -394,12 +579,15 @@ def _parse_container_row(line: str) -> tuple[str, str]:
     return container_id, name
 
 
-def _container_rows(control, deadline, filter_value, ledger):
+def _container_rows(control, deadline, filter_value, ledger, daemon_id=""):
     command = [
         "docker", "container", "ls", "-a", "--no-trunc", "--filter", filter_value,
         "--format", "{{json .ID}} {{json .Names}}",
     ]
-    result = control(command, remaining(deadline))
+    if daemon_id:
+        result = _cleanup_control(control, command, deadline, ledger, daemon_id, "absence-list")
+    else:
+        result = control(command, remaining(deadline))
     ledger.record("preflight", filter_value, "absence-list-ok" if result["returncode"] == 0 else "absence-list-failed")
     if result["returncode"] != 0:
         raise RuntimeError("preflight absence listing failed")
@@ -412,95 +600,157 @@ def _container_rows(control, deadline, filter_value, ledger):
     return tuple(_parse_container_row(line) for line in lines)
 
 
-def _prove_absent(control, name, container_id, deadline, ledger):
-    rows = _container_rows(control, deadline, f"name=^/{name}$", ledger)
+def _prove_absent(control, name, container_id, deadline, ledger, daemon_id="", record_evidence=True):
+    rows = _container_rows(control, deadline, f"name=^/{name}$", ledger, daemon_id)
     if any(row_name != name for _row_id, row_name in rows) or len(rows) > 1:
         raise RuntimeError("preflight exact-name absence listing is malformed")
     if rows:
         raise RuntimeError(f"retained {name}")
-    ledger.record("preflight", name, "absent")
     if not container_id:
+        if daemon_id:
+            _require_daemon(control, daemon_id, deadline, ledger, "absence-final-daemon")
+        if record_evidence:
+            ledger.record("preflight", name, "absent")
         return
-    rows = _container_rows(control, deadline, f"id={container_id}", ledger)
+    rows = _container_rows(control, deadline, f"id={container_id}", ledger, daemon_id)
     if any(row_id != container_id for row_id, _row_name in rows) or len(rows) > 1:
         raise RuntimeError("preflight exact-ID absence listing is malformed")
     if rows:
         raise RuntimeError(f"retained {container_id}")
-    ledger.record("preflight", container_id, "absent")
+    if daemon_id:
+        _require_daemon(control, daemon_id, deadline, ledger, "absence-final-daemon")
+    if record_evidence:
+        ledger.record("preflight", name, "absent")
+        ledger.record("preflight", container_id, "absent")
 
 
-def _remove(control, name, container_id, ledger, transport, attempted=True):
+def _discover_container_id(control, name, deadline, ledger, daemon_id):
+    try:
+        if daemon_id:
+            result = _cleanup_control(control, ["docker", "inspect", name], deadline, ledger, daemon_id, "discover", 2)
+        else:
+            result = control(["docker", "inspect", name], min(2, remaining(deadline)))
+    except DaemonIdentityError:
+        raise
+    except Exception:
+        return ""
+    if result.get("returncode") != 0:
+        return ""
+    try:
+        values = json.loads(result.get("stdout", ""))
+    except json.JSONDecodeError:
+        return ""
+    valid = isinstance(values, list) and len(values) == 1 and values[0].get("Name") == f"/{name}"
+    candidate = values[0].get("Id", "") if valid else ""
+    if re.fullmatch(r"[0-9a-f]{64}", candidate):
+        ledger.record("preflight", name, "id-authenticated")
+        return candidate
+    return ""
+
+
+def _remove_attempts(control, name, deadline, ledger, daemon_id):
+    for attempt in range(2):
+        if deadline <= time.monotonic():
+            return ["container removal deadline"]
+        try:
+            command = ["docker", "rm", "-f", name]
+            if daemon_id:
+                result = _cleanup_control(control, command, deadline, ledger, daemon_id, f"remove-{attempt + 1}")
+            else:
+                result = control(command, remaining(deadline))
+        except DaemonIdentityError:
+            raise
+        except Exception:
+            ledger.record("preflight", name, f"remove-{attempt + 1}-raised")
+            continue
+        state = "ok" if result["returncode"] == 0 else "failed"
+        ledger.record("preflight", name, f"remove-{attempt + 1}-{state}")
+        if result["returncode"] == 0:
+            break
+    return []
+
+
+def _remove(control, name, container_id, ledger, transport, attempted=True, daemon_id="", identity_tainted=False):
     deadline = time.monotonic() + CLEANUP_SECONDS
     failures = cleanup_attached(transport, deadline)
-    if attempted and not container_id and deadline>time.monotonic():
-        try: discovery=control(["docker","inspect",name],min(2, deadline-time.monotonic()))
-        except Exception: discovery={"returncode":1,"stdout":""}
-        if discovery["returncode"]==0:
-            try: values=json.loads(discovery["stdout"])
-            except json.JSONDecodeError: values=[]
-            if isinstance(values,list) and len(values)==1 and values[0].get("Name")==f"/{name}" and re.fullmatch(r"[0-9a-f]{64}",values[0].get("Id","")):
-                container_id=values[0]["Id"]; ledger.record("preflight",name,"id-authenticated")
-    if attempted:
-        for attempt in range(2):
-            available = deadline - time.monotonic()
-            if available <= 0:
-                failures.append("container removal deadline")
-                break
-            try:
-                result = control(["docker", "rm", "-f", name], available)
-            except Exception as exc:
-                ledger.record("preflight", name, f"remove-{attempt + 1}-raised")
-                continue
-            ledger.record("preflight", name, f"remove-{attempt + 1}-{'ok' if result['returncode'] == 0 else 'failed'}")
-            if result["returncode"] == 0:
-                break
     try:
-        _prove_absent(control, name, container_id, deadline, ledger)
+        if attempted and daemon_id:
+            _require_daemon(control, daemon_id, deadline, ledger, "cleanup-entry-daemon")
+        if attempted and not container_id and deadline > time.monotonic():
+            container_id = _discover_container_id(control, name, deadline, ledger, daemon_id)
+        if attempted:
+            failures.extend(_remove_attempts(control, name, deadline, ledger, daemon_id))
+        _prove_absent(control, name, container_id, deadline, ledger, daemon_id, not identity_tainted)
     except Exception as exc:
         failures.append(str(exc))
+    if identity_tainted:
+        failures.append("Docker daemon identity was previously unverified")
     if failures:
-        raise RuntimeError(f"preflight cleanup failed: {', '.join(failures)}; recovery: docker rm -f {name}")
+        recovery = f"verify original Docker daemon, then docker rm -f {name}"
+        raise RuntimeError(f"preflight cleanup failed: {', '.join(failures)}; possible retained resource; recovery: {recovery}")
 
 
-def run(control, image, image_id, user, run_id, ledger):
+def _validate_request(user, run_id):
     if os.getuid() == 0 or user.startswith("0:"):
         raise RuntimeError("proxy interpreter preflight forbids root")
     if user != f"{os.getuid()}:{os.getgid()}" or not re.fullmatch(r"[1-9][0-9]*:[0-9]+", user):
         raise RuntimeError("proxy interpreter preflight user drift")
     if not re.fullmatch(r"[0-9a-f]{16}", run_id):
         raise ValueError("invalid proxy interpreter preflight run ID")
-    name = f"wp-proxy-preflight-{run_id}"
-    deadline = time.monotonic() + EXECUTION_SECONDS
-    started = time.monotonic(); container_id = ""; transport = None; original = None; create_attempted=False
+    return f"wp-proxy-preflight-{run_id}"
+
+
+def _admission(control, deadline, ledger):
+    daemon_id = _daemon_id(control, deadline, ledger)
+    network_id = _network_id(control, deadline, ledger)
+    _require_daemon(control, daemon_id, deadline, ledger, "network-daemon-after")
+    engine = _engine(control, deadline, ledger)
+    _require_daemon(control, daemon_id, deadline, ledger, "engine-daemon-after")
+    before_profile, after_profile = _reviewed_profiles(engine)
+    _require_daemon(control, daemon_id, deadline, ledger, "create-daemon-before")
+    return daemon_id, network_id, engine, before_profile, after_profile
+
+
+def run(control, image, image_id, user, run_id, ledger):
+    name = _validate_request(user, run_id); deadline = time.monotonic() + EXECUTION_SECONDS
+    started=time.monotonic(); container_id=daemon_id=""; transport=original=None; create_attempted=identity_tainted=False
     try:
-        network_id = _network_id(control, deadline, ledger)
+        daemon_id, network_id, engine, before_profile, after_profile = _admission(control, deadline, ledger)
         ledger.record("container",name,"attempted"); create_attempted=True
         created = _control(control, create_command(name, image, user), deadline, ledger, "create")
+        _require_daemon(control, daemon_id, deadline, ledger, "create-daemon-after")
         candidate = created["stdout"].strip()
         if re.fullmatch(r"[0-9a-f]{64}",candidate): container_id=candidate
         if created["returncode"] or not container_id:
             raise RuntimeError("proxy interpreter preflight creation failed")
         ledger.record("container", name, "created")
-        before = _inspect(control, name, deadline, ledger)
-        security_opt = inspect_gate(before, image, image_id, user, network_id)
+        before = _inspect(control, name, deadline, ledger, daemon_id)
+        security_opt = inspect_gate(before, image, image_id, user, network_id, before_profile)
         try:
             remaining(deadline)
+            _require_daemon(control, daemon_id, deadline, ledger, "start-daemon-before")
             transport = start_attached(["docker", "start", "-a", name])
         except Exception:
             ledger.record("preflight", name, "start-raised")
             raise
         ledger.record("preflight", name, "start-ok")
         result = await_attached(transport, deadline)
+        _require_daemon(control, daemon_id, deadline, ledger, "start-daemon-after")
         ledger.record("preflight", name, "exit-ok" if result["returncode"] == 0 else "exit-failed")
         if result["returncode"] or result["stderr"]:
             raise RuntimeError("proxy interpreter preflight execution failed")
         _canonical_json(result["stdout"], os.getuid(), os.getgid())
-        after = _inspect(control, name, deadline, ledger)
-        inspect_gate(after, image, image_id, user, network_id, True, security_opt)
+        after = _inspect(control, name, deadline, ledger, daemon_id)
+        _require_daemon(control, daemon_id, deadline, ledger, "post-engine-daemon-before")
+        post_engine = _engine(control, deadline, ledger)
+        if post_engine != engine:
+            raise RuntimeError("preflight Docker engine tuple changed")
+        _require_daemon(control, daemon_id, deadline, ledger, "post-exit-daemon")
+        inspect_gate(after, image, image_id, user, network_id, after_profile, True, security_opt)
     except Exception as exc:
-        original = exc
+        original = exc; identity_tainted = create_attempted and isinstance(exc, DaemonIdentityError)
     try:
-        _remove(control, name, container_id, ledger, transport,create_attempted)
+        _remove(control, name, container_id, ledger, transport,create_attempted,daemon_id,identity_tainted)
         if create_attempted: ledger.record("container", name, "removed")
     except Exception as cleanup:
         ledger.record("preflight", name, f"duration={time.monotonic() - started:.6f}")

@@ -17,6 +17,8 @@ CONTAINER_ID = "d" * 64
 RUN_ID = "1" * 16
 USER = f"{os.getuid()}:{os.getgid()}"
 NAME = "wp-proxy-preflight-" + RUN_ID
+DAEMON_ID = "daemon-instance-1234567890abcdef"
+OTHER_DAEMON_ID = "daemon-instance-fedcba0987654321"
 MISSING = object()
 ENGINE = {
     "architecture": "amd64", "client_version": "28.0.4",
@@ -82,12 +84,13 @@ class Ledger:
 
 
 class Scenario:
-    def __init__(self, gw_phase="", gw_value=0, raw_drift="", invalid_phase="", invalid_field="", invalid_value=None, engine_drift=False, retained=False, retry=False):
+    def __init__(self, gw_phase="", gw_value=0, raw_drift="", invalid_phase="", invalid_field="", invalid_value=None, engine_drift=False, daemon_drift="", retained=False, retry=False):
         self.gw_phase = gw_phase; self.gw_value = gw_value; self.raw_drift = raw_drift
         self.invalid_phase = invalid_phase; self.invalid_field = invalid_field; self.invalid_value = invalid_value
-        self.engine_drift = engine_drift; self.retained = retained; self.retry = retry
-        self.raw_inspections = 0; self.engine_calls = 0; self.rm_attempts = 0
-        self.filters = []; self.commands = []; self.attached = []; self.events = []
+        self.engine_drift = engine_drift; self.daemon_drift = daemon_drift
+        self.retained = retained; self.retry = retry; self.identity_changed = False; self.in_cleanup = False
+        self.raw_inspections = 0; self.engine_calls = 0; self.daemon_calls = 0; self.rm_attempts = 0
+        self.filters = []; self.commands = []; self.attached = []; self.events = []; self.ledger = None
     def result(self, returncode=0, stdout="", stderr=""): return {"returncode": returncode, "stdout": stdout, "stderr": stderr}
     def control(self, command, _timeout):
         self.commands.append(command)
@@ -97,6 +100,12 @@ class Scenario:
             self.engine_calls += 1; value = dict(ENGINE)
             if self.engine_drift and self.engine_calls == 2: value["server_version"] = "28.0.5"
             return self.result(stdout=canonical(value))
+        if command[:3] == ["docker", "info", "--format"]:
+            self.daemon_calls += 1
+            if self.daemon_drift == "post" and self.engine_calls == 2 and self.raw_inspections == 2: self.identity_changed = True
+            if self.daemon_drift == "cleanup" and self.in_cleanup: self.identity_changed = True
+            value = OTHER_DAEMON_ID if self.identity_changed else DAEMON_ID
+            return self.result(stdout=json.dumps(value) + "\n")
         if command[1] == "create": return self.result(stdout=CONTAINER_ID + "\n")
         if command[1] == "inspect":
             self.raw_inspections += 1; post = self.raw_inspections == 2; phase = "post" if post else "pre"
@@ -112,6 +121,7 @@ class Scenario:
             return self.result(stdout="removed\n")
         if command[1:3] == ["container", "ls"]:
             self.filters.append(command[6]); self.events.append(command[6])
+            if self.daemon_drift == "absence": self.identity_changed = True
             if self.retained and command[6].startswith("name="):
                 return self.result(stdout=f'{json.dumps(CONTAINER_ID)} {json.dumps(NAME)}\n')
             return self.result()
@@ -123,7 +133,11 @@ def execute(monkeypatch, scenario):
     monkeypatch.setattr(preflight, "start_attached", start)
     monkeypatch.setattr(preflight, "await_attached", lambda *_args: {"returncode": 0, "stdout": probe_payload(), "stderr": ""})
     monkeypatch.setattr(preflight, "cleanup_attached", lambda *_args: [])
-    return diagnostic.run(scenario.control, IMAGE, IMAGE_ID, USER, RUN_ID, Ledger())
+    real_remove = preflight._remove
+    def remove(*args, **kwargs): scenario.in_cleanup = True; return real_remove(*args, **kwargs)
+    monkeypatch.setattr(preflight, "_remove", remove)
+    scenario.ledger = Ledger()
+    return diagnostic.run(scenario.control, IMAGE, IMAGE_ID, USER, RUN_ID, scenario.ledger)
 
 
 def assert_cleanup(scenario, failed=False):
@@ -204,12 +218,12 @@ def test_clean_run_builds_exact_carrier_only_after_cleanup(monkeypatch):
     with pytest.raises(real) as caught: execute(monkeypatch, scenario)
     assert caught.value.carrier == expected_carrier() and constructed == [expected_carrier()]
     assert caught.value.encoded == canonical(expected_carrier()).rstrip("\n")
-    assert scenario.raw_inspections == 2 and scenario.engine_calls == 2
+    assert scenario.raw_inspections == 2 and scenario.engine_calls == 2 and scenario.daemon_calls == 21
     create = next(command for command in scenario.commands if command[1] == "create")
     assert create == preflight.create_command(NAME, IMAGE, USER)
     assert all(flag not in create for flag in ("--mount", "--tmpfs", "--volume", "--secret", "-v"))
     assert scenario.attached == [["docker", "start", "-a", NAME]]
-    assert all(command[1] in {"network", "version", "create", "inspect", "rm", "container"} for command in scenario.commands)
+    assert all(command[1] in {"network", "version", "info", "create", "inspect", "rm", "container"} for command in scenario.commands)
     assert_cleanup(scenario)
 
 
@@ -278,6 +292,19 @@ def test_engine_drift_blocks_and_cleanup_failure_never_constructs_carrier(monkey
     assert calls == [] and failed.filters == ["name=^/" + NAME + "$"]
 
 
+@pytest.mark.parametrize("phase", ["post", "cleanup", "absence"])
+def test_daemon_identity_drift_never_constructs_carrier_or_false_cleanup_evidence(monkeypatch, phase):
+    calls = []; monkeypatch.setattr(diagnostic, "RawHostConfigProfile", lambda value: calls.append(value))
+    scenario = Scenario(daemon_drift=phase)
+    with pytest.raises(RuntimeError, match="daemon identity changed.*possible retained resource|possible retained resource.*daemon identity changed") as stopped:
+        execute(monkeypatch, scenario)
+    states = [state for _kind, _name, state in scenario.ledger.events]
+    assert calls == [] and "removed" not in states and "absent" not in states
+    assert DAEMON_ID not in str(stopped.value) and OTHER_DAEMON_ID not in str(stopped.value)
+    if phase == "cleanup": assert scenario.rm_attempts == 0
+    if phase == "absence": assert scenario.filters == ["name=^/" + NAME + "$"]
+
+
 def test_schema_inventory_cleanup_facts_and_carrier_cap():
     carrier = expected_carrier(); error = diagnostic.RawHostConfigProfile(carrier)
     assert error.carrier["schema"] == "wp-proxy-hostconfig-raw-profile.v1"
@@ -290,13 +317,14 @@ def test_schema_inventory_cleanup_facts_and_carrier_cap():
 
 
 def test_one_retry_dual_absence_and_separate_deadline_structure(monkeypatch):
+    remove_source = inspect.getsource(preflight._remove)
     scenario = Scenario(retry=True)
     with pytest.raises(diagnostic.RawHostConfigProfile): execute(monkeypatch, scenario)
     assert scenario.rm_attempts == 2; assert_cleanup(scenario)
     source = inspect.getsource(diagnostic.run)
     assert source.count("time.monotonic() + preflight.EXECUTION_SECONDS") == 1
     assert source.count("preflight._remove(") == 1
-    assert "time.monotonic() + CLEANUP_SECONDS" in inspect.getsource(preflight._remove)
+    assert "time.monotonic() + CLEANUP_SECONDS" in remove_source
 
 
 def test_emit_profile_writes_one_exact_carrier_to_each_sink(tmp_path):
@@ -307,13 +335,10 @@ def test_emit_profile_writes_one_exact_carrier_to_each_sink(tmp_path):
     assert logs == [error.encoded] and summary.read_text(encoding="utf-8").count(error.encoded) == 1
 
 
-def test_workflow_catches_only_raw_carrier_then_blocks_native_step():
+def test_workflow_quarantines_diagnostic_and_runs_native_step():
     workflow = (Path(__file__).resolve().parents[3] / ".github/workflows/validate.yml").read_text(encoding="utf-8")
-    start = workflow.index("      - name: Observe exact zero-mount preflight serialization")
-    end = workflow.index("      - name: Run implemented package acquisition and endpointless boundary cases", start)
-    block = workflow[start:end]
-    assert block.count("except diagnostic.RawHostConfigProfile as blocked:") == 1
-    assert block.count("diagnostic.emit_profile(blocked") == 1
-    assert block.count("raise SystemExit(diagnostic.BLOCK_MESSAGE)") == 1
+    assert "Observe exact zero-mount preflight serialization" not in workflow
+    assert "import sandbox_python_preflight_diagnostic" not in workflow
+    assert "Run implemented package acquisition and endpointless boundary cases" in workflow
+    assert "evals/harness/tests/test_sandbox_python_preflight_diagnostic.py" in workflow
     assert diagnostic.BLOCK_MESSAGE == "AWAITING_HOSTCONFIG_PROFILE_REVIEW"
-    assert "except Exception" not in block and "continue-on-error" not in block and start < end

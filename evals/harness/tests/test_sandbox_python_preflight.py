@@ -20,6 +20,8 @@ IMAGE_ID = "sha256:" + "b" * 64
 NETWORK_ID = "c" * 64
 CONTAINER_ID = "d" * 64
 USER = f"{os.getuid()}:{os.getgid()}"
+ENGINE = ("28.0.4", "28.0.4", "1.48", "linux", "amd64")
+DAEMON_ID = "daemon-instance-1234567890abcdef"
 
 
 class Ledger:
@@ -34,12 +36,32 @@ def network():
     return [{"Name": "none", "Driver": "null", "Scope": "local", "Id": NETWORK_ID}]
 
 
+def engine_payload(engine=ENGINE):
+    client, server, api, operating_system, architecture = engine
+    value = {
+        "architecture": architecture, "client_version": client,
+        "negotiated_api_version": api, "operating_system": operating_system,
+        "server_version": server,
+    }
+    return json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+
+
+def daemon_payload(value=DAEMON_ID):
+    return json.dumps(value, separators=(",", ":")) + "\n"
+
+
+def reviewed_profile(post=False):
+    phase = "post_exit" if post else "pre_start"
+    return preflight.REVIEWED_HOSTCONFIG_PROFILES[(*ENGINE, phase)]
+
+
 def none_endpoint(post=False):
     return {
         "IPAMConfig": None, "Links": None, "Aliases": None, "MacAddress": "",
         "NetworkID": NETWORK_ID if post else "", "EndpointID": "", "Gateway": "",
         "IPAddress": "", "IPPrefixLen": 0, "IPv6Gateway": "",
-        "GlobalIPv6Address": "", "GlobalIPv6PrefixLen": 0, "DriverOpts": None, "DNSNames": None,
+        "GlobalIPv6Address": "", "GlobalIPv6PrefixLen": 0, "DriverOpts": None,
+        "DNSNames": None, "GwPriority": 0,
     }
 
 
@@ -63,10 +85,10 @@ def inspect_data(post=False):
             "LogConfig": {"Type": "none", "Config": {}},
             "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0},
             "IpcMode": "private", "CgroupnsMode": "private", "PidMode": "", "UTSMode": "",
-            "UsernsMode": "", "Binds": None, "Tmpfs": None, "Devices": [],
+            "UsernsMode": "", "Binds": None, "Devices": [],
             "DeviceRequests": None, "DeviceCgroupRules": None, "PortBindings": {},
             "ExtraHosts": None, "Links": None, "Dns": [], "DnsSearch": [], "DnsOptions": [],
-            "Init": None, "ShmSize": 1048576,
+            "VolumesFrom": None, "ShmSize": 1048576,
         },
         "NetworkSettings": {"Networks": {"none": none_endpoint(post)}},
         "State": {"Status": "exited" if post else "created", "Running": False, "ExitCode": 0, "OOMKilled": False, "Error": ""},
@@ -188,21 +210,22 @@ def test_strict_probe_schema_rejects_duplicates_nonfinite_drift_and_size():
 @pytest.mark.parametrize("post", [False, True])
 def test_inspect_gate_accepts_only_state_appropriate_none_network_shape(post):
     data = inspect_data(post)
-    security = preflight.inspect_gate(data, IMAGE, IMAGE_ID, USER, NETWORK_ID, post)
+    profile = reviewed_profile(post)
+    security = preflight.inspect_gate(data, IMAGE, IMAGE_ID, USER, NETWORK_ID, profile, post)
     assert security == ("no-new-privileges:true",)
     changed = copy.deepcopy(data); changed["NetworkSettings"]["Networks"]["none"]["NetworkID"] = "" if post else NETWORK_ID
     with pytest.raises(RuntimeError, match="none-network"):
-        preflight.inspect_gate(changed, IMAGE, IMAGE_ID, USER, NETWORK_ID, post)
+        preflight.inspect_gate(changed, IMAGE, IMAGE_ID, USER, NETWORK_ID, profile, post)
     changed = copy.deepcopy(data); changed["Mounts"] = [{"Type": "bind"}]
     with pytest.raises(RuntimeError, match="zero-mount"):
-        preflight.inspect_gate(changed, IMAGE, IMAGE_ID, USER, NETWORK_ID, post)
+        preflight.inspect_gate(changed, IMAGE, IMAGE_ID, USER, NETWORK_ID, profile, post)
 
 
 @pytest.mark.parametrize("field,value", [("ReadonlyRootfs", False), ("PidsLimit", 17), ("Memory", 1), ("ShmSize", 67108864), ("Binds", []), ("Tmpfs", {})])
 def test_inspect_gate_rejects_confinement_resource_and_mount_drift(field, value):
     data = inspect_data(); data["HostConfig"][field] = value
     with pytest.raises(RuntimeError, match=field):
-        preflight.inspect_gate(data, IMAGE, IMAGE_ID, USER, NETWORK_ID)
+        preflight.inspect_gate(data, IMAGE, IMAGE_ID, USER, NETWORK_ID, reviewed_profile())
 
 
 @pytest.mark.parametrize("surface,mutate", [
@@ -213,12 +236,12 @@ def test_inspect_gate_rejects_confinement_resource_and_mount_drift(field, value)
     ("command",lambda data:data["Config"].update(Cmd=["-c","pass"])),
     ("environment",lambda data:data["Config"].update(Env=[*preflight.ENV,"PYTHONPATH=/tmp"])),
     ("security",lambda data:data["HostConfig"].update(SecurityOpt=[])),
-    ("extra endpoint field",lambda data:data["NetworkSettings"]["Networks"]["none"].update(GwPriority=0)),
+    ("extra endpoint field",lambda data:data["NetworkSettings"]["Networks"]["none"].update(Unexpected=0)),
 ])
 def test_inspect_gate_rejects_exact_image_user_command_environment_and_network_drift(surface,mutate):
     data=inspect_data(); mutate(data)
     with pytest.raises(RuntimeError):
-        preflight.inspect_gate(data,IMAGE,IMAGE_ID,USER,NETWORK_ID)
+        preflight.inspect_gate(data,IMAGE,IMAGE_ID,USER,NETWORK_ID,reviewed_profile())
 
 
 def test_run_rejects_root_before_first_docker_call(monkeypatch):
@@ -229,7 +252,7 @@ def test_run_rejects_root_before_first_docker_call(monkeypatch):
     assert calls == []
 
 
-def test_run_owns_unique_ledger_container_and_first_call_is_none_network(monkeypatch):
+def test_run_binds_daemon_before_network_and_owns_unique_ledger_container(monkeypatch):
     ledger = Ledger(); inspections = [inspect_data(), inspect_data(True)]; calls = []
     class Transport: pass
     monkeypatch.setattr(preflight, "start_attached", lambda command, limit=4096: calls.append(command) or Transport())
@@ -238,13 +261,16 @@ def test_run_owns_unique_ledger_container_and_first_call_is_none_network(monkeyp
     def control(command, timeout):
         calls.append(command); assert timeout > 0
         if command[:4] == ["docker", "network", "inspect", "none"]: return {"returncode": 0, "stdout": json.dumps(network()), "stderr": ""}
+        if command[:3] == ["docker", "version", "--format"]: return {"returncode": 0, "stdout": engine_payload(), "stderr": ""}
+        if command[:3] == ["docker", "info", "--format"]: return {"returncode": 0, "stdout": daemon_payload(), "stderr": ""}
         if command[1] == "create": return {"returncode": 0, "stdout": CONTAINER_ID + "\n", "stderr": ""}
         if command[:2] == ["docker", "inspect"] and command[2].startswith("wp-proxy-preflight-") and inspections: return {"returncode": 0, "stdout": json.dumps([inspections.pop(0)]), "stderr": ""}
         if command[1:3] == ["rm", "-f"]: return {"returncode": 0, "stdout": command[3], "stderr": ""}
         if command[1:3] == ["container", "ls"]: return empty_container_list()
         raise AssertionError(command)
     result = preflight.run(control, IMAGE, IMAGE_ID, USER, "1" * 16, ledger)
-    assert calls[0] == ["docker", "network", "inspect", "none"]
+    assert calls[0] == ["docker", "info", "--format", preflight.DAEMON_ID_TEMPLATE]
+    assert calls[1] == ["docker", "network", "inspect", "none"]
     assert result["name"] == "wp-proxy-preflight-" + "1" * 16
     assert ("container", result["name"], "created") in ledger.events and ("container", result["name"], "removed") in ledger.events
     start = next(command for command in calls if command[:3] == ["docker", "start", "-a"])
@@ -259,6 +285,8 @@ def test_create_attempt_cleanup_removes_safe_name_and_authenticated_discovered_i
         nonlocal exists
         calls.append(command)
         if command[:4]==["docker","network","inspect","none"]: return {"returncode":0,"stdout":json.dumps(network()),"stderr":""}
+        if command[:3]==["docker","version","--format"]: return {"returncode":0,"stdout":engine_payload(),"stderr":""}
+        if command[:3]==["docker","info","--format"]: return {"returncode":0,"stdout":daemon_payload(),"stderr":""}
         if command[1]=="create":
             if create_mode=="timeout": raise TimeoutError("lost create response")
             if create_mode=="nonzero-id": return {"returncode":1,"stdout":CONTAINER_ID+"\n","stderr":"daemon error"}
