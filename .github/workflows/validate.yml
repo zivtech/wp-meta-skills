@@ -79,7 +79,6 @@ jobs:
       - name: Observe exact zero-mount preflight serialization
         run: |
           PYTHONPATH=evals/harness python - <<'PY'
-          import json
           import os
           import secrets
           import runtime_image_provision as provision
@@ -94,14 +93,15 @@ jobs:
           image=f"{item['tag'].split(':')[0]}@{item[arch]}"
           identity=provision.run_capped(["docker","image","inspect",image,"--format","{{.Id}}"],timeout=30,limit=32768)
           if identity["returncode"]: raise RuntimeError("pinned Python image identity unavailable")
-          result=diagnostic.run(
-              lambda command,timeout:provision.run_capped(command,timeout=timeout,limit=32768),
-              image,identity["stdout"].strip(),f"{os.getuid()}:{os.getgid()}",secrets.token_hex(8),Ledger(),
-          )
-          encoded=json.dumps(result,sort_keys=True,separators=(",",":"),allow_nan=False)
-          print(encoded)
-          with open(os.environ["GITHUB_STEP_SUMMARY"],"a",encoding="utf-8") as summary:
-              summary.write("## Zero-mount preflight serialization\n\n```json\n"+encoded+"\n```\n")
+          try:
+              diagnostic.run(
+                  lambda command,timeout:provision.run_capped(command,timeout=timeout,limit=32768),
+                  image,identity["stdout"].strip(),f"{os.getuid()}:{os.getgid()}",secrets.token_hex(8),Ledger(),
+              )
+          except diagnostic.PostExitTmpfsObservation as blocked:
+              diagnostic.emit_observation(blocked,os.environ["GITHUB_STEP_SUMMARY"])
+              raise SystemExit(diagnostic.BLOCK_MESSAGE)
+          raise RuntimeError("diagnostic unexpectedly returned without a post-exit observation")
           PY
       - name: Run implemented package acquisition and endpointless boundary cases
         run: |
