@@ -250,14 +250,13 @@ def proxy_gate_fixture(tmp_path):
     token = "0123456789abcdef"; internal_spec = policy.specification(token, "internal")
     egress_spec = policy.specification(token, "egress"); path = tmp_path / "proxy.py"; path.write_text("safe")
     path.chmod(0o400); descriptor = os.open(path, os.O_RDONLY); opened = os.fstat(descriptor); digest = "a" * 64
-    code = SimpleNamespace(file_fd=descriptor, source=f"/proc/1/fd/{descriptor}", sha256=digest)
+    code = SimpleNamespace(file_fd=descriptor, source=str(path.absolute()), sha256=digest)
     request = SimpleNamespace(user="1001:1001", acquisition="block-scripts-32.4.1-smoke")
     context = runner.AcquisitionContext(f"wp-acquire-internal-{token}", f"wp-acquire-egress-{token}", "proxy", "nonce", internal_spec.package_ip, internal_spec.proxy_ip, internal_spec.gateway, "python@sha256:" + "b" * 64, code, 8 * 1024**3, runner.ResourceLedger())
-    expected = runner._proxy_create_command(context, runner.dependency_egress_proxy.ACQUISITION_PROFILES[request.acquisition].allowed_hosts, request)
-    image_index = expected.index(context.proxy_image); proxy_id = "2" * 64; package_id = "3" * 64
+    proxy_id = "2" * 64; package_id = "3" * 64
     temporary = "size=16777216,nr_inodes=1024,mode=0700,uid=1001,gid=1001,noexec,nosuid,nodev"
     host = {"ReadonlyRootfs": True, "CapDrop": ["ALL"], "PidsLimit": 64, "Memory": runner.PROXY_MEMORY_BYTES, "MemorySwap": runner.PROXY_MEMORY_BYTES, "NanoCpus": 1_000_000_000, "NetworkMode": context.internal, "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0}, "CapAdd": None, "PidMode": "", "IpcMode": "", "UTSMode": "", "UsernsMode": "", "SecurityOpt": ["no-new-privileges:true"], "Privileged": False, "PortBindings": {}, "Binds": [], "Dns": [], "ExtraHosts": [], "Devices": [], "Ulimits": [{"Name": "nofile", "Hard": 1024, "Soft": 1024}], "LogConfig": {"Type": "none"}, "Tmpfs": {"/tmp": temporary}}
-    proxy = {"Id": proxy_id, "Image": "sha256:" + "c" * 64, "HostConfig": host, "Config": {"User": request.user, "Entrypoint": ["python"], "Cmd": expected[image_index + 1:], "Env": []}, "Mounts": [{"Destination": "/proxy.py", "RW": False, "Source": code.source}], "NetworkSettings": {"Networks": {context.internal: {"IPAddress": context.proxy_ip}, context.egress: {"IPAddress": egress_spec.package_ip}}}}
+    proxy = {"Id": proxy_id, "Image": "sha256:" + "c" * 64, "HostConfig": host, "Config": {"User": request.user, "Entrypoint": ["sleep"], "Cmd": ["infinity"], "Env": list(runner.python_preflight.ENV)}, "Mounts": [{"Destination": "/proxy.py", "RW": False, "Propagation": "rprivate", "Source": code.source}], "NetworkSettings": {"Networks": {context.internal: {"IPAddress": context.proxy_ip}, context.egress: {"IPAddress": egress_spec.package_ip}}}}
     package = {"Id": package_id, "NetworkSettings": {"Networks": {context.internal: {"IPAddress": context.package_ip}}}}
     proof = f"{opened.st_dev}:{opened.st_ino}:400\n{digest}\n"
     return context, request, proxy, package, proof, internal_spec, egress_spec, descriptor

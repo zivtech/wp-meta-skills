@@ -1,9 +1,8 @@
-import dataclasses, inspect, io, ipaddress, json, os, platform, select, shutil, signal, socket, stat, subprocess, sys, time
+import dataclasses, inspect, io, ipaddress, json, os, platform, select, shutil, signal, socket, stat, subprocess, sys, threading, time
 from pathlib import Path
 import pytest
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
 import artifact_staging, materialize_wordpress_executor_packet as materializer, runtime_image_provision, sandboxed_package_runner as runner, step4_evidence, workspace_lease
-
 def staged(tmp_path):
     source=tmp_path/"source"; source.mkdir(); (source/"input.txt").write_text("safe")
     return artifact_staging.stage_tree(source,tmp_path/"leases")
@@ -88,8 +87,31 @@ def test_killed_process_surviving_reap_deadline_is_rejected(monkeypatch):
         def poll(self): return None
         def kill(self): pass
         def wait(self,timeout): raise subprocess.TimeoutExpired("fake",timeout)
-    monkeypatch.setattr(runner.os,"killpg",lambda *_args:(_ for _ in ()).throw(OSError("gone")))
+    def killpg(_pid,signal_number):
+        if signal_number==0: raise ProcessLookupError("gone")
+        raise OSError("kill failed")
+    monkeypatch.setattr(runner.os,"killpg",killpg)
     with pytest.raises(RuntimeError,match="survived reap deadline"): runner._terminate_process(Process(),time.monotonic()+0.01)
+
+def test_expired_absolute_reap_deadline_never_grants_hidden_milliseconds(monkeypatch):
+    waits=[]
+    class Process:
+        pid=999999
+        def poll(self): return None
+        def kill(self): pass
+        def wait(self,timeout): waits.append(timeout); raise AssertionError("expired deadline must not wait")
+    monkeypatch.setattr(runner.os,"killpg",lambda *_args:None)
+    with pytest.raises(RuntimeError,match="survived reap deadline"): runner._terminate_process(Process(),time.monotonic()-1)
+    assert waits==[]
+
+def test_expired_process_deadline_blocks_before_launch(monkeypatch,tmp_path):
+    tree=staged(tmp_path); launches=[]
+    monkeypatch.setattr(runner.process_transport.subprocess,"Popen",lambda *_args,**_kwargs:launches.append(1))
+    try:
+        with pytest.raises(TimeoutError,match="no positive execution budget"):
+            runner._run_capped_process(["ignored"],request(tree),deadline=time.monotonic()-1)
+        assert launches==[]
+    finally: workspace_lease.cleanup(tree.lease)
 
 def test_cleanup_failure_blocks_prior_failure_status(tmp_path,monkeypatch):
     tree=staged(tmp_path); monkeypatch.setattr(runner.platform,"system",lambda:"Linux")
@@ -120,6 +142,24 @@ def test_cleanup_exception_closes_successful_output_lease(tmp_path,monkeypatch):
         assert not output.lease.root.exists() and len(calls)==2
     finally: workspace_lease.cleanup(tree.lease)
 
+def test_staged_descriptors_remain_open_through_container_removal(tmp_path,monkeypatch):
+    tree=staged(tmp_path); held={}; original_validate=runner._validate_request
+    monkeypatch.setattr(runner.platform,"system",lambda:"Linux")
+    def validate(req,retain=False):
+        capability=original_validate(req,retain); held["capability"]=capability; return capability
+    def live(_request,name,capability,_profile,ledger):
+        os.fstat(capability.root_fd); os.fstat(capability.lease_fd); ledger.record("container",name,"created")
+        return runner.SandboxResult("fail",9,"","",None,"generated failed",name)
+    def cleanup(*_args,**_kwargs):
+        capability=held["capability"]; os.fstat(capability.root_fd); os.fstat(capability.lease_fd)
+        return {"returncode":0,"stdout":"","stderr":""}
+    monkeypatch.setattr(runner,"_validate_request",validate); monkeypatch.setattr(runner,"_run_live",live); monkeypatch.setattr(runner.provision,"run_capped",cleanup)
+    try:
+        assert runner.run_sandbox(request(tree)).status=="fail"
+        with pytest.raises(OSError): os.fstat(held["capability"].root_fd)
+        with pytest.raises(OSError): os.fstat(held["capability"].lease_fd)
+    finally: workspace_lease.cleanup(tree.lease)
+
 def test_run_sandbox_emits_one_authoritative_nonresurrecting_resource_history(tmp_path,monkeypatch):
     tree=staged(tmp_path); req=dataclasses.replace(request(tree),acquisition="block-scripts-32.4.1-smoke")
     profile=runner.dependency_egress_proxy.ACQUISITION_PROFILES[req.acquisition]
@@ -136,131 +176,6 @@ def test_run_sandbox_emits_one_authoritative_nonresurrecting_resource_history(tm
         assert sum(item["state"]=="created" and item["name"]==result.container_name for item in events)==1
     finally: workspace_lease.cleanup(tree.lease)
 
-def test_runtime_identity_binds_request_and_runner_resource_limits(tmp_path):
-    tree=staged(tmp_path); req=request(tree,memory="1g",workspace_bytes=1200*1024**2)
-    identity=runner.DetachedIdentity("1"*64,"started","network","daemon","2"*64,"sha256:"+"3"*64,"4"*64,"sha256:"+"5"*64)
-    try:
-        observed=runner._runtime_identity(identity,req); expected=1024**3+1200*1024**2+runner.PROXY_MEMORY_BYTES+runner.HOST_RESERVE_BYTES
-        assert observed["package_memory_limit_bytes"]==1024**3 and observed["workspace_limit_bytes"]==1200*1024**2
-        assert observed["proxy_memory_limit_bytes"]==runner.PROXY_MEMORY_BYTES and observed["host_reserve_bytes"]==runner.HOST_RESERVE_BYTES and observed["admission_required_bytes"]==expected
-    finally: workspace_lease.cleanup(tree.lease)
-
-def test_mount_comma_path_is_rejected(tmp_path):
-    parent=tmp_path/"comma,parent"; parent.mkdir(); tree=staged(parent)
-    try:
-        with pytest.raises(ValueError,match="mount metacharacter"): runner._validate_request(request(tree))
-    finally: workspace_lease.cleanup(tree.lease)
-
-def test_descriptor_mount_survives_lexical_swap(tmp_path):
-    tree=staged(tmp_path); capability=runner._validate_request(request(tree),retain=True)
-    moved=tree.lease.root/"moved"; tree.root.rename(moved); tree.root.symlink_to(Path.home(),target_is_directory=True)
-    try:
-        command=runner._create_command(request(tree),"container",capability)
-        assert f"src={capability.source},dst=/input,readonly" in " ".join(command)
-        assert os.fstat(capability.root_fd).st_ino==capability.inode
-    finally:
-        os.close(capability.root_fd); os.close(capability.lease_fd)
-        tree.root.unlink(); moved.rename(tree.root); workspace_lease.cleanup(tree.lease)
-
-def test_copy_manifest_mismatch_fails_before_execute(tmp_path,monkeypatch):
-    tree=staged(tmp_path); capability=runner._validate_request(request(tree),retain=True)
-    monkeypatch.setattr(runner,"_run",lambda *_args,**_kwargs:{"returncode":0,"stdout":"tmpfs 524288 1 1 1% /workspace\ntmpfs 50000 1 1 1% /workspace\n","stderr":""})
-    monkeypatch.setattr(runner,"_verify_copy",lambda *_args:artifact_staging.ArchiveVerification((),()))
-    try:
-        with pytest.raises(RuntimeError,match="copy manifest or graph mismatch"): runner._prepare("container",request(tree),capability)
-    finally:
-        os.close(capability.root_fd); os.close(capability.lease_fd); workspace_lease.cleanup(tree.lease)
-
-def test_daemon_arch_image_validation_precedes_create(tmp_path,monkeypatch):
-    tree=staged(tmp_path); capability=runner._validate_request(request(tree),retain=True); calls=[]
-    bogus=dataclasses.replace(request(tree),image="node@sha256:"+"f"*64)
-    monkeypatch.setattr(runner,"_run",lambda command,*_args,**_kwargs:calls.append(command) or {"returncode":0,"stdout":"amd64\n","stderr":""})
-    try:
-        with pytest.raises(ValueError,match="approved daemon-platform child"): runner._run_live(bogus,"container",capability)
-        assert calls==[["docker","info","--format","{{.Architecture}}"]]
-    finally:
-        os.close(capability.root_fd); os.close(capability.lease_fd); workspace_lease.cleanup(tree.lease)
-
-def test_local_image_gate_requires_exact_repo_digest(monkeypatch):
-    reference="node@sha256:"+"a"*64
-    monkeypatch.setattr(runner.provision,"run_capped",lambda *_args,**_kwargs:{"returncode":1,"stdout":"","stderr":"missing"})
-    with pytest.raises(RuntimeError,match="not locally provisioned"): runner._assert_local_image(reference)
-    payload=json.dumps("sha256:"+"b"*64)+" "+json.dumps(["node@sha256:"+"c"*64])
-    monkeypatch.setattr(runner.provision,"run_capped",lambda *_args,**_kwargs:{"returncode":0,"stdout":payload,"stderr":""})
-    with pytest.raises(RuntimeError,match="digest evidence mismatch"): runner._assert_local_image(reference)
-    source=inspect.getsource(runner._run_live)
-    assert source.index("_assert_local_image(request.image)")<source.index("_create_acquisition_context")
-
-def test_proxy_control_transport_is_fixed_32k_independent_of_request(monkeypatch):
-    seen=[]; monkeypatch.setattr(runner.provision,"run_capped",lambda command,**kwargs:seen.append(kwargs) or {"returncode":0,"stdout":"","stderr":""})
-    runner._control_run(["docker","inspect","proxy"],17)
-    assert seen==[{"timeout":17,"limit":32768}]
-
-def test_acquisition_argv_is_exact_and_source_fallback_tools_absent():
-    npm=runner._acquisition_argv("npm","172.28.0.3"); composer=runner._acquisition_argv("composer","172.28.0.3")
-    assert npm[-5:]==["npm","ci","--ignore-scripts","--no-audit","--no-fund"]
-    assert composer[-7:]==["php","/usr/bin/composer","install","--no-scripts","--no-plugins","--no-interaction","--no-progress","--prefer-dist"][-7:]
-    assert "git" not in composer and "ssh" not in composer
-    assert "HTTPS_PROXY=http://172.28.0.3:8080" in npm and "NO_PROXY=" in npm
-    assert not any("http://proxy" in item for item in npm)
-    assert "npm_config_cache=/workspace/sandbox-cache/npm" in npm and "npm_config_maxsockets=8" in npm
-    assert "COMPOSER_CACHE_DIR=/workspace/sandbox-cache/composer" in composer and "COMPOSER_MAX_PARALLEL_HTTP=8" in composer
-
-def test_proxy_container_is_pinned_dual_network_orchestrator_without_artifact(tmp_path):
-    item=runtime_image_provision.inventory()["images"]["python"]
-    image=f"python@{item['amd64']}"; tree=staged(tmp_path); req=request(tree)
-    code=runner.ProxyCapability(tree.lease,3,4,"/proc/123/fd/4","a"*64)
-    context=runner.AcquisitionContext("internal","egress","proxy","nonce","172.28.0.2","172.28.0.3","172.28.0.1",image,code,8*1024**3,runner.ResourceLedger())
-    command=runner._proxy_create_command(context,{"registry.npmjs.org"},req); joined=" ".join(command)
-    assert image in command and "--network internal" in joined and "--network-alias" not in command
-    assert "--pull=never" in command
-    assert "--read-only" in command and "--cap-drop ALL" in joined and "--log-driver none" in joined
-    assert "src=/proc/123/fd/4,dst=/proxy.py,readonly" in joined and "/input" not in joined and "--env" not in command
-    assert f"--memory-swap {runner.PROXY_MEMORY_BYTES}" in joined and "nofile=1024:1024" in joined and f"--user {req.user}" in joined
-    workspace_lease.cleanup(tree.lease)
-
-def test_acquisition_rejects_artifact_package_credentials(tmp_path):
-    source=tmp_path/"source"; source.mkdir(); (source/".npmrc").write_text("token=secret")
-    (source/"package.json").write_text('{"dependencies":{}}'); (source/"package-lock.json").write_text('{"lockfileVersion":3,"packages":{"":{"dependencies":{}}}}')
-    tree=artifact_staging.stage_tree(source,tmp_path/"leases"); req=dataclasses.replace(request(tree),acquisition="block-scripts-32.4.1-smoke"); capability=runner._validate_request(req,retain=True)
-    try:
-        with pytest.raises(ValueError,match="credential"): runner._validate_acquisition(req,capability)
-    finally:
-        os.close(capability.root_fd); os.close(capability.lease_fd); workspace_lease.cleanup(tree.lease)
-
-def test_acquisition_profiles_directly_bind_inventory_child_digests():
-    inventory=runtime_image_provision.inventory()["images"]
-    for profile in runner.dependency_egress_proxy.ACQUISITION_PROFILES.values():
-        assert (profile.amd64_digest,profile.arm64_digest)==(inventory[profile.image_key]["amd64"],inventory[profile.image_key]["arm64"])
-
-def test_non_linux_is_blocked_without_fallback(tmp_path,monkeypatch):
-    tree=staged(tmp_path); calls=[]; monkeypatch.setattr(runner.platform,"system",lambda:"Darwin")
-    monkeypatch.setattr(runner.provision,"run_capped",lambda command,**kwargs:calls.append(command) or {"returncode":0,"stdout":"","stderr":""})
-    try:
-        result=runner.run_sandbox(request(tree)); assert result.status=="blocked"
-        assert calls==[]
-    finally: workspace_lease.cleanup(tree.lease)
-
-def test_output_export_is_uncompressed_streaming_tar():
-    body=inspect.getsource(runner._import_output)
-    command=runner._tar_command("container",True)
-    assert command[:5]==["docker","exec","container","tar","-C"] and command[-3:]==["-cf","-","."]
-    assert "--exclude=./node_modules" in command and "--exclude=./vendor" in command
-    assert "--exclude=./sandbox-cache" in command and not any("--exclude=" in item for item in runner._tar_command("container",False))
-    assert [item for item in command if item.startswith("--exclude=")]==["--exclude=./node_modules","--exclude=./vendor","--exclude=./sandbox-cache"]
-    assert "_dependency_root_gate(name,request)" in body and "_dependency_root_gate(name,request)" in inspect.getsource(runner._verify_copy)
-    assert 'dependency_policy="strict"' in body
-    assert "communicate(" not in body and "capture_output" not in body
-    assert "threading.Timer" in body and 'env={"PATH":"/usr/bin:/bin"}' in body
-    assert '_join_thread(thread,final_deadline' in body and '_join_thread(watchdog,final_deadline' in body
-    assert "process.wait()" not in body and "watchdog.join(1)" not in body
-    assert 'env={"PATH":"/usr/bin:/bin"}' in inspect.getsource(runner._run_capped_process)
-
-def test_inspection_failure_is_fail_closed(tmp_path,monkeypatch):
-    tree=staged(tmp_path); monkeypatch.setattr(runner,"_run",lambda *_args,**_kwargs:{"returncode":1,"stdout":"","stderr":"inspect"})
-    try:
-        with pytest.raises(RuntimeError,match="inspection failed"): runner._inspect_boundary("container",request(tree))
-    finally: workspace_lease.cleanup(tree.lease)
 
 @pytest.mark.parametrize("kind",["symlink","special"])
 def test_dependency_root_type_gate_rejects_non_directory(kind,tmp_path,monkeypatch):
@@ -271,7 +186,7 @@ def test_dependency_root_type_gate_rejects_non_directory(kind,tmp_path,monkeypat
     finally: workspace_lease.cleanup(tree.lease)
 
 def fake_context(tree):
-    code=runner.ProxyCapability(tree.lease,3,4,"/proc/123/fd/4","a"*64)
+    code=runner.ProxyCapability(tree.lease,3,4,str(tree.lease.root/"proxy.py"),"a"*64)
     return runner.AcquisitionContext("internal","egress","proxy","nonce","172.28.0.2","172.28.0.3","172.28.0.1","python@sha256:"+"a"*64,code,8*1024**3,runner.ResourceLedger())
 
 def test_acquisition_package_is_created_directly_internal_with_dns_denial(tmp_path):
@@ -365,7 +280,7 @@ def test_memory_admission_includes_package_workspace_proxy_and_reserve(tmp_path,
     finally: workspace_lease.cleanup(tree.lease)
 
 def test_partial_acquisition_context_preserves_original_and_cleanup_failure(tmp_path,monkeypatch):
-    tree=staged(tmp_path); req=request(tree); code=runner.ProxyCapability(tree.lease,3,4,"/proc/3/fd/4","a"*64); calls=[]; commands=[]
+    tree=staged(tmp_path); req=request(tree); code=runner.ProxyCapability(tree.lease,3,4,str(tree.lease.root/"proxy.py"),"a"*64); calls=[]; commands=[]
     monkeypatch.setattr(runner,"_memory_admission",lambda _request:8*1024**3); monkeypatch.setattr(runner,"_stage_proxy_code",lambda *_args:code)
     monkeypatch.setattr(runner,"_control_run",lambda command,*_args:commands.append(command) or {"returncode":0 if "create" in command else 1,"stdout":"","stderr":"inspect failed"})
     def cleanup(context,*_args,**_kwargs): calls.extend(context.ledger.events); raise RuntimeError("retained internal network")
@@ -375,6 +290,82 @@ def test_partial_acquisition_context_preserves_original_and_cleanup_failure(tmp_
         assert any(event.state=="created" and event.kind=="network" for event in calls) and {"--subnet","--gateway","--internal"}<=set(commands[0])
     finally: workspace_lease.cleanup(tree.lease)
 
+def test_network_create_attempt_is_recorded_before_lost_response(tmp_path,monkeypatch):
+    tree=staged(tmp_path); code=runner.ProxyCapability(tree.lease,3,4,str(tree.lease.root/"proxy.py"),"a"*64); captured=[]
+    monkeypatch.setattr(runner,"_memory_admission",lambda _request:8*1024**3); monkeypatch.setattr(runner,"_stage_proxy_code",lambda *_args:code)
+    monkeypatch.setattr(runner,"_control_run",lambda *_args,**_kwargs:(_ for _ in ()).throw(TimeoutError("lost network response")))
+    monkeypatch.setattr(runner,"_cleanup_acquisition",lambda context,*_args,**_kwargs:captured.extend(context.ledger.events))
+    try:
+        with pytest.raises(TimeoutError): runner._create_acquisition_context(request(tree),"amd64")
+        assert any(item.kind=="network" and item.state=="attempted" for item in captured)
+    finally: workspace_lease.cleanup(tree.lease)
+
+def test_proxy_create_attempt_is_recorded_before_lost_response(tmp_path,monkeypatch):
+    tree=staged(tmp_path); req=request(tree); code=runner.ProxyCapability(tree.lease,3,4,str(tree.lease.root/"proxy.py"),"a"*64); ledger=runner.ResourceLedger()
+    context=runner.AcquisitionContext("internal","egress","proxy","nonce","172.28.0.2","172.28.0.3","172.28.0.1","python@sha256:"+"a"*64,code,8*1024**3,ledger)
+    monkeypatch.setattr(runner,"_reprove_proxy",lambda *_args:None); monkeypatch.setattr(runner,"_control_run",lambda *_args,**_kwargs:(_ for _ in ()).throw(TimeoutError("lost proxy response")))
+    try:
+        with pytest.raises(TimeoutError): runner._start_proxy(context,"package",req,runner.dependency_egress_proxy.ACQUISITION_PROFILES["block-scripts-32.4.1-smoke"])
+        assert any(item.kind=="container" and item.name=="proxy" and item.state=="attempted" for item in ledger.events)
+    finally: workspace_lease.cleanup(tree.lease)
+
+def test_wait_proxy_idle_caps_ten_seconds_to_lifecycle_deadline(monkeypatch):
+    lifecycle=time.monotonic()+0.25; seen=[]
+    supervised=type("Supervisor",(),{"lifecycle_deadline":lifecycle})()
+    context=type("Context",(),{"supervisor":supervised})()
+    monkeypatch.setattr(runner,"_read_proxy_status",lambda _context,_request,deadline:seen.append(deadline) or {"active":0})
+    assert runner._wait_proxy_idle(context,object())["active"]==0
+    assert seen==[lifecycle]
+
+def test_proxy_readiness_and_acquisition_share_launch_lifecycle_deadline(tmp_path,monkeypatch):
+    tree=staged(tmp_path); req=request(tree,timeout=300); capability=runner._validate_request(req,retain=True); lifecycle=time.monotonic()+2; seen={}
+    process=type("Process",(),{"poll":lambda self:None})()
+    supervised=type("Supervisor",(),{"lifecycle_deadline":lifecycle,"overflow":[],"process":process})()
+    code=runner.ProxyCapability(tree.lease,3,4,str(tree.lease.root/"proxy.py"),"a"*64)
+    context=runner.AcquisitionContext("internal","egress","proxy","nonce","172.28.0.2","172.28.0.3","172.28.0.1","python@sha256:"+"a"*64,code,8*1024**3,runner.ResourceLedger(),supervised)
+    profile=runner.dependency_egress_proxy.ACQUISITION_PROFILES["block-scripts-32.4.1-smoke"]
+    monkeypatch.setattr(runner,"_probe_versions",lambda *_args:None); monkeypatch.setattr(runner.sandbox_dns_guard,"pre_acquisition",lambda *_args:None)
+    monkeypatch.setattr(runner,"_prepare_acquisition_paths",lambda *_args:None); monkeypatch.setattr(runner,"_start_proxy",lambda *_args:context)
+    monkeypatch.setattr(runner.proxy_supervisor,"check",lambda target:seen.setdefault("health",target))
+    def transport(_command,_request,**kwargs): seen["transport"]=kwargs; kwargs["health_check"](); return {"returncode":0,"stdout":"","stderr":""}
+    monkeypatch.setattr(runner,"_run_capped_process",transport)
+    monkeypatch.setattr(runner,"_assert_package_process",lambda _name,_request,deadline:seen.setdefault("package",deadline))
+    monkeypatch.setattr(runner,"_wait_proxy_idle",lambda *_args:{"active":0}); monkeypatch.setattr(runner,"_assert_proxy_process",lambda *_args:None)
+    def verify(_name,_request,exclude_dependencies=False,deadline=None):
+        seen["proof"]=(exclude_dependencies,deadline); return artifact_staging.ArchiveVerification(tree.manifest,capability.path_kinds)
+    monkeypatch.setattr(runner,"_verify_copy",verify)
+    try:
+        assert runner._acquire("package",req,profile,context,capability).supervisor is supervised
+        assert seen["transport"]["deadline"]==lifecycle and seen["package"]==lifecycle and seen["proof"]==(True,lifecycle)
+        assert seen["health"] is supervised
+    finally:
+        os.close(capability.root_fd); os.close(capability.lease_fd); workspace_lease.cleanup(tree.lease)
+
+def test_proxy_health_failure_aborts_live_acquisition_transport_before_absolute_deadline(tmp_path):
+    tree=staged(tmp_path); started=time.monotonic(); deadline=started+5.5; checks=[]
+    def failed_health(): checks.append(time.monotonic()); raise RuntimeError("proxy workload exited early")
+    try:
+        with pytest.raises(RuntimeError,match="proxy workload exited early"):
+            runner._run_capped_process(["/bin/sh","-c","sleep 2"],request(tree,timeout=10),deadline=deadline,health_check=failed_health)
+        assert checks and time.monotonic()<deadline
+    finally: workspace_lease.cleanup(tree.lease)
+
+def test_wait_proxy_readiness_uses_only_remaining_lifecycle_time(monkeypatch):
+    deadline=time.monotonic()+0.25; seen=[]
+    monkeypatch.setattr(runner,"_control_run",lambda _command,timeout:seen.append(timeout) or {"returncode":0,"stdout":"","stderr":""})
+    runner._wait_proxy("package","npm","172.28.0.3",object(),deadline)
+    assert len(seen)==1 and 0<seen[0]<=0.25
+
+def test_proxy_readiness_preserves_original_and_abort_failure(tmp_path,monkeypatch):
+    tree=staged(tmp_path); req=request(tree); code=runner.ProxyCapability(tree.lease,3,4,str(tree.lease.root/"proxy.py"),"a"*64); ledger=runner.ResourceLedger()
+    context=runner.AcquisitionContext("internal","egress","proxy","nonce","172.28.0.2","172.28.0.3","172.28.0.1","python@sha256:"+"a"*64,code,8*1024**3,ledger)
+    monkeypatch.setattr(runner,"_reprove_proxy",lambda *_args:None); monkeypatch.setattr(runner,"_configured_proxy_mount_gate",lambda *_args:None); monkeypatch.setattr(runner,"_live_proxy_source_gate",lambda *_args:None); monkeypatch.setattr(runner,"_inspect_proxy",lambda *_args:None)
+    monkeypatch.setattr(runner,"_control_run",lambda *_args,**_kwargs:{"returncode":0,"stdout":"","stderr":""}); monkeypatch.setattr(runner.proxy_supervisor,"launch",lambda *_args,**_kwargs:type("Supervisor",(),{"lifecycle_deadline":time.monotonic()+30})())
+    monkeypatch.setattr(runner,"_wait_proxy",lambda *_args:(_ for _ in ()).throw(RuntimeError("readiness original"))); monkeypatch.setattr(runner.proxy_supervisor,"abort",lambda *_args:(_ for _ in ()).throw(RuntimeError("abort cleanup")))
+    try:
+        with pytest.raises(RuntimeError,match="readiness original.*abort cleanup"): runner._start_proxy(context,"package",req,runner.dependency_egress_proxy.ACQUISITION_PROFILES["block-scripts-32.4.1-smoke"])
+    finally: workspace_lease.cleanup(tree.lease)
+
 def test_partial_context_ledger_reaches_final_sandbox_evidence(tmp_path,monkeypatch):
     tree=staged(tmp_path); req=dataclasses.replace(request(tree),acquisition="block-scripts-32.4.1-smoke")
     profile=runner.dependency_egress_proxy.ACQUISITION_PROFILES[req.acquisition]; retained="wp-acquire-internal-retained"
@@ -382,7 +373,8 @@ def test_partial_context_ledger_reaches_final_sandbox_evidence(tmp_path,monkeypa
     monkeypatch.setattr(runner.platform,"system",lambda:"Linux")
     monkeypatch.setattr(runner,"_run",lambda *_args,**_kwargs:{"returncode":0,"stdout":"amd64","stderr":""})
     monkeypatch.setattr(runner,"_validate_image",lambda *_args:None); monkeypatch.setattr(runner,"_assert_local_image",lambda *_args:None)
-    def fail_setup(_request,_arch,ledger,_run_token):
+    monkeypatch.setattr(runner.python_preflight,"run",lambda *_args:None)
+    def fail_setup(_request,_arch,ledger,_run_token,_proof_budget=None):
         ledger.record("network",retained,"created"); ledger.record("network",retained,"retained")
         raise RuntimeError(f"original IPAM failure; cleanup retained {retained}; recovery: docker network rm {retained}")
     monkeypatch.setattr(runner,"_create_acquisition_context",fail_setup)
@@ -397,7 +389,7 @@ def test_partial_context_ledger_reaches_final_sandbox_evidence(tmp_path,monkeypa
 def docker_ready():
     if platform.system()!="Linux": return False
     try: return subprocess.run(["docker","info"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30).returncode==0
-    except subprocess.TimeoutExpired: return False
+    except (FileNotFoundError,subprocess.TimeoutExpired): return False
 
 def wait_container_listen(name,port_hex):
     deadline=time.monotonic()+5
@@ -421,6 +413,20 @@ def cleanup_docker_fixture(containers,networks):
                 if subprocess.run(inspect,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30).returncode==0: retained.append(f"{kind}:{name}")
             except subprocess.TimeoutExpired: retained.append(f"{kind}:{name}:inspect-timeout")
     return retained
+
+
+def finish_controlled_connect_fixture(context,stopped,package,proxy_name,registry,internal,egress,code,capability,tree,payload):
+    if context is not None and context.supervisor is not None and not stopped:
+        try: runner.proxy_supervisor.abort(context.supervisor,lambda command,timeout:runner._control_run(command,timeout))
+        except Exception: pass
+    retained=cleanup_docker_fixture((package,proxy_name,registry),(internal,egress))
+    if code is not None: runner._release_proxy_code(code)
+    os.close(capability.root_fd); os.close(capability.lease_fd); workspace_lease.cleanup(tree.lease)
+    assert not retained,retained
+    if payload is not None:
+        topology=payload["topology"]
+        payload["cleanup_disposition"]={"complete":True,"retained":[],"removed":{kind:{role:{"id":item["id"],"name":item["name"]} for role,item in topology[kind].items()} for kind in ("containers","networks")}}
+        step4_evidence.write_leg("controlled_connect",payload)
 
 def docker_request(tree,script,**changes):
     inv=runtime_image_provision.inventory()["images"]["node"]
@@ -617,7 +623,7 @@ def test_docker_continuous_event_guard_rejects_post_detach_mutation(tmp_path,mut
 @pytest.mark.skipif(not docker_ready(),reason="Linux Docker boundary unavailable")
 def test_docker_production_proxy_connect_canary_uses_only_fake_public_egress_endpoint(tmp_path):
     tree=staged(tmp_path); req=request(tree); capability=runner._validate_request(req,retain=True); token=__import__("uuid").uuid4().hex[:12]
-    internal=f"wp-fake-internal-{token}"; egress=f"wp-fake-egress-{token}"; package=f"wp-package-fake-{token}"; proxy_name=f"wp-proxy-fake-{token}"; registry=f"wp-registry-fake-{token}"; code=None; controlled_payload=None
+    internal=f"wp-fake-internal-{token}"; egress=f"wp-fake-egress-{token}"; package=f"wp-package-fake-{token}"; proxy_name=f"wp-proxy-fake-{token}"; registry=f"wp-registry-fake-{token}"; code=None; controlled_payload=None; context=None; stopped=False
     arch=runner._normalize_server_arch(subprocess.check_output(["docker","info","--format","{{.Architecture}}"],text=True,timeout=30)); python_image=runner._proxy_image(arch)
     try:
         spec=runner.sandbox_network_policy.specification(token,"fixture"); subprocess.run(runner.sandbox_network_policy.create_command(internal,spec,internal=True),check=True,stdout=subprocess.DEVNULL,timeout=60)
@@ -630,6 +636,8 @@ def test_docker_production_proxy_connect_canary_uses_only_fake_public_egress_end
         registry_command=["docker","create","--pull=never","--name",registry,"--network",egress,"--ip",step4_evidence.FAKE_REGISTRY_IP,"--network-alias","registry.npmjs.org","--entrypoint","python",python_image,"-c",server]
         subprocess.run(registry_command,check=True,stdout=subprocess.DEVNULL,timeout=120); subprocess.run(runner._proxy_create_command(context,{"registry.npmjs.org"},req),check=True,stdout=subprocess.DEVNULL,timeout=120)
         subprocess.run(["docker","network","connect",egress,proxy_name],check=True,timeout=60); subprocess.run(["docker","start",registry,proxy_name,package],check=True,stdout=subprocess.DEVNULL,timeout=60)
+        supervised=runner.proxy_supervisor.launch(proxy_name,context.nonce,runner._proxy_argv(context,{"registry.npmjs.org"}),req.user,lambda command,timeout:runner._control_run(command,timeout),req.timeout)
+        context=dataclasses.replace(context,supervisor=supervised)
         wait_container_listen(registry,"01BB"); wait_container_listen(proxy_name,"1F90")
         proxy_data,package_data,registry_data=json.loads(subprocess.check_output(["docker","inspect",proxy_name,package,registry],text=True,timeout=30))
         internal_data,egress_data=json.loads(subprocess.check_output(["docker","network","inspect",internal,egress],text=True,timeout=30))
@@ -650,18 +658,11 @@ def test_docker_production_proxy_connect_canary_uses_only_fake_public_egress_end
         status=runner._wait_proxy_idle(context,req)
         assert status["nonce"]==context.nonce and status["accepted"]==status["completed"]==1 and status["active"]==status["rejected"]==0
         assert status["client_bytes"]==status["upstream_bytes"]==len(relay_nonce)
+        runner._stop_proxy(context,req); stopped=True
         internal_config=internal_data["IPAM"]["Config"][0]; egress_config=egress_data["IPAM"]["Config"][0]
-        controlled_payload={"cleanup_disposition":None,"proxy_status":status,"relay_nonce":relay_nonce,"run_nonce":run_nonce,"topology":{"containers":{"package":{"id":package_data["Id"],"name":package,"ips":{internal:package_ip}},"proxy":{"id":proxy_data["Id"],"name":proxy_name,"ips":{internal:proxy_ip,egress:proxy_egress_ip}},"registry":{"id":registry_data["Id"],"name":registry,"ips":{egress:step4_evidence.FAKE_REGISTRY_IP}}},"networks":{"internal":{"id":internal_data["Id"],"name":internal,"internal":internal_data["Internal"],"subnet":internal_config["Subnet"],"gateway":internal_config["Gateway"]},"egress":{"id":egress_data["Id"],"name":egress,"internal":egress_data["Internal"],"subnet":egress_config["Subnet"],"gateway":egress_config["Gateway"]}}}}
+        controlled_payload={"cleanup_disposition":None,"proxy_status":status.value,"relay_nonce":relay_nonce,"run_nonce":run_nonce,"topology":{"containers":{"package":{"id":package_data["Id"],"name":package,"ips":{internal:package_ip}},"proxy":{"id":proxy_data["Id"],"name":proxy_name,"ips":{internal:proxy_ip,egress:proxy_egress_ip}},"registry":{"id":registry_data["Id"],"name":registry,"ips":{egress:step4_evidence.FAKE_REGISTRY_IP}}},"networks":{"internal":{"id":internal_data["Id"],"name":internal,"internal":internal_data["Internal"],"subnet":internal_config["Subnet"],"gateway":internal_config["Gateway"]},"egress":{"id":egress_data["Id"],"name":egress,"internal":egress_data["Internal"],"subnet":egress_config["Subnet"],"gateway":egress_config["Gateway"]}}}}
     finally:
-        retained=cleanup_docker_fixture((package,proxy_name,registry),(internal,egress))
-        if code is not None: runner._release_proxy_code(code)
-        os.close(capability.root_fd); os.close(capability.lease_fd); workspace_lease.cleanup(tree.lease)
-        assert not retained,retained
-        if controlled_payload is not None:
-            topology=controlled_payload["topology"]
-            removed={kind:{role:{"id":item["id"],"name":item["name"]} for role,item in topology[kind].items()} for kind in ("containers","networks")}
-            controlled_payload["cleanup_disposition"]={"complete":True,"retained":[],"removed":removed}
-            step4_evidence.write_leg("controlled_connect",controlled_payload)
+        finish_controlled_connect_fixture(context,stopped,package,proxy_name,registry,internal,egress,code,capability,tree,controlled_payload)
 
 @pytest.mark.docker_boundary
 @pytest.mark.skipif(not docker_ready(),reason="Linux Docker boundary unavailable")
@@ -779,6 +780,7 @@ def test_docker_special_output_is_rejected_by_importer(tmp_path):
     tree=staged(tmp_path); req=dataclasses.replace(docker_request(tree,"process.exit(0)"),argv=("mkfifo","special"))
     try: assert runner.run_sandbox(req).status=="blocked"
     finally: workspace_lease.cleanup(tree.lease)
+
 
 @pytest.mark.docker_boundary
 @pytest.mark.skipif(not docker_ready(),reason="Linux Docker boundary unavailable")

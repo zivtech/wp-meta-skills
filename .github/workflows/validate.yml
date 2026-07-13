@@ -60,10 +60,18 @@ jobs:
           python -m pytest \
             evals/harness/tests/test_artifact_staging.py \
             evals/harness/tests/test_dependency_egress_proxy.py \
+            evals/harness/tests/test_sandbox_process_transport.py \
+            evals/harness/tests/test_sandbox_proxy_supervisor.py \
+            evals/harness/tests/test_sandbox_proxy_supervisor_contract.py \
+            evals/harness/tests/test_sandbox_python_preflight.py \
+            evals/harness/tests/test_sandbox_python_preflight_contract.py \
+            evals/harness/tests/test_sandbox_source_proof.py \
             evals/harness/tests/test_sandbox_dns_guard.py \
             evals/harness/tests/test_sandbox_network_policy.py \
             evals/harness/tests/test_step4_evidence.py \
             evals/harness/tests/test_sandboxed_package_runner.py \
+            evals/harness/tests/test_sandboxed_package_runner_canonical_bind.py \
+            evals/harness/tests/test_workspace_lease.py \
             -m 'not docker_boundary' -q
       - name: Run implemented package acquisition and endpointless boundary cases
         run: |
@@ -76,6 +84,9 @@ jobs:
           set +e
           STEP4_EVIDENCE_DIR="$evidence_dir" python -m pytest \
             evals/harness/tests/test_sandboxed_package_runner.py \
+            evals/harness/tests/test_sandboxed_package_runner_canonical_bind.py \
+            evals/harness/tests/test_sandbox_proxy_supervisor_contract.py \
+            evals/harness/tests/test_sandbox_python_preflight.py \
             -m docker_boundary -q
           pytest_status=$?
           set -e
@@ -119,6 +130,8 @@ jobs:
           docker ps -aq --filter 'name=wp-step0-' | xargs -r docker rm -f
           docker ps -aq --filter 'name=wp-package-' | xargs -r docker rm -f
           docker ps -aq --filter 'name=wp-acquire-proxy-' | xargs -r docker rm -f
+          docker ps -aq --filter 'name=wp-proxy-preflight-' | xargs -r docker rm -f
+          docker ps -aq --filter 'name=wp-proxy-inventory-' | xargs -r docker rm -f
           docker ps -aq --filter 'name=wp-cleanup-test-' | xargs -r docker rm -f
           docker ps -aq --filter 'name=wp-fake-' | xargs -r docker rm -f
           docker ps -aq --filter 'name=wp-proxy-fake-' | xargs -r docker rm -f
@@ -131,6 +144,8 @@ jobs:
           test -z "$(docker ps -aq --filter 'name=wp-step0-')"
           test -z "$(docker ps -aq --filter 'name=wp-package-')"
           test -z "$(docker ps -aq --filter 'name=wp-acquire-proxy-')"
+          test -z "$(docker ps -aq --filter 'name=wp-proxy-preflight-')"
+          test -z "$(docker ps -aq --filter 'name=wp-proxy-inventory-')"
           test -z "$(docker ps -aq --filter 'name=wp-cleanup-test-')"
           test -z "$(docker ps -aq --filter 'name=wp-fake-')"
           test -z "$(docker ps -aq --filter 'name=wp-proxy-fake-')"

@@ -1,7 +1,20 @@
-import hashlib, json, sys
+import hashlib, json, os, sys, time
 from pathlib import Path
+import pytest
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
 import runtime_image_provision as provision
+
+def capture_processes(monkeypatch):
+    processes=[]; real_popen=provision.subprocess.Popen
+    def launch(*args,**kwargs):
+        process=real_popen(*args,**kwargs); processes.append(process); return process
+    monkeypatch.setattr(provision.subprocess,"Popen",launch)
+    return processes
+
+def assert_reaped(process):
+    assert process.poll() is not None
+    with pytest.raises(ProcessLookupError): os.killpg(process.pid,0)
+    assert process.stdout.closed and process.stderr.closed
 
 def test_inventory_is_digest_pinned_and_complete():
     data=provision.inventory()
@@ -54,22 +67,39 @@ def test_capped_transport():
     result=provision.run_capped(["/bin/sh","-c","printf ok"])
     assert result == {"returncode":0,"stdout":"ok","stderr":""}
 
-def test_capped_transport_kills_during_overflow():
-    import pytest
+def test_capped_transport_kills_during_overflow(monkeypatch):
+    processes=capture_processes(monkeypatch)
     with pytest.raises(RuntimeError, match="stdout output limit"):
         provision.run_capped(["/bin/sh","-c","while :; do printf 1234567890; done"],limit=1024,timeout=5)
+    assert len(processes)==1; assert_reaped(processes[0])
 
-def test_capped_transport_caps_stderr_independently():
-    import pytest
+def test_capped_transport_caps_stderr_independently(monkeypatch):
+    processes=capture_processes(monkeypatch)
     with pytest.raises(RuntimeError, match="stderr output limit"):
         provision.run_capped(["/bin/sh","-c","while :; do printf 1234567890 >&2; done"],limit=1024,timeout=5)
+    assert len(processes)==1; assert_reaped(processes[0])
 
-def test_capped_transport_uses_total_deadline_and_reaps_child():
-    import pytest, time
+def test_capped_transport_uses_total_deadline_and_reaps_child(monkeypatch):
+    processes=capture_processes(monkeypatch)
     started=time.monotonic()
     with pytest.raises(RuntimeError, match="timed out"):
         provision.run_capped(["/bin/sh","-c","sleep 30"],timeout=0.1)
-    assert time.monotonic()-started < 3
+    assert time.monotonic()-started < provision.CLEANUP_SECONDS+1
+    assert len(processes)==1; assert_reaped(processes[0])
+
+def test_capped_transport_closed_pipes_do_not_bypass_operation_deadline(monkeypatch):
+    processes=capture_processes(monkeypatch); started=time.monotonic()
+    with pytest.raises(RuntimeError,match="timed out"):
+        provision.run_capped(["/bin/sh","-c","exec 1>&-; exec 2>&-; sleep 30"],timeout=0.1)
+    assert time.monotonic()-started < provision.CLEANUP_SECONDS+1
+    assert len(processes)==1; assert_reaped(processes[0])
+
+def test_capped_transport_setup_error_reaps_owned_group(monkeypatch):
+    processes=capture_processes(monkeypatch)
+    monkeypatch.setattr(provision.threading,"Thread",lambda *_args,**_kwargs:(_ for _ in ()).throw(RuntimeError("thread setup failed")))
+    with pytest.raises(RuntimeError,match="thread setup failed"):
+        provision.run_capped(["/bin/sh","-c","sleep 30"],timeout=5)
+    assert len(processes)==1; assert_reaped(processes[0])
 
 def test_core_download_streams_and_verifies(monkeypatch, tmp_path):
     import io

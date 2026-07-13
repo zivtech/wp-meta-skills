@@ -12,6 +12,7 @@ import re
 import selectors
 import signal
 import socket
+import stat
 import threading
 import time
 from dataclasses import dataclass
@@ -360,14 +361,29 @@ class ProxyStatus:
 
     def _write(self):
         temporary = self.path.with_suffix(".tmp")
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(self.data, stream, separators=(",", ":"), sort_keys=True)
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or (info.st_uid, info.st_gid) != (os.getuid(), os.getgid()):
+                raise RuntimeError("proxy status file identity drift")
+            payload = json.dumps(self.data, separators=(",", ":"), sort_keys=True) + "\n"
+            _write_all(descriptor, payload.encode("utf-8")); os.fsync(descriptor)
+        except Exception:
+            try: temporary.unlink()
+            except OSError: pass
+            raise
+        finally:
+            os.close(descriptor)
         os.replace(temporary, self.path)
 
     def update(self, **changes):
         with self.lock:
             self.data = {**self.data, **{key: self.data[key] + value for key, value in changes.items()}}
+            self._write()
+
+    def finalize(self):
+        with self.lock:
             self._write()
 
 
@@ -416,6 +432,28 @@ def serve(host, port, peer, allowed, limits, status):
         worker.join(max(0, deadline - time.monotonic()))
     if any(worker.is_alive() for worker in remaining):
         raise RuntimeError("proxy workers did not stop")
+    status.finalize()
+
+
+def _write_all(descriptor, payload):
+    view = memoryview(payload)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("short proxy control-file write")
+        view = view[written:]
+
+
+def _write_pid_file(path, nonce):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600); info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or (info.st_uid, info.st_gid) != (os.getuid(), os.getgid()):
+            raise RuntimeError("proxy PID file identity drift")
+        payload = json.dumps({"nonce": nonce, "pid": os.getpid()}, separators=(",", ":"), sort_keys=True) + "\n"
+        _write_all(descriptor, payload.encode("ascii")); os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def main():
@@ -425,6 +463,7 @@ def main():
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--hosts", required=True)
     parser.add_argument("--status", required=True)
+    parser.add_argument("--pid-file", required=True)
     parser.add_argument("--nonce", required=True)
     args = parser.parse_args()
     allowed = frozenset(args.hosts.split(","))
@@ -432,6 +471,7 @@ def main():
         raise SystemExit("invalid proxy host allowlist")
     validate_listener_ip(args.listen)
     validate_listener_ip(args.peer)
+    _write_pid_file(args.pid_file, args.nonce)
     serve(args.listen, args.port, args.peer, allowed, ProxyLimits(), ProxyStatus(args.status, args.nonce))
 
 

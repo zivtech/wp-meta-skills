@@ -1,4 +1,4 @@
-import json, socket, stat, sys, threading
+import json, os, socket, stat, sys, threading
 from pathlib import Path
 import pytest
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
@@ -182,3 +182,21 @@ def test_status_record_is_nonce_bound_bounded_and_mode_0600(tmp_path):
     data=json.loads(path.read_text())
     assert data["nonce"]=="run-nonce" and data["active"]==0 and data["completed"]==1
     assert path.stat().st_size<8192 and stat.S_IMODE(path.stat().st_mode)==0o600
+
+def test_final_status_is_atomic_fresh_inode_even_without_counter_change(tmp_path):
+    path=tmp_path/"status.json"; status=proxy.ProxyStatus(path,"run-nonce"); before=path.stat().st_ino
+    status.finalize(); after=path.stat().st_ino
+    assert after!=before and json.loads(path.read_text())["active"]==0
+
+def test_final_status_write_failure_propagates_as_proxy_failure(tmp_path,monkeypatch):
+    status=proxy.ProxyStatus(tmp_path/"status.json","run-nonce")
+    monkeypatch.setattr(status,"_write",lambda:(_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError,match="disk full"): status.finalize()
+
+def test_pid_record_is_exclusive_canonical_fsynced_mode_0600(tmp_path):
+    path=tmp_path/"proxy.pid.json"; proxy._write_pid_file(path,"run-nonce")
+    expected=json.dumps({"nonce":"run-nonce","pid":os.getpid()},separators=(",",":"),sort_keys=True)+"\n"
+    info=path.lstat(); assert path.read_text()==expected
+    assert stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode)==0o600 and info.st_nlink==1
+    assert (info.st_uid,info.st_gid)==(os.getuid(),os.getgid())
+    with pytest.raises(FileExistsError): proxy._write_pid_file(path,"run-nonce")

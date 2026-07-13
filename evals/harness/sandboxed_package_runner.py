@@ -1,6 +1,6 @@
 """Linux-Docker boundary for direct generated package commands."""
 from __future__ import annotations
-import hashlib, json, math, os, platform, queue, re, stat, subprocess, threading, time, uuid
+import hashlib, json, math, os, platform, re, stat, time, uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 import artifact_staging
@@ -10,9 +10,13 @@ import runtime_image_provision as provision
 import sandbox_evidence
 import sandbox_dns_guard
 import sandbox_network_policy
+import sandbox_process_transport as process_transport
+import sandbox_python_preflight as python_preflight
+import sandbox_proxy_supervisor as proxy_supervisor
+import sandbox_source_proof as source_proof
 import workspace_lease
-
 ENV_ALLOWLIST=frozenset({"HOME","TMPDIR","XDG_CACHE_HOME"})
+_TEST_BARRIERS={}
 MAX_WORKSPACE_BYTES=2*1024**3; MAX_WORKSPACE_INODES=200_000; MAX_PIDS=256
 MAX_TIMEOUT=900; MAX_STREAM_BYTES=1024*1024; MAX_CPUS=4.0; MAX_MEMORY_BYTES=4*1024**3; PROXY_MEMORY_BYTES=256*1024**2; HOST_RESERVE_BYTES=1024**3
 
@@ -68,11 +72,11 @@ class SandboxResult:
 
 @dataclass(frozen=True)
 class StagedCapability:
-    lease_fd:int; root_fd:int; source:str; device:int; inode:int; path_kinds:tuple[tuple[str,str],...]
+    lease_fd:int; root_fd:int; source:str; device:int; inode:int; path_kinds:tuple[tuple[str,str],...]; proof:source_proof.SourceProof; budget:source_proof.ProofBudget
 
 @dataclass(frozen=True)
 class ProxyCapability:
-    lease:workspace_lease.WorkspaceLease; lease_fd:int; file_fd:int; source:str; sha256:str
+    lease:workspace_lease.WorkspaceLease; lease_fd:int; file_fd:int; source:str; sha256:str; proof:source_proof.FileProof|None=None; budget:source_proof.ProofBudget|None=None
 
 @dataclass(frozen=True)
 class ResourceEvent:
@@ -89,7 +93,7 @@ class ResourceLedger:
 @dataclass(frozen=True)
 class AcquisitionContext:
     internal:str; egress:str; proxy:str; nonce:str; package_ip:str; proxy_ip:str
-    gateway_ip:str; proxy_image:str; proxy_code:ProxyCapability; memory_available:int; ledger:ResourceLedger
+    gateway_ip:str; proxy_image:str; proxy_code:ProxyCapability; memory_available:int; ledger:ResourceLedger; supervisor:object|None=None
 
 @dataclass(frozen=True)
 class DetachedIdentity:
@@ -98,7 +102,6 @@ class DetachedIdentity:
 
 class SandboxBoundaryError(RuntimeError):
     def __init__(self,message,timings,metrics,resources): super().__init__(message); self.timings=dict(timings); self.metrics=dict(metrics); self.resources=list(resources)
-
 def _resource_events(ledger):
     return [{"kind":item.kind,"name":item.name,"state":item.state} for item in ledger.events] if ledger else []
 
@@ -106,9 +109,10 @@ def _blocked(request,name,detail,timings=None,metrics=None):
     return SandboxResult("blocked",None,"","",None,sandbox_evidence.encode("blocked",timings,metrics,detail),name)
 
 def _validate_request(request,retain=False):
+    if os.getuid()==0: raise ValueError("live sandbox rejects a root host UID")
     if not request.argv or any(not isinstance(item,str) or "\x00" in item for item in request.argv): raise ValueError("generated argv must be non-empty strings")
     if not re.fullmatch(r"(?:node|composer)@sha256:[0-9a-f]{64}",request.image): raise ValueError("sandbox image is not a canonical digest reference")
-    if not re.fullmatch(r"[1-9][0-9]*:[1-9][0-9]*",request.user): raise ValueError("sandbox user must be canonical numeric non-root")
+    if request.user.startswith("0:") or request.user!=f"{os.getuid()}:{os.getgid()}": raise ValueError("sandbox user must equal the exact non-root host UID:GID")
     keys=[key for key,_value in request.environment]
     if len(keys)!=len(set(keys)) or any(key not in ENV_ALLOWLIST for key in keys): raise ValueError("invalid sandbox environment key")
     if any(not value.isascii() or "\x00" in value or not value.startswith(("/tmp","/home/sandbox","/cache")) for _key,value in request.environment): raise ValueError("invalid sandbox environment value")
@@ -125,15 +129,55 @@ def _validate_request(request,retain=False):
         info=os.stat("artifact",dir_fd=lease_fd,follow_symlinks=False)
         if not stat.S_ISDIR(info.st_mode): raise ValueError("staged artifact root is not a directory")
         root_fd=os.open("artifact",os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=lease_fd)
-        observed=artifact_staging._manifest_from_fd(root_fd,"canonical")
-        if observed!=request.staged.manifest: raise ValueError("staged tree manifest is stale")
-        opened=os.fstat(root_fd); kinds=tuple(sorted(artifact_staging._filesystem_kinds_from_fd(root_fd).items()))
-        capability=StagedCapability(lease_fd,root_fd,f"/proc/{os.getpid()}/fd/{root_fd}",opened.st_dev,opened.st_ino,kinds)
+        budget=source_proof.ProofBudget(); proof=source_proof.prove_artifact(root_fd,budget)
+        if proof.manifest!=request.staged.manifest: raise ValueError("staged tree manifest is stale")
+        opened=os.fstat(root_fd); canonical=str(request.staged.root.absolute())
+        capability=StagedCapability(lease_fd,root_fd,canonical,opened.st_dev,opened.st_ino,proof.path_kinds,proof,budget)
         if retain: return capability
     finally:
         if not retain or 'capability' not in locals():
             if root_fd is not None: os.close(root_fd)
             os.close(lease_fd)
+
+def _barrier(kind,stage,path):
+    callback=_TEST_BARRIERS.get((kind,stage))
+    if callback is not None: callback(Path(path))
+
+def _reprove_artifact(capability):
+    descriptor=source_proof.open_canonical_directory(Path(capability.source))
+    try: observed=source_proof.prove_artifact(descriptor,capability.budget)
+    finally: os.close(descriptor)
+    if observed!=capability.proof or (os.fstat(capability.root_fd).st_dev,os.fstat(capability.root_fd).st_ino)!=(capability.device,capability.inode): raise RuntimeError("canonical staged artifact proof drift")
+    return observed
+
+def _reprove_proxy(capability):
+    descriptor=source_proof.open_canonical_file(Path(capability.source))
+    try: observed=source_proof.prove_proxy(descriptor,capability.budget)
+    finally: os.close(descriptor)
+    held=os.fstat(capability.file_fd)
+    if observed!=capability.proof or (held.st_dev,held.st_ino)!=(capability.proof.root.device,capability.proof.root.inode): raise RuntimeError("canonical proxy source proof drift")
+    return observed
+
+def _configured_mount_gate(name,request,source,destination):
+    result=_run(["docker","inspect",name],request,30)
+    if result["returncode"]: raise RuntimeError(f"pre-start container inspection failed: {result['stderr'][:4096]}")
+    data=json.loads(result["stdout"])[0]; mounts=data["HostConfig"].get("Mounts",[])
+    if len(mounts)!=1: raise RuntimeError("pre-start bind inventory drift")
+    mount=mounts[0]; options=mount.get("BindOptions") or {}
+    if mount.get("Type")!="bind" or mount.get("Source")!=source or mount.get("Target")!=destination or mount.get("ReadOnly") is not True or options.get("Propagation")!="rprivate": raise RuntimeError("pre-start canonical bind drift")
+
+def _configured_proxy_mount_gate(context):
+    result=_control_run(["docker","inspect",context.proxy],30)
+    if result["returncode"]: raise RuntimeError(f"pre-start proxy inspection failed: {result['stderr'][:4096]}")
+    data=json.loads(result["stdout"])[0]; python_preflight.assert_image_environment(data["Config"].get("Env"))
+    mounts=data["HostConfig"].get("Mounts",[])
+    if len(mounts)!=1: raise RuntimeError("pre-start proxy bind inventory drift")
+    mount=mounts[0]; options=mount.get("BindOptions") or {}
+    if mount.get("Type")!="bind" or mount.get("Source")!=context.proxy_code.source or mount.get("Target")!="/proxy.py" or mount.get("ReadOnly") is not True or options.get("Propagation")!="rprivate": raise RuntimeError("pre-start canonical proxy bind drift")
+
+def _live_input_identity(name,request,capability,deadline=None):
+    observed=_run(["docker","exec",name,"stat","-c","%d:%i","/input"],request,30 if deadline is None else min(30,_remaining(deadline)))
+    if observed["returncode"] or observed["stdout"].strip()!=f"{capability.device}:{capability.inode}": raise RuntimeError("live input identity drift")
 
 def _create_command(request,name,capability=None,network=None,ip=None):
     work=f"/workspace:size={request.workspace_bytes},nr_inodes={request.workspace_inodes},mode=0700,uid={request.user.split(':')[0]},gid={request.user.split(':')[1]},exec,nosuid,nodev"
@@ -157,11 +201,12 @@ def _memory_bytes(value):
     units={"b":1,"k":1024,"m":1024**2,"g":1024**3}; suffix=value[-1].lower()
     return int(value[:-1])*units[suffix] if suffix in units else int(value)
 
-def _inspect_boundary(name,request,capability=None,context=None):
-    result=_run(["docker","inspect",name],request,30)
+def _inspect_boundary(name,request,capability=None,context=None,deadline=None):
+    timeout=lambda value:value if deadline is None else min(value,_remaining(deadline))
+    result=_run(["docker","inspect",name],request,timeout(30))
     if result["returncode"]: raise RuntimeError("container inspection failed")
     data=json.loads(result["stdout"])[0]; host=data["HostConfig"]
-    expected_image=_run(["docker","image","inspect",request.image,"--format","{{.Id}}"],request,30)
+    expected_image=_run(["docker","image","inspect",request.image,"--format","{{.Id}}"],request,timeout(30))
     if expected_image["returncode"] or data["Image"]!=expected_image["stdout"].strip() or data["Config"]["User"]!=request.user: raise RuntimeError("container image or user drift")
     if data["Config"].get("Entrypoint")!=["sleep"] or data["Config"].get("Cmd")!=["infinity"]: raise RuntimeError("container startup command drift")
     dangerous={"LD_PRELOAD","LD_LIBRARY_PATH","NODE_OPTIONS","PHP_INI_SCAN_DIR"}
@@ -180,7 +225,7 @@ def _inspect_boundary(name,request,capability=None,context=None):
     expected_source=capability.source if capability else str(request.staged.root)
     if len(mounts)!=1 or mounts[0]["Type"]!="bind" or mounts[0]["Destination"]!="/input" or mounts[0]["RW"] or mounts[0].get("Propagation")!="rprivate" or mounts[0]["Source"]!=expected_source: raise RuntimeError("input bind drift")
     if capability:
-        observed=_run(["docker","exec",name,"stat","-c","%d:%i","/input"],request,30)
+        observed=_run(["docker","exec",name,"stat","-c","%d:%i","/input"],request,timeout(30))
         if observed["returncode"] or observed["stdout"].strip()!=f"{capability.device}:{capability.inode}": raise RuntimeError("input descriptor identity drift")
     expected={"/workspace","/tmp","/home/sandbox","/cache"}
     if set(host.get("Tmpfs",{}))!=expected: raise RuntimeError("tmpfs inventory drift")
@@ -194,16 +239,24 @@ def _inspect_boundary(name,request,capability=None,context=None):
         if set(networks)!={context.internal} or networks[context.internal]["IPAddress"]!=context.package_ip: raise RuntimeError("package acquisition endpoint drift")
     elif networks: raise RuntimeError("network-none container has a live endpoint")
 
-def _prepare(name,request,capability):
+def _remaining(deadline):
+    remaining=deadline-time.monotonic()
+    if remaining<=0: raise TimeoutError("preparation deadline exceeded")
+    return min(120,remaining)
+
+def _prepare(name,request,capability,exclude_dependencies=False,deadline=None):
+    deadline=deadline or time.monotonic()+120
+    _live_input_identity(name,request,capability,deadline)
     copy="cp -R /input/. /workspace/; test -w /workspace; test ! -w /input; test ! -w /; df -Pk /workspace | tail -1; df -Pi /workspace | tail -1"
-    result=_run(["docker","exec",name,"sh","-eu","-c",copy],request,60)
+    result=_run(["docker","exec",name,"sh","-eu","-c",copy],request,_remaining(deadline))
     if result["returncode"]: raise RuntimeError("workspace copy or quota probe failed")
     fields=[line.split() for line in result["stdout"].splitlines() if line.strip()]
     if len(fields)!=2 or any(len(line)<3 for line in fields): raise RuntimeError("workspace quota probe missing")
     blocks,inodes=int(fields[0][1]),int(fields[1][1])
     if blocks>(request.workspace_bytes+1023)//1024+1 or inodes>request.workspace_inodes+max(16,request.workspace_inodes//100): raise RuntimeError("workspace quota exceeds request")
-    proof=_verify_copy(name,request)
+    proof=_verify_copy(name,request,exclude_dependencies,deadline)
     if proof.manifest!=request.staged.manifest or proof.path_kinds!=capability.path_kinds: raise RuntimeError("workspace copy manifest or graph mismatch")
+    _reprove_artifact(capability); _live_input_identity(name,request,capability,deadline)
 
 def _execute(name,request):
     command=["docker","exec","--workdir","/workspace"]
@@ -212,126 +265,13 @@ def _execute(name,request):
     environment.extend(f"{key}={value}" for key,value in request.environment)
     command.extend(("--",name,*environment,*request.argv)); return _run_capped_process(command,request)
 
-def _run_capped_process(command,request):
-    execution_deadline=time.monotonic()+request.timeout; final_deadline=execution_deadline+5
-    process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,env={"PATH":"/usr/bin:/bin"})
-    events=queue.Queue(maxsize=32); buffers={"stdout":bytearray(),"stderr":bytearray()}; limits={"stdout":request.stdout_limit,"stderr":request.stderr_limit}; stop=threading.Event()
-    def drain(name,stream):
-        while not stop.is_set() and (chunk:=stream.read(8192)):
-            if len(buffers[name])+len(chunk)>limits[name]: events.put((name,"overflow")); return
-            buffers[name].extend(chunk)
-        events.put((name,"closed"))
-    threads=[threading.Thread(target=drain,args=item,daemon=True) for item in (("stdout",process.stdout),("stderr",process.stderr))]
-    for thread in threads: thread.start()
-    closed=set()
-    try:
-        while len(closed)<2:
-            remaining=execution_deadline-time.monotonic()
-            if remaining<=0: raise TimeoutError("generated command timed out")
-            name,event=events.get(timeout=remaining)
-            if event=="overflow": raise RuntimeError(f"generated {name} exceeded output limit")
-            closed.add(name)
-    except (queue.Empty,TimeoutError,RuntimeError) as exc:
-        _terminate_process(process,final_deadline)
-        if isinstance(exc,queue.Empty): raise TimeoutError("generated command timed out") from exc
-        raise
-    finally:
-        stop.set()
-        for thread in threads: _join_thread(thread,final_deadline,"generated output drain")
-        for stream in (process.stdout,process.stderr): stream.close()
-    try: process.wait(timeout=max(0.001,execution_deadline-time.monotonic()))
-    except subprocess.TimeoutExpired as exc: _terminate_process(process,final_deadline); raise TimeoutError("generated command timed out during reap") from exc
-    return {"returncode":process.returncode,"stdout":bytes(buffers["stdout"]).decode("utf-8","replace"),"stderr":bytes(buffers["stderr"]).decode("utf-8","replace")}
-
-def _join_thread(thread,deadline,label):
-    thread.join(max(0,deadline-time.monotonic()))
-    if thread.is_alive(): raise RuntimeError(f"{label} did not terminate")
-
-def _kill_process(process):
-    if process.poll() is None:
-        try: os.killpg(process.pid,9)
-        except OSError:
-            try: process.kill()
-            except OSError: pass
-
-def _terminate_process(process,deadline=None):
-    deadline=deadline or time.monotonic()+5; _kill_process(process)
-    try: process.wait(timeout=max(0.001,deadline-time.monotonic()))
-    except subprocess.TimeoutExpired as exc:
-        try: process.kill()
-        except OSError: pass
-        try: process.wait(timeout=max(0.001,deadline-time.monotonic()))
-        except subprocess.TimeoutExpired as final: raise RuntimeError("killed process survived reap deadline") from final
-
-def _import_output(name,request,exclude_dependencies=False):
-    if exclude_dependencies: _dependency_root_gate(name,request)
-    execution_deadline=time.monotonic()+request.timeout; final_deadline=execution_deadline+5
-    command=_tar_command(name,exclude_dependencies)
-    process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,env={"PATH":"/usr/bin:/bin"})
-    stderr=bytearray(); overflow=[]; timed_out=[]
-    def drain():
-        while chunk:=process.stderr.read(8192):
-            if len(stderr)+len(chunk)>request.stderr_limit:
-                overflow.append(True); _kill_process(process); return
-            stderr.extend(chunk)
-    thread=threading.Thread(target=drain,daemon=True); thread.start()
-    def expire():
-        timed_out.append(True); _kill_process(process)
-    watchdog=threading.Timer(request.timeout,expire); watchdog.start(); output=None
-    try:
-        bounded_stdout=artifact_staging.BoundedArchiveReader(process.stdout,artifact_staging.MAX_ARCHIVE_STREAM_BYTES)
-        output=artifact_staging.import_tar_stream(bounded_stdout,request.result_parent,dependency_policy="strict")
-        try: process.wait(timeout=max(0.001,execution_deadline-time.monotonic()))
-        except subprocess.TimeoutExpired: timed_out.append(True); _terminate_process(process,final_deadline)
-        _join_thread(thread,final_deadline,"output stderr drain")
-        if timed_out or overflow or process.returncode: raise RuntimeError("output archive transport failed")
-    except Exception:
-        try: _terminate_process(process,final_deadline)
-        finally:
-            try: _join_thread(thread,final_deadline,"output stderr drain")
-            finally:
-                if output is not None: workspace_lease.cleanup(output.lease)
-        raise
-    finally:
-        watchdog.cancel(); _join_thread(watchdog,final_deadline,"output watchdog")
-        process.stdout.close(); process.stderr.close()
-    return output
-
-def _tar_command(name,exclude_dependencies=False):
-    command=["docker","exec",name,"tar","-C","/workspace"]
-    if exclude_dependencies:
-        for root in ("node_modules","vendor","sandbox-cache"): command.append(f"--exclude=./{root}")
-    return command+["-cf","-","."]
-
-def _verify_copy(name,request,exclude_dependencies=False):
-    if exclude_dependencies: _dependency_root_gate(name,request)
-    execution_deadline=time.monotonic()+request.timeout; final_deadline=execution_deadline+5
-    command=_tar_command(name,exclude_dependencies)
-    process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,env={"PATH":"/usr/bin:/bin"})
-    stderr=bytearray(); overflow=[]; timed_out=[]
-    def drain():
-        while chunk:=process.stderr.read(8192):
-            if len(stderr)+len(chunk)>request.stderr_limit:
-                overflow.append(True); _kill_process(process); return
-            stderr.extend(chunk)
-    thread=threading.Thread(target=drain,daemon=True); thread.start()
-    def expire():
-        timed_out.append(True); _kill_process(process)
-    watchdog=threading.Timer(request.timeout,expire); watchdog.start()
-    try:
-        proof=artifact_staging.verify_tar_stream_manifest(process.stdout)
-        try: process.wait(timeout=max(0.001,execution_deadline-time.monotonic()))
-        except subprocess.TimeoutExpired: timed_out.append(True); _terminate_process(process,final_deadline)
-        _join_thread(thread,final_deadline,"workspace proof stderr drain")
-        if timed_out or overflow or process.returncode: raise RuntimeError("workspace proof transport failed")
-        return proof
-    except Exception:
-        try: _terminate_process(process,final_deadline)
-        finally: _join_thread(thread,final_deadline,"workspace proof stderr drain")
-        raise
-    finally:
-        watchdog.cancel(); _join_thread(watchdog,final_deadline,"workspace proof watchdog")
-        process.stdout.close(); process.stderr.close()
+_run_capped_process=process_transport.run_capped_process
+_join_thread=process_transport.join_thread
+_kill_process=process_transport.kill_process
+_terminate_process=process_transport.terminate_process
+def _import_output(name,request,exclude_dependencies=False): return process_transport.import_output(name,request,_run,exclude_dependencies)
+def _tar_command(name,exclude_dependencies=False): return process_transport.tar_command(name,exclude_dependencies)
+def _verify_copy(name,request,exclude_dependencies=False,deadline=None): return process_transport.verify_copy(name,request,_run,exclude_dependencies,deadline)
 
 def _read_staged_bytes(request,root_fd,relative):
     parts=Path(relative).parts; fd=root_fd; opened=[]
@@ -383,7 +323,7 @@ def _memory_admission(request):
     if available is None or available<required: raise RuntimeError("host memory admission gate failed")
     return available
 
-def _stage_proxy_code(run_token=None):
+def _stage_proxy_code(run_token=None,budget=None):
     source=Path(dependency_egress_proxy.__file__).resolve(); before=source.stat()
     if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_size>1024*1024: raise RuntimeError("proxy source is not a bounded single-link file")
     descriptor=os.open(source,os.O_RDONLY|os.O_NOFOLLOW); lease=None; lease_fd=None; file_fd=None
@@ -395,16 +335,16 @@ def _stage_proxy_code(run_token=None):
         else:
             if not re.fullmatch(r"[0-9a-f]{16}",run_token): raise ValueError("invalid acquisition run token")
             lease=workspace_lease.create_named(Path(__import__("tempfile").gettempdir()),f"wp-meta-skills-artifact-execution-{run_token}",workspace_lease.WorkspacePurpose.ARTIFACT_EXECUTION)
-        target=lease.root/"proxy.py"; out=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+        lease_fd=artifact_staging._verified_lease_fd(lease)
+        target=lease.root/"proxy.py"; out=workspace_lease.create_secure_file(lease_fd,"proxy.py",0o400)
         try:
-            written=0
-            while written<len(data): written+=os.write(out,data[written:])
+            workspace_lease._write_all(out,data)
             os.fsync(out)
         finally: os.close(out)
-        lease_fd=artifact_staging._verified_lease_fd(lease); file_fd=os.open("proxy.py",os.O_RDONLY|os.O_NOFOLLOW,dir_fd=lease_fd)
-        staged=os.fstat(file_fd); staged_bytes=os.read(file_fd,staged.st_size+1); os.lseek(file_fd,0,os.SEEK_SET)
-        if not stat.S_ISREG(staged.st_mode) or staged.st_nlink!=1 or stat.S_IMODE(staged.st_mode)!=0o400 or hashlib.sha256(staged_bytes).hexdigest()!=digest: raise RuntimeError("staged proxy identity or digest mismatch")
-        return ProxyCapability(lease,lease_fd,file_fd,f"/proc/{os.getpid()}/fd/{file_fd}",digest)
+        file_fd=os.open("proxy.py",os.O_RDONLY|os.O_NOFOLLOW,dir_fd=lease_fd)
+        proof_budget=budget or source_proof.ProofBudget(); proof=source_proof.prove_proxy(file_fd,proof_budget)
+        if proof.sha256!=digest: raise RuntimeError("staged proxy identity or digest mismatch")
+        return ProxyCapability(lease,lease_fd,file_fd,str(target.absolute()),digest,proof,proof_budget)
     except Exception:
         if file_fd is not None: os.close(file_fd)
         if lease_fd is not None: os.close(lease_fd)
@@ -423,10 +363,10 @@ def _release_proxy_code(capability):
         except Exception as exc: failure=exc
     raise RuntimeError(f"proxy code lease cleanup failed: {failure}")
 
-def _create_acquisition_context(request,server_arch,ledger=None,run_token=None):
+def _create_acquisition_context(request,server_arch,ledger=None,run_token=None,proof_budget=None):
     ledger=ledger if ledger is not None else ResourceLedger()
     token=run_token or uuid.uuid4().hex[:16]
-    memory_available=_memory_admission(request); code=_stage_proxy_code(token)
+    memory_available=_memory_admission(request); code=_stage_proxy_code(token,proof_budget)
     ledger.record("lease",str(code.lease.root),"created")
     internal=f"wp-acquire-internal-{token}"; egress=f"wp-acquire-egress-{token}"; proxy=f"wp-acquire-proxy-{token}"
     image=_proxy_image(server_arch)
@@ -434,12 +374,14 @@ def _create_acquisition_context(request,server_arch,ledger=None,run_token=None):
     try:
         internal_spec=sandbox_network_policy.specification(token,"internal")
         command=sandbox_network_policy.create_command(internal,internal_spec,internal=True,label=f"wp-meta-run={token}")
+        ledger.record("network",internal,"attempted")
         result=_control_run(command,60)
         if result["returncode"]: raise RuntimeError(f"internal network creation failed: {sandbox_network_policy.bounded_docker_error(result)}")
         ledger.record("network",internal,"created"); gateway,package_ip,proxy_ip=sandbox_network_policy.inspect(_control_run,internal,internal_spec,internal=True).addresses
         context=replace(context,gateway_ip=gateway,package_ip=package_ip,proxy_ip=proxy_ip)
         egress_spec=sandbox_network_policy.specification(token,"egress")
         command=sandbox_network_policy.create_command(egress,egress_spec,internal=False,label=f"wp-meta-run={token}")
+        ledger.record("network",egress,"attempted")
         result=_control_run(command,60)
         if result["returncode"]: raise RuntimeError(f"egress network creation failed: {sandbox_network_policy.bounded_docker_error(result)}")
         ledger.record("network",egress,"created"); sandbox_network_policy.inspect(_control_run,egress,egress_spec,internal=False)
@@ -452,17 +394,25 @@ def _create_acquisition_context(request,server_arch,ledger=None,run_token=None):
 def _proxy_create_command(context,hosts,request):
     uid,gid=request.user.split(":")
     temporary=f"/tmp:size=16777216,nr_inodes=1024,mode=0700,uid={uid},gid={gid},noexec,nosuid,nodev"
-    command=["docker","create","--pull=never","--name",context.proxy,"--network",context.internal,"--ip",context.proxy_ip,"--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--user",request.user,"--pids-limit","64","--memory",str(PROXY_MEMORY_BYTES),"--memory-swap",str(PROXY_MEMORY_BYTES),"--cpus","1","--ulimit","nofile=1024:1024","--log-driver","none","--tmpfs",temporary,"--mount",f"type=bind,src={context.proxy_code.source},dst=/proxy.py,readonly","--entrypoint","python",context.proxy_image,"-B","/proxy.py","--listen",context.proxy_ip,"--peer",context.package_ip,"--hosts",",".join(sorted(hosts)),"--status","/tmp/status.json","--nonce",context.nonce]
+    command=["docker","create","--pull=never","--name",context.proxy,"--network",context.internal,"--ip",context.proxy_ip,"--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--user",request.user,"--pids-limit","64","--memory",str(PROXY_MEMORY_BYTES),"--memory-swap",str(PROXY_MEMORY_BYTES),"--cpus","1","--ulimit","nofile=1024:1024","--log-driver","none","--tmpfs",temporary,"--mount",f"type=bind,src={context.proxy_code.source},dst=/proxy.py,readonly","--entrypoint","sleep",context.proxy_image,"infinity"]
     return command
 
-def _wait_proxy(name,kind,proxy_ip,request):
+def _proxy_argv(context,hosts):
+    return ("/usr/bin/env","-i","/usr/local/bin/python","-I","-S","-B","/proxy.py","--listen",context.proxy_ip,"--peer",context.package_ip,"--hosts",",".join(sorted(hosts)),"--status","/tmp/status.json","--pid-file","/tmp/proxy.pid.json","--nonce",context.nonce)
+
+def _phase_timeout(deadline, limit):
+    remaining=deadline-time.monotonic()
+    if remaining<=0: raise TimeoutError("proxy lifecycle deadline exceeded")
+    return min(limit,remaining)
+
+def _wait_proxy(name,kind,proxy_ip,request,deadline):
     if kind=="npm":
         script=f"const n=require('net');let i=0;function t(){{const s=n.connect(8080,'{proxy_ip}',()=>{{s.destroy();process.exit(0)}});s.on('error',()=>{{if(++i>40)process.exit(1);setTimeout(t,250)}})}}t()"
         command=["docker","exec",name,"node","-e",script]
     else:
         script=f"$i=0; do {{ $s=@fsockopen('{proxy_ip}',8080); if($s){{fclose($s);exit(0);}} usleep(250000); }} while(++$i<40); exit(1);"
         command=["docker","exec",name,"php","-r",script]
-    result=_control_run(command,15)
+    result=_control_run(command,_phase_timeout(deadline,15))
     if result["returncode"]: raise RuntimeError("dependency proxy readiness failed")
 
 def _probe_versions(name,request,profile):
@@ -489,6 +439,7 @@ def _inspect_proxy(context,name,request):
     proxy,package=json.loads(result["stdout"]); host=proxy["HostConfig"]
     image=_control_run(["docker","image","inspect",context.proxy_image,"--format","{{.Id}}"],30)
     if image["returncode"] or proxy["Image"]!=image["stdout"].strip() or proxy["Config"]["User"]!=request.user: raise RuntimeError("proxy identity drift")
+    python_preflight.assert_image_environment(proxy["Config"].get("Env"))
     if not host["ReadonlyRootfs"] or host["CapDrop"]!=["ALL"] or host["PidsLimit"]!=64 or host["Memory"]!=PROXY_MEMORY_BYTES or host["MemorySwap"]!=PROXY_MEMORY_BYTES or host["NanoCpus"]!=1_000_000_000: raise RuntimeError("proxy resource boundary drift")
     if host["NetworkMode"]!=context.internal or host.get("RestartPolicy")!={"Name":"no","MaximumRetryCount":0} or host.get("CapAdd"): raise RuntimeError("proxy namespace or restart drift")
     if host.get("PidMode") or host.get("IpcMode") not in {"","private"} or host.get("UTSMode") or host.get("UsernsMode"): raise RuntimeError("proxy namespace sharing drift")
@@ -496,13 +447,11 @@ def _inspect_proxy(context,name,request):
     if host.get("Ulimits")!=[{"Name":"nofile","Hard":1024,"Soft":1024}] or host["LogConfig"]["Type"]!="none": raise RuntimeError("proxy process/logging drift")
     uid,gid=request.user.split(":"); temporary={"size=16777216","nr_inodes=1024","mode=0700",f"uid={uid}",f"gid={gid}","noexec","nosuid","nodev"}
     if set(host.get("Tmpfs",{}))!={"/tmp"} or set(host["Tmpfs"]["/tmp"].split(","))!=temporary: raise RuntimeError("proxy tmpfs inventory drift")
-    expected=_proxy_create_command(context,dependency_egress_proxy.ACQUISITION_PROFILES[request.acquisition].allowed_hosts,request)
-    image_index=expected.index(context.proxy_image)
-    if proxy["Config"].get("Entrypoint")!=["python"] or proxy["Config"].get("Cmd")!=expected[image_index+1:]: raise RuntimeError("proxy command drift")
+    if proxy["Config"].get("Entrypoint")!=["sleep"] or proxy["Config"].get("Cmd")!=["infinity"]: raise RuntimeError("proxy startup command drift")
     env_keys={item.split("=",1)[0].casefold() for item in proxy["Config"].get("Env",[])}
     if env_keys&{"http_proxy","https_proxy","all_proxy","no_proxy","node_extra_ca_certs","requests_ca_bundle","curl_ca_bundle","docker_config"}: raise RuntimeError("proxy inherited host credential or transport environment")
     mounts=proxy["Mounts"]
-    if len(mounts)!=1 or mounts[0]["Destination"]!="/proxy.py" or mounts[0]["RW"] or mounts[0]["Source"]!=context.proxy_code.source: raise RuntimeError("proxy code mount drift")
+    if len(mounts)!=1 or mounts[0]["Destination"]!="/proxy.py" or mounts[0]["RW"] or mounts[0].get("Propagation")!="rprivate" or mounts[0]["Source"]!=context.proxy_code.source: raise RuntimeError("proxy code mount drift")
     opened=os.fstat(context.proxy_code.file_fd)
     proof=_control_run(["docker","exec",context.proxy,"python","-c","import hashlib,os; s=os.stat('/proxy.py'); print(f'{s.st_dev}:{s.st_ino}:{s.st_mode&0o777:o}'); print(hashlib.sha256(open('/proxy.py','rb').read()).hexdigest())"],15)
     if proof["returncode"] or proof["stdout"].splitlines()!=[f"{opened.st_dev}:{opened.st_ino}:400",context.proxy_code.sha256]: raise RuntimeError("proxy descriptor identity or digest drift")
@@ -514,7 +463,9 @@ def _inspect_proxy(context,name,request):
     egress_snapshot=sandbox_network_policy.inspect(_control_run,context.egress,egress_spec,internal=False)
     if internal_snapshot.containers!={proxy["Id"],package["Id"]} or egress_snapshot.containers!={proxy["Id"]}: raise RuntimeError("network peer membership drift")
 
-def _read_proxy_status(context,request):
+def _read_proxy_status(context,request,deadline=None):
+    if context.supervisor is not None:
+        return proxy_supervisor.read_status(context.supervisor,lambda command,timeout:_control_run(command,timeout),deadline=deadline)
     uid,gid=request.user.split(":")
     metadata=_control_run(["docker","exec",context.proxy,"stat","-c","%a:%u:%g:%s","/tmp/status.json"],15)
     if metadata["returncode"]: raise RuntimeError("proxy status metadata unavailable")
@@ -526,48 +477,69 @@ def _read_proxy_status(context,request):
     if set(status)!=expected or status["nonce"]!=context.nonce or any(not isinstance(status[key],int) or status[key]<0 for key in expected-{"nonce"}): raise RuntimeError("proxy status is invalid")
     return status
 
+def _live_proxy_source_gate(context,deadline=None):
+    opened=os.fstat(context.proxy_code.file_fd)
+    timeout=15 if deadline is None else _phase_timeout(deadline,15)
+    proof=_control_run(["docker","exec",context.proxy,"python","-c","import hashlib,os; s=os.stat('/proxy.py'); print(f'{s.st_dev}:{s.st_ino}:{s.st_mode&0o777:o}'); print(hashlib.sha256(open('/proxy.py','rb').read()).hexdigest())"],timeout)
+    if proof["returncode"] or proof["stdout"].splitlines()!=[f"{opened.st_dev}:{opened.st_ino}:400",context.proxy_code.sha256]: raise RuntimeError("live proxy source identity or digest drift")
+
 def _start_proxy(context,name,request,profile):
+    _reprove_proxy(context.proxy_code); _barrier("proxy","pre_create",context.proxy_code.source)
+    context.ledger.record("container",context.proxy,"attempted")
     result=_control_run(_proxy_create_command(context,profile.allowed_hosts,request),120)
-    if result["returncode"]: raise RuntimeError("proxy creation failed")
+    if result["returncode"]: raise RuntimeError(f"proxy creation failed: {sandbox_network_policy.bounded_docker_error(result)}")
     context.ledger.record("container",context.proxy,"created")
     context.ledger.record("network",context.internal,"attached")
+    _barrier("proxy","post_create_precheck",context.proxy_code.source); _reprove_proxy(context.proxy_code)
+    _configured_proxy_mount_gate(context); _reprove_proxy(context.proxy_code); _barrier("proxy","post_final_prestart",context.proxy_code.source)
+    result=_control_run(["docker","start",context.proxy],60)
+    if result["returncode"]: raise RuntimeError(f"proxy start failed: {sandbox_network_policy.bounded_docker_error(result)}")
+    _live_proxy_source_gate(context); _reprove_proxy(context.proxy_code)
     result=_control_run(["docker","network","connect",context.egress,context.proxy],60)
     if result["returncode"]: raise RuntimeError("proxy egress attachment failed")
-    context.ledger.record("network",context.egress,"attached")
-    result=_control_run(["docker","start",context.proxy],60)
-    if result["returncode"]: raise RuntimeError("proxy start failed")
-    _inspect_proxy(context,name,request); _wait_proxy(name,profile.kind,context.proxy_ip,request)
+    context.ledger.record("network",context.egress,"attached"); _inspect_proxy(context,name,request)
+    supervisor=proxy_supervisor.launch(context.proxy,context.nonce,_proxy_argv(context,profile.allowed_hosts),request.user,lambda command,timeout:_control_run(command,timeout),request.timeout)
+    context=replace(context,supervisor=supervisor)
+    try: _wait_proxy(name,profile.kind,context.proxy_ip,request,supervisor.lifecycle_deadline)
+    except Exception as original:
+        try: proxy_supervisor.abort(supervisor,lambda command,timeout:_control_run(command,timeout))
+        except Exception as cleanup: raise RuntimeError(f"proxy readiness failed ({original}); teardown also failed ({cleanup})") from original
+        raise
+    return context
 
-def _assert_package_process(name,request):
-    result=_run(["docker","top",name,"-eo","pid,args"],request,15)
+def _assert_package_process(name,request,deadline=None):
+    timeout=15 if deadline is None else _phase_timeout(deadline,15)
+    result=_run(["docker","top",name,"-eo","pid,args"],request,timeout)
     lines=[line.split(None,1) for line in result["stdout"].splitlines()[1:] if line.strip()]
     if result["returncode"] or len(lines)!=1 or lines[0][1]!="sleep infinity": raise RuntimeError("package residual process inventory failed")
 
 def _assert_proxy_process(context,request):
-    result=_control_run(["docker","top",context.proxy,"-eo","pid,args"],15)
-    lines=[line.split(None,1) for line in result["stdout"].splitlines()[1:] if line.strip()]
-    expected=_proxy_create_command(context,dependency_egress_proxy.ACQUISITION_PROFILES[request.acquisition].allowed_hosts,request)
-    command="python "+" ".join(expected[expected.index(context.proxy_image)+1:])
-    if result["returncode"] or len(lines)!=1 or lines[0][1]!=command: raise RuntimeError("proxy process inventory failed")
+    if context.supervisor is None: raise RuntimeError("proxy supervisor is missing")
+    proxy_supervisor.process_gate(context.supervisor,lambda command,timeout:_control_run(command,timeout))
 
 def _wait_proxy_idle(context,request):
-    deadline=time.monotonic()+10
-    while time.monotonic()<deadline:
-        status=_read_proxy_status(context,request)
+    if context.supervisor is None: raise RuntimeError("proxy supervisor is missing")
+    deadline=min(time.monotonic()+10,context.supervisor.lifecycle_deadline); cadence=time.monotonic()
+    for attempt in range(100):
+        status=_read_proxy_status(context,request,deadline)
         if status["active"]==0: return status
-        time.sleep(0.1)
+        delay=min(deadline,cadence+(attempt+1)*0.1)-time.monotonic()
+        if delay>0: time.sleep(delay)
     raise RuntimeError("proxy retains active tunnels")
 
 def _stop_proxy(context,request):
     _wait_proxy_idle(context,request)
-    result=_control_run(["docker","stop","-t","12",context.proxy],30)
-    if result["returncode"]: raise RuntimeError("proxy graceful stop failed")
-    inspected=_control_run(["docker","inspect",context.proxy,"--format","{{.State.ExitCode}}"],15)
-    if inspected["returncode"] or inspected["stdout"].strip()!="0": raise RuntimeError("proxy did not exit zero")
+    if context.supervisor is None: raise RuntimeError("proxy supervisor is missing")
+    status=proxy_supervisor.stop(context.supervisor,lambda command,timeout:_control_run(command,timeout))
+    if status["active"]!=0: raise RuntimeError("proxy retained active tunnels at shutdown")
+    _live_proxy_source_gate(context); _reprove_proxy(context.proxy_code)
+    result=_control_run(["docker","stop","-t","1",context.proxy],10)
+    if result["returncode"]: raise RuntimeError("proxy sleep PID 1 stop failed")
 
-def _memory_peak(name,request,control=False):
+def _memory_peak(name,request,control=False,deadline=None):
     command=["docker","exec",name,"cat","/sys/fs/cgroup/memory.peak"]
-    result=_control_run(command,10) if control else _run(command,request,10)
+    timeout=10 if deadline is None else _phase_timeout(deadline,10)
+    result=_control_run(command,timeout) if control else _run(command,request,timeout)
     if result["returncode"] or not result["stdout"].strip().isdigit(): raise RuntimeError("container peak-memory evidence unavailable")
     return int(result["stdout"].strip())
 
@@ -595,6 +567,12 @@ def _remove_retry(command):
 
 def _cleanup_acquisition(context,name,force=False):
     failures=[]
+    if context.supervisor is not None:
+        if force: proxy_supervisor.mark_whole_container(context.supervisor)
+        try: proxy_supervisor.abort(context.supervisor,lambda command,timeout:_control_run(command,timeout))
+        except Exception as exc: failures.append((f"{context.proxy}:exec",str(exc)))
+        finally:
+            for event in context.supervisor.termination: context.ledger.record("termination",context.proxy,event)
     actions=(("container",context.proxy,["docker","rm","-f",context.proxy]),("container",name,["docker","network","disconnect"]+(["-f"] if force else [])+[context.internal,name]),("network",context.egress,["docker","network","rm",context.egress]),("network",context.internal,["docker","network","rm",context.internal]))
     for kind,resource,command in actions:
         if not context.ledger.needs_cleanup(kind,resource): continue
@@ -616,16 +594,21 @@ def _cleanup_acquisition(context,name,force=False):
         raise RuntimeError(f"acquisition cleanup retained: {retained}{suffix}")
 
 def _acquire(name,request,profile,context,capability):
-    _probe_versions(name,request,profile); sandbox_dns_guard.pre_acquisition(name,profile.kind,lambda command,timeout:_run(command,request,timeout)); _prepare_acquisition_paths(name,request,profile); _start_proxy(context,name,request,profile)
-    result=_run_capped_process(["docker","exec","--workdir","/workspace","--",name,*_acquisition_argv(profile.kind,context.proxy_ip)],request)
+    _probe_versions(name,request,profile); sandbox_dns_guard.pre_acquisition(name,profile.kind,lambda command,timeout:_run(command,request,timeout)); _prepare_acquisition_paths(name,request,profile); context=_start_proxy(context,name,request,profile)
+    deadline=context.supervisor.lifecycle_deadline
+    health=lambda:proxy_supervisor.check(context.supervisor)
+    result=_run_capped_process(["docker","exec","--workdir","/workspace","--",name,*_acquisition_argv(profile.kind,context.proxy_ip)],request,deadline=deadline,health_check=health)
     if result["returncode"]: raise RuntimeError(f"{profile.kind} acquisition failed")
-    _assert_package_process(name,request); _wait_proxy_idle(context,request); _assert_proxy_process(context,request); proof=_verify_copy(name,request,exclude_dependencies=True)
+    health(); _assert_package_process(name,request,deadline); health(); _wait_proxy_idle(context,request); _assert_proxy_process(context,request); proof=_verify_copy(name,request,exclude_dependencies=True,deadline=deadline)
     if proof.manifest!=request.staged.manifest or proof.path_kinds!=capability.path_kinds: raise RuntimeError("nondependency artifact changed during acquisition")
+    return context
 
-def _capture_identity(name,context,request,daemon_id):
-    result=_run(["docker","inspect",name,context.proxy],request,15)
+def _capture_identity(name,context,request,daemon_id,deadline=None):
+    timeout=15 if deadline is None else _phase_timeout(deadline,15)
+    result=_run(["docker","inspect",name,context.proxy],request,timeout)
     if result["returncode"]: raise RuntimeError("package identity inspection failed")
-    network=_control_run(["docker","network","inspect",context.internal,"--format","{{.Id}}"],15)
+    timeout=15 if deadline is None else _phase_timeout(deadline,15)
+    network=_control_run(["docker","network","inspect",context.internal,"--format","{{.Id}}"],timeout)
     if network["returncode"] or not re.fullmatch(r"[0-9a-f]{64}",network["stdout"].strip()): raise RuntimeError("owned network identity inspection failed")
     data,proxy=json.loads(result["stdout"])
     container_ids=(data.get("Id",""),proxy.get("Id","")); image_ids=(data.get("Image",""),proxy.get("Image",""))
@@ -704,27 +687,41 @@ def _endpointless_gate(name,request,profile,context,identity):
     _assert_package_process(name,request); _workspace_quota_gate(name,request); _detached_probe(name,request,profile,context)
     if time.monotonic()-started>30: raise RuntimeError("complete detached-state gate exceeded 30 seconds")
 
+def _create_started_container(request,name,capability,context,run_ledger):
+    _reprove_artifact(capability); _barrier("artifact","pre_create",capability.source)
+    command=_create_command(request,name,capability,context.internal if context else None,context.package_ip if context else None)
+    ledger=context.ledger if context else run_ledger
+    if ledger: ledger.record("container",name,"attempted")
+    created=_run(command,request,120)
+    if created["returncode"]: raise RuntimeError(f"container creation failed: {sandbox_network_policy.bounded_docker_error(created)}")
+    if ledger: ledger.record("container",name,"created")
+    if context: context.ledger.record("network",context.internal,"attached")
+    _barrier("artifact","post_create_precheck",capability.source); _reprove_artifact(capability)
+    _configured_mount_gate(name,request,capability.source,"/input"); _reprove_artifact(capability); _barrier("artifact","post_final_prestart",capability.source)
+    deadline=time.monotonic()+120; started=_run(["docker","start",name],request,min(60,_remaining(deadline)))
+    if started["returncode"]: raise RuntimeError(f"container start failed: {sandbox_network_policy.bounded_docker_error(started)}")
+    return deadline
+
 def _run_live(request,name,capability,profile=None,run_ledger=None):
+    run_ledger=run_ledger or ResourceLedger()
     if (preflight:=_run(["docker","info","--format","{{.Architecture}}"],request,30))["returncode"]: return _blocked(request,name,"Docker is unavailable")
     server_arch=_normalize_server_arch(preflight["stdout"]); _validate_image(request,server_arch)
     _assert_local_image(request.image)
-    if profile: _assert_local_image(_proxy_image(server_arch))
+    proxy_image_id=_assert_local_image(_proxy_image(server_arch)) if profile else None
     context=None; acquisition_ledger=run_ledger if profile else None; acquisition_clean=False; follower=None; output=None; timings={}; metrics={}; runtime_identity=None; mark=time.monotonic()
     try:
-        if profile: context=_create_acquisition_context(request,server_arch,acquisition_ledger,name.removeprefix("wp-package-")); timings["acquisition_context_setup"]=time.monotonic()-mark
-        mark=time.monotonic(); command=_create_command(request,name,capability,context.internal if context else None,context.package_ip if context else None); created=_run(command,request,120)
-        if created["returncode"]: raise RuntimeError(f"container creation failed: {sandbox_network_policy.bounded_docker_error(created)}")
-        ledger=context.ledger if context else run_ledger
-        if ledger: ledger.record("container",name,"created")
-        if context: context.ledger.record("network",context.internal,"attached")
-        started=_run(["docker","start",name],request,60)
-        if started["returncode"]: raise RuntimeError(f"container start failed: {sandbox_network_policy.bounded_docker_error(started)}")
-        _inspect_boundary(name,request,capability,context); _prepare(name,request,capability); timings["container_setup"]=time.monotonic()-mark
+        if profile:
+            python_preflight.run(_control_run,_proxy_image(server_arch),proxy_image_id,request.user,name.removeprefix("wp-package-"),run_ledger)
+            timings["proxy_interpreter_preflight"]=time.monotonic()-mark; mark=time.monotonic()
+        if profile: context=_create_acquisition_context(request,server_arch,acquisition_ledger,name.removeprefix("wp-package-"),capability.budget); timings["acquisition_context_setup"]=time.monotonic()-mark
+        mark=time.monotonic(); preparation_deadline=_create_started_container(request,name,capability,context,run_ledger)
+        _inspect_boundary(name,request,capability,context,preparation_deadline); _prepare(name,request,capability,bool(context),preparation_deadline); timings["container_setup"]=time.monotonic()-mark
         if context:
             daemon=_run(["docker","info","--format","{{.ID}}"],request,15); mark=time.monotonic()
             if daemon["returncode"]: raise RuntimeError("Docker daemon identity unavailable")
-            _acquire(name,request,profile,context,capability); timings["dependency_acquisition"]=time.monotonic()-mark
-            metrics={"mem_available":context.memory_available,"proxy_memory_peak":_memory_peak(context.proxy,request,True)}; identity=_capture_identity(name,context,request,daemon["stdout"].strip()); runtime_identity=_runtime_identity(identity,request)
+            context=_acquire(name,request,profile,context,capability); timings["dependency_acquisition"]=time.monotonic()-mark
+            lifecycle=context.supervisor.lifecycle_deadline
+            metrics={"mem_available":context.memory_available,"proxy_memory_peak":_memory_peak(context.proxy,request,True,lifecycle)}; identity=_capture_identity(name,context,request,daemon["stdout"].strip(),lifecycle); runtime_identity=_runtime_identity(identity,request)
             mark=time.monotonic(); _stop_proxy(context,request); follower=docker_event_guard.start(identity.container_id)
             pre_label=f"wp-pre-{uuid.uuid4().hex}"; post_label=f"wp-post-{uuid.uuid4().hex}"
             docker_event_guard.sentinel(follower,name,pre_label); _detach_acquisition(context,name,request); acquisition_clean=True; timings["detach"]=time.monotonic()-mark
@@ -736,6 +733,7 @@ def _run_live(request,name,capability,profile=None,run_ledger=None):
         if executed["returncode"]:
             detail=sandbox_evidence.encode("fail",timings,metrics,"generated command failed")
             return SandboxResult("fail",executed["returncode"],executed["stdout"],executed["stderr"],None,detail,name,runtime_identity)
+        _live_input_identity(name,request,capability); _reprove_artifact(capability)
         if context: metrics.update(package_memory_peak_pre_export=_memory_peak(name,request),workspace_bytes_used_pre_export=_workspace_used(name,request))
         mark=time.monotonic(); output=_import_output(name,request,bool(context)); timings["export"]=time.monotonic()-mark
         if context: metrics.update(package_memory_peak=_memory_peak(name,request),workspace_bytes_used=_workspace_used(name,request))
@@ -758,6 +756,27 @@ def _retry_container_cleanup(name):
     try: return provision.run_capped(["docker","rm","-f",name],timeout=60,limit=32768)["returncode"]==0
     except Exception: return False
 
+def _cleanup_package_result(result,name,run_ledger,run_started):
+    package_states=[item.state for item in run_ledger.events if item.kind=="container" and item.name==name]
+    if not package_states or package_states[-1]=="removed": return replace(result,detail=sandbox_evidence.finalize(result.detail,end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger)))
+    cleanup_started=time.monotonic()
+    try: cleanup=provision.run_capped(["docker","rm","-f",name],timeout=60,limit=32768)
+    except Exception as exc:
+        retained=not _retry_container_cleanup(name); run_ledger.record("container",name,"retained" if retained else "removed")
+        if result.output is not None: workspace_lease.cleanup(result.output.lease)
+        recovery=f"; retained {name}; recovery: docker rm -f {name}" if retained else "; retry completed"
+        detail=sandbox_evidence.finalize(result.detail,outcome="blocked",error=f"container cleanup raised {type(exc).__name__}{recovery}",timing={"cleanup":time.monotonic()-cleanup_started},end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger))
+        return replace(result,status="blocked",returncode=None,output=None,detail=detail)
+    if cleanup["returncode"]:
+        retained=not _retry_container_cleanup(name); run_ledger.record("container",name,"retained" if retained else "removed")
+        if result.output is not None: workspace_lease.cleanup(result.output.lease)
+        recovery=f"retained {name}; recovery: docker rm -f {name}" if retained else "retry completed"
+        detail=sandbox_evidence.finalize(result.detail,outcome="blocked",error=f"container cleanup initially failed; {recovery}",timing={"cleanup":time.monotonic()-cleanup_started},end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger))
+        return replace(result,status="blocked",returncode=None,output=None,detail=detail)
+    run_ledger.record("container",name,"removed")
+    detail=sandbox_evidence.finalize(result.detail,timing={"cleanup":time.monotonic()-cleanup_started},end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger))
+    return replace(result,detail=detail)
+
 def run_sandbox(request:SandboxRequest)->SandboxResult:
     run_started=time.monotonic(); name=f"wp-package-{uuid.uuid4().hex[:16]}"; run_ledger=ResourceLedger()
     try: capability=_validate_request(request,retain=True)
@@ -770,23 +789,10 @@ def run_sandbox(request:SandboxRequest)->SandboxResult:
     if platform.system()!="Linux":
         os.close(capability.root_fd); os.close(capability.lease_fd)
         result=_blocked(request,name,"live sandbox requires Linux Docker"); return replace(result,detail=sandbox_evidence.finalize(result.detail,end_to_end=time.monotonic()-run_started))
-    try: result=_run_live(request,name,capability,profile,run_ledger)
-    except SandboxBoundaryError as exc: result=_blocked(request,name,f"sandbox boundary failed: {exc}",exc.timings,exc.metrics)
-    except Exception as exc: result=_blocked(request,name,f"sandbox boundary failed: {type(exc).__name__}: {exc}")
-    finally: os.close(capability.root_fd); os.close(capability.lease_fd)
-    package_states=[item.state for item in run_ledger.events if item.kind=="container" and item.name==name]
-    if not package_states or package_states[-1]=="removed": return replace(result,detail=sandbox_evidence.finalize(result.detail,end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger)))
-    cleanup_started=time.monotonic()
-    try: cleanup=provision.run_capped(["docker","rm","-f",name],timeout=60,limit=32768)
-    except Exception as exc:
-        retained=not _retry_container_cleanup(name); run_ledger.record("container",name,"retained" if retained else "removed")
-        if result.output is not None: workspace_lease.cleanup(result.output.lease)
-        recovery=f"; retained {name}; recovery: docker rm -f {name}" if retained else "; retry completed"
-        detail=sandbox_evidence.finalize(result.detail,outcome="blocked",error=f"container cleanup raised {type(exc).__name__}{recovery}",timing={"cleanup":time.monotonic()-cleanup_started},end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger)); return replace(result,status="blocked",returncode=None,output=None,detail=detail)
-    if cleanup["returncode"]:
-        retained=not _retry_container_cleanup(name); run_ledger.record("container",name,"retained" if retained else "removed")
-        if result.output is not None: workspace_lease.cleanup(result.output.lease)
-        recovery=f"retained {name}; recovery: docker rm -f {name}" if retained else "retry completed"
-        detail=sandbox_evidence.finalize(result.detail,outcome="blocked",error=f"container cleanup initially failed; {recovery}",timing={"cleanup":time.monotonic()-cleanup_started},end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger)); return replace(result,status="blocked",returncode=None,output=None,detail=detail)
-    run_ledger.record("container",name,"removed")
-    detail=sandbox_evidence.finalize(result.detail,timing={"cleanup":time.monotonic()-cleanup_started},end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger)); return replace(result,detail=detail)
+    try:
+        try: result=_run_live(request,name,capability,profile,run_ledger)
+        except SandboxBoundaryError as exc: result=_blocked(request,name,f"sandbox boundary failed: {exc}",exc.timings,exc.metrics)
+        except Exception as exc: result=_blocked(request,name,f"sandbox boundary failed: {type(exc).__name__}: {exc}")
+        return _cleanup_package_result(result,name,run_ledger,run_started)
+    finally:
+        os.close(capability.root_fd); os.close(capability.lease_fd)

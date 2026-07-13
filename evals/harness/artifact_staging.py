@@ -182,8 +182,10 @@ def _filesystem_kinds_from_fd(root_fd:int)->dict[str,str]:
 def _verified_lease_fd(lease:workspace_lease.WorkspaceLease)->int:
     fd=open_directory_nofollow(lease.root)
     try:
+        root=os.fstat(fd)
+        if not stat.S_ISDIR(root.st_mode) or stat.S_IMODE(root.st_mode)!=0o700 or (root.st_uid,root.st_gid)!=(os.getuid(),os.getgid()): raise ValueError("invalid workspace lease root")
         info=os.stat(".workspace-lease",dir_fd=fd,follow_symlinks=False)
-        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode)!=0o600: raise ValueError("invalid workspace lease sentinel")
+        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode)!=0o600 or info.st_nlink!=1 or (info.st_uid,info.st_gid)!=(os.getuid(),os.getgid()): raise ValueError("invalid workspace lease sentinel")
         sentinel=os.open(".workspace-lease",os.O_RDONLY|os.O_NOFOLLOW,dir_fd=fd)
         try: payload=os.read(sentinel,256).decode()
         finally: os.close(sentinel)
@@ -198,11 +200,11 @@ def _write_snapshot(snapshot,root_fd:int):
             opened=[]
             try:
                 for part in relative.parts[:-1]:
-                    try: os.mkdir(part,0o700,dir_fd=fd)
-                    except FileExistsError: pass
-                    child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd); opened.append(child); fd=child
+                    try: child=workspace_lease.create_secure_directory(fd,part)
+                    except FileExistsError: child=workspace_lease.open_secure_directory(fd,part)
+                    opened.append(child); fd=child
                 normalized_mode=0o700 if stat.S_IMODE(info.st_mode)&0o111 else 0o600
-                out=os.open(relative.name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,normalized_mode,dir_fd=fd)
+                out=workspace_lease.create_secure_file(fd,relative.name,normalized_mode)
                 try: _write_all(out,content)
                 finally: os.close(out)
             finally:
@@ -210,8 +212,8 @@ def _write_snapshot(snapshot,root_fd:int):
     finally: pass
 
 def _create_artifact_root(lease_fd:int)->int:
-    os.mkdir("artifact",0o700,dir_fd=lease_fd)
-    return os.open("artifact",os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=lease_fd)
+    try: return workspace_lease.create_secure_directory(lease_fd,"artifact")
+    except RuntimeError as exc: raise ValueError("staged destination root changed") from exc
 
 def stage_tree(source:Path,parent:Path|None=None)->StagedTree:
     kind,snapshot=snapshot_regular_tree_with_kind(source,dependency_policy="stage")
@@ -241,9 +243,9 @@ def stage_tree(source:Path,parent:Path|None=None)->StagedTree:
 def _destination_parent(root_fd:int,parts:tuple[str,...])->tuple[int,list[int]]:
     fd=root_fd; opened=[]
     for part in parts:
-        try: os.mkdir(part,0o700,dir_fd=fd)
-        except FileExistsError: pass
-        child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd); opened.append(child); fd=child
+        try: child=workspace_lease.create_secure_directory(fd,part)
+        except FileExistsError: child=workspace_lease.open_secure_directory(fd,part)
+        opened.append(child); fd=child
     return fd,opened
 
 def _validate_archive_member(member,state:ArchiveState):
@@ -295,7 +297,7 @@ def _consume_archive_payload(archive,member,path,normalized,materialize,root_fd,
     opened=[]; out_fd=None; mode_class="executable" if member.mode&0o111 else "regular"
     if materialize:
         parent_fd,opened=_destination_parent(root_fd,path.parts[:-1])
-        out_fd=os.open(path.name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o700 if mode_class=="executable" else 0o600,dir_fd=parent_fd)
+        out_fd=workspace_lease.create_secure_file(parent_fd,path.name,0o700 if mode_class=="executable" else 0o600)
     digest=hashlib.sha256(); written=0
     try:
         while chunk:=source.read(min(65536,member.size-written+1)):
