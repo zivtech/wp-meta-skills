@@ -75,6 +75,7 @@ jobs:
             evals/harness/tests/test_sandbox_none_network.py \
             evals/harness/tests/test_docker_event_guard.py \
             evals/harness/tests/test_sandbox_resource_identity.py \
+            evals/harness/tests/test_live_fixture_support.py \
             evals/harness/tests/test_step4_evidence.py \
             evals/harness/tests/test_sandboxed_package_runner.py \
             evals/harness/tests/test_sandboxed_package_runner_canonical_bind.py \

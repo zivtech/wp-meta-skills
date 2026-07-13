@@ -1,8 +1,8 @@
 import dataclasses, inspect, io, ipaddress, json, os, platform, re, select, shutil, signal, socket, stat, subprocess, sys, threading, time
 from pathlib import Path
 import pytest
-HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
-import artifact_staging, materialize_wordpress_executor_packet as materializer, runtime_image_provision, sandbox_native_poll as native_poll, sandboxed_package_runner as runner, step4_evidence, workspace_lease
+TESTS=Path(__file__).resolve().parent; HARNESS=TESTS.parent; sys.path.insert(0,str(TESTS)); sys.path.insert(0,str(HARNESS))
+import artifact_staging, live_fixture_support, materialize_wordpress_executor_packet as materializer, runtime_image_provision, sandbox_native_poll as native_poll, sandboxed_package_runner as runner, step4_evidence, workspace_lease
 def staged(tmp_path):
     source=tmp_path/"source"; source.mkdir(); (source/"input.txt").write_text("safe")
     return artifact_staging.stage_tree(source,tmp_path/"leases")
@@ -407,43 +407,15 @@ def docker_ready():
     if platform.system()!="Linux": return False
     try: return subprocess.run(["docker","info"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30).returncode==0
     except (FileNotFoundError,subprocess.TimeoutExpired): return False
-
-def wait_container_listen(name,port_hex):
+def authenticated_docker_ledger(): ledger=runner.ResourceLedger(); ledger.daemon_id=runner.sandbox_none_network._daemon(runner._control_run,time.monotonic()+30); return ledger
+def wait_container_listen(target,port_hex,ledger):
     deadline=time.monotonic()+5
     script=f"import pathlib,sys;sys.exit(0 if any(':{port_hex}' in l and l.split()[3]=='0A' for l in pathlib.Path('/proc/net/tcp').read_text().splitlines()[1:]) else 1)"
     while time.monotonic()<deadline:
-        result=subprocess.run(["docker","exec",name,"python","-c",script],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5)
-        if not result.returncode: return
+        result=runner._bound_control(ledger,["docker","exec",target,"python","-c",script],5)
+        if not result["returncode"]: return
         time.sleep(0.05)
-    raise RuntimeError(f"{name} did not listen on {port_hex}")
-
-def cleanup_docker_fixture(containers,networks):
-    retained=[]
-    for kind,names in (("container",containers),("network",networks)):
-        for name in names:
-            command=["docker","rm","-f",name] if kind=="container" else ["docker","network","rm",name]
-            try: removed=subprocess.run(command,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=60)
-            except subprocess.TimeoutExpired: retained.append(f"{kind}:{name}:timeout"); continue
-            if removed.returncode: retained.append(f"{kind}:{name}:remove-failed")
-            inspect=["docker","inspect",name] if kind=="container" else ["docker","network","inspect",name]
-            try:
-                if subprocess.run(inspect,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30).returncode==0: retained.append(f"{kind}:{name}")
-            except subprocess.TimeoutExpired: retained.append(f"{kind}:{name}:inspect-timeout")
-    return retained
-
-
-def finish_controlled_connect_fixture(context,stopped,package,proxy_name,registry,internal,egress,code,capability,tree,payload):
-    if context is not None and context.supervisor is not None and not stopped:
-        try: runner.proxy_supervisor.abort(context.supervisor,lambda command,timeout:runner._control_run(command,timeout))
-        except Exception: pass
-    retained=cleanup_docker_fixture((package,proxy_name,registry),(internal,egress))
-    if code is not None: runner._release_proxy_code(code)
-    os.close(capability.root_fd); os.close(capability.lease_fd); workspace_lease.cleanup(tree.lease)
-    assert not retained,retained
-    if payload is not None:
-        topology=payload["topology"]
-        payload["cleanup_disposition"]={"complete":True,"retained":[],"removed":{kind:{role:{"id":item["id"],"name":item["name"]} for role,item in topology[kind].items()} for kind in ("containers","networks")}}
-        step4_evidence.write_leg("controlled_connect",payload)
+    raise RuntimeError(f"{target} did not listen on {port_hex}")
 
 def docker_request(tree,script,**changes):
     inv=runtime_image_provision.inventory()["images"]["node"]
@@ -477,18 +449,18 @@ def lifecycle_identity(req):
 def docker_cleanup_context(tmp_path):
     tree=staged(tmp_path); req=dataclasses.replace(request(tree),acquisition="block-scripts-32.4.1-smoke")
     arch=runner._normalize_server_arch(subprocess.check_output(["docker","info","--format","{{.Architecture}}"],text=True,timeout=30))
-    context=runner._create_acquisition_context(req,arch); name="wp-cleanup-test-"+__import__("uuid").uuid4().hex[:10]
-    command=["docker","create","--pull=never","--name",name,"--network",context.internal,"--ip",context.package_ip,"--dns","127.0.0.1","--entrypoint","sleep",req.image,"infinity"]
-    assert subprocess.run(command,stdout=subprocess.DEVNULL,timeout=120).returncode==0
+    context=runner._create_acquisition_context(req,arch,authenticated_docker_ledger()); name="wp-cleanup-test-"+__import__("uuid").uuid4().hex[:10]
+    command=["docker","create","--pull=never","--name",name,"--network",context.ledger.target(context.internal),"--ip",context.package_ip,"--dns","127.0.0.1","--entrypoint","sleep",req.image,"infinity"]
+    package_id=subprocess.check_output(command,text=True,timeout=120).strip(); assert re.fullmatch(r"[0-9a-f]{64}",package_id); context.ledger.bind(name,package_id)
     context.ledger.record("container",name,"created"); context.ledger.record("network",context.internal,"attached")
-    assert runner._run(runner._proxy_create_command(context,{"registry.npmjs.org"},req),req,120)["returncode"]==0
+    created=runner._run(runner._proxy_create_command(context,{"registry.npmjs.org"},req),req,120); assert created["returncode"]==0; context.ledger.bind(context.proxy,created["stdout"].strip())
     context.ledger.record("container",context.proxy,"created"); context.ledger.record("network",context.internal,"attached")
-    assert runner._run(["docker","network","connect",context.egress,context.proxy],req,60)["returncode"]==0
+    assert runner._run(["docker","network","connect",context.ledger.target(context.egress),context.ledger.target(context.proxy)],req,60)["returncode"]==0
     context.ledger.record("network",context.egress,"attached")
     return tree,req,context,name
 
 def cleanup_docker_context(tree,context,name):
-    for command in (["docker","rm","-f",context.proxy],["docker","rm","-f",name],["docker","network","rm",context.egress],["docker","network","rm",context.internal]):
+    for command in (["docker","rm","-f",context.ledger.target(context.proxy)],["docker","rm","-f",context.ledger.target(name)],["docker","network","rm",context.ledger.target(context.egress)],["docker","network","rm",context.ledger.target(context.internal)]):
         subprocess.run(command,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=60)
     if context.ledger.needs_cleanup("lease",str(context.proxy_code.lease.root)):
         runner._release_proxy_code(context.proxy_code)
@@ -650,23 +622,29 @@ def test_docker_continuous_event_guard_rejects_post_detach_mutation(tmp_path,mut
 def test_docker_production_proxy_connect_canary_uses_only_fake_public_egress_endpoint(tmp_path):
     tree=staged(tmp_path); req=request(tree); capability=runner._validate_request(req,retain=True); token=__import__("uuid").uuid4().hex[:12]
     internal=f"wp-fake-internal-{token}"; egress=f"wp-fake-egress-{token}"; package=f"wp-package-fake-{token}"; proxy_name=f"wp-proxy-fake-{token}"; registry=f"wp-registry-fake-{token}"; code=None; controlled_payload=None; context=None; stopped=False
-    arch=runner._normalize_server_arch(subprocess.check_output(["docker","info","--format","{{.Architecture}}"],text=True,timeout=30)); python_image=runner._proxy_image(arch)
+    ledger=authenticated_docker_ledger(); bound=lambda command,timeout:runner._bound_control(ledger,command,timeout); daemon=live_fixture_support.run(ledger,["docker","info","--format","{{.Architecture}}"],30,"Docker architecture fixture lookup failed")
+    arch=runner._normalize_server_arch(daemon["stdout"]); python_image=runner._proxy_image(arch)
     try:
-        spec=runner.sandbox_network_policy.specification(token,"fixture"); subprocess.run(runner.sandbox_network_policy.create_command(internal,spec,internal=True),check=True,stdout=subprocess.DEVNULL,timeout=60)
+        spec=runner.sandbox_network_policy.specification(token,"fixture"); internal_id=live_fixture_support.create(ledger,"network",internal,runner.sandbox_network_policy.create_command(internal,spec,internal=True),60)
         # Exact globally classified subnet is a controlled-CONNECT canary only; production allocation never uses it.
-        subprocess.run(["docker","network","create","--subnet",step4_evidence.FAKE_PUBLIC_SUBNET,"--gateway",step4_evidence.FAKE_PUBLIC_GATEWAY,egress],check=True,stdout=subprocess.DEVNULL,timeout=60)
-        gateway,package_ip,proxy_ip=runner.sandbox_network_policy.inspect(runner._control_run,internal,spec,internal=True).addresses; code=runner._stage_proxy_code()
-        run_nonce=f"wp-status-{__import__('uuid').uuid4().hex}"; context=runner.AcquisitionContext(internal,egress,proxy_name,run_nonce,package_ip,proxy_ip,gateway,python_image,code,8*1024**3,runner.ResourceLedger())
-        subprocess.run(runner._create_command(req,package,capability,internal,package_ip),check=True,stdout=subprocess.DEVNULL,timeout=120)
+        egress_id=live_fixture_support.create(ledger,"network",egress,["docker","network","create","--subnet",step4_evidence.FAKE_PUBLIC_SUBNET,"--gateway",step4_evidence.FAKE_PUBLIC_GATEWAY,egress],60)
+        gateway,package_ip,proxy_ip=runner.sandbox_network_policy.inspect(bound,internal,spec,internal=True,target=internal_id).addresses; code=runner._stage_proxy_code()
+        run_nonce=f"wp-status-{__import__('uuid').uuid4().hex}"; context=runner.AcquisitionContext(internal,egress,proxy_name,run_nonce,package_ip,proxy_ip,gateway,python_image,code,8*1024**3,ledger)
+        package_id=live_fixture_support.create(ledger,"container",package,runner._create_command(req,package,capability,internal_id,package_ip)); ledger.record("network",internal,"attached")
         relay_nonce=f"wp-{token}"; server=f"import socket;s=socket.create_server(('0.0.0.0',443));c,_=s.accept();d=c.recv(64);c.sendall(d if d==b'{relay_nonce}' else b'bad');c.close()"
-        registry_command=["docker","create","--pull=never","--name",registry,"--network",egress,"--ip",step4_evidence.FAKE_REGISTRY_IP,"--network-alias","registry.npmjs.org","--entrypoint","python",python_image,"-c",server]
-        subprocess.run(registry_command,check=True,stdout=subprocess.DEVNULL,timeout=120); subprocess.run(runner._proxy_create_command(context,{"registry.npmjs.org"},req),check=True,stdout=subprocess.DEVNULL,timeout=120)
-        subprocess.run(["docker","network","connect",egress,proxy_name],check=True,timeout=60); subprocess.run(["docker","start",registry,proxy_name,package],check=True,stdout=subprocess.DEVNULL,timeout=60)
-        supervised=runner.proxy_supervisor.launch(proxy_name,context.nonce,runner._proxy_argv(context,{"registry.npmjs.org"}),req.user,lambda command,timeout:runner._control_run(command,timeout),req.timeout)
-        context=dataclasses.replace(context,supervisor=supervised)
-        wait_container_listen(registry,"01BB"); wait_container_listen(proxy_name,"1F90")
-        proxy_data,package_data,registry_data=json.loads(subprocess.check_output(["docker","inspect",proxy_name,package,registry],text=True,timeout=30))
-        internal_data,egress_data=json.loads(subprocess.check_output(["docker","network","inspect",internal,egress],text=True,timeout=30))
+        registry_command=["docker","create","--pull=never","--name",registry,"--network",egress_id,"--ip",step4_evidence.FAKE_REGISTRY_IP,"--network-alias","registry.npmjs.org","--entrypoint","python",python_image,"-c",server]
+        registry_id=live_fixture_support.create(ledger,"container",registry,registry_command); ledger.record("network",egress,"attached")
+        proxy_id=live_fixture_support.create(ledger,"container",proxy_name,runner._proxy_create_command(context,{"registry.npmjs.org"},req)); ledger.record("network",internal,"attached")
+        live_fixture_support.run(ledger,["docker","network","connect",egress_id,proxy_id],60,"controlled proxy egress attachment failed"); ledger.record("network",egress,"attached")
+        live_fixture_support.run(ledger,["docker","start",registry_id,proxy_id,package_id],60,"controlled fixture start failed")
+        fixture_deadline=time.monotonic()+req.timeout+30; gate=lambda:runner.daemon_control.require(ledger,runner._control_run,fixture_deadline)
+        control=lambda command,timeout:runner._bound_control(ledger,command,timeout,fixture_deadline)
+        supervised=runner.proxy_supervisor.launch(proxy_id,context.nonce,runner._proxy_argv(context,{"registry.npmjs.org"}),req.user,control,req.timeout,gate)
+        context=dataclasses.replace(context,supervisor=supervised,proxy_target=proxy_id)
+        wait_container_listen(registry_id,"01BB",ledger); wait_container_listen(proxy_id,"1F90",ledger)
+        containers=live_fixture_support.run(ledger,["docker","inspect",proxy_id,package_id,registry_id],30,"controlled container inspection failed")
+        networks=live_fixture_support.run(ledger,["docker","network","inspect",internal_id,egress_id],30,"controlled network inspection failed")
+        proxy_data,package_data,registry_data=json.loads(containers["stdout"]); internal_data,egress_data=json.loads(networks["stdout"])
         assert all(re.fullmatch(r"[0-9a-f]{64}",item["Id"]) for item in (proxy_data,package_data,registry_data,internal_data,egress_data))
         assert (internal_data["Name"],egress_data["Name"])==(internal,egress)
         assert package_data["NetworkSettings"]["Networks"][internal]["IPAddress"]==package_ip
@@ -678,9 +656,9 @@ def test_docker_production_proxy_connect_canary_uses_only_fake_public_egress_end
         assert internal_data["Containers"][package_data["Id"]]["IPv4Address"].split("/")[0]==package_ip and internal_data["Containers"][proxy_data["Id"]]["IPv4Address"].split("/")[0]==proxy_ip
         assert egress_data["Containers"][proxy_data["Id"]]["IPv4Address"].split("/")[0]==proxy_egress_ip and egress_data["Containers"][registry_data["Id"]]["IPv4Address"].split("/")[0]==step4_evidence.FAKE_REGISTRY_IP
         direct=f"const n=require('net'),s=n.connect(443,'{step4_evidence.FAKE_REGISTRY_IP}',()=>process.exit(1));s.on('error',()=>process.exit(0));s.setTimeout(800,()=>{{s.destroy();process.exit(0)}})"
-        assert subprocess.run(["docker","exec",package,"timeout","2","node","-e",direct],timeout=5).returncode==0
+        assert bound(["docker","exec",package_id,"timeout","2","node","-e",direct],5)["returncode"]==0
         connect=f"const n=require('net'),s=n.connect(8080,'{proxy_ip}');let b='',up=false;s.on('connect',()=>s.write('CONNECT registry.npmjs.org:443 HTTP/1.1\\r\\nHost: registry.npmjs.org:443\\r\\n\\r\\n'));s.on('data',d=>{{b+=d;if(Buffer.byteLength(b)>4096)process.exit(5);if(!up&&b.includes('\\r\\n\\r\\n')){{if(!b.startsWith('HTTP/1.1 200'))process.exit(2);up=true;b='';s.write('{relay_nonce}')}}else if(up&&b.includes('{relay_nonce}'))process.exit(0)}});s.on('error',()=>process.exit(3));setTimeout(()=>process.exit(4),3000)"
-        assert subprocess.run(["docker","exec",package,"timeout","4","node","-e",connect],timeout=8).returncode==0
+        assert bound(["docker","exec",package_id,"timeout","4","node","-e",connect],8)["returncode"]==0
         status=runner._wait_proxy_idle(context,req)
         assert status["nonce"]==context.nonce and status["accepted"]==status["completed"]==1 and status["active"]==status["rejected"]==0
         assert status["client_bytes"]==status["upstream_bytes"]==len(relay_nonce)
@@ -688,7 +666,7 @@ def test_docker_production_proxy_connect_canary_uses_only_fake_public_egress_end
         internal_config=internal_data["IPAM"]["Config"][0]; egress_config=egress_data["IPAM"]["Config"][0]
         controlled_payload={"cleanup_disposition":None,"proxy_status":status.value,"relay_nonce":relay_nonce,"run_nonce":run_nonce,"topology":{"containers":{"package":{"id":package_data["Id"],"name":package,"ips":{internal:package_ip}},"proxy":{"id":proxy_data["Id"],"name":proxy_name,"ips":{internal:proxy_ip,egress:proxy_egress_ip}},"registry":{"id":registry_data["Id"],"name":registry,"ips":{egress:step4_evidence.FAKE_REGISTRY_IP}}},"networks":{"internal":{"id":internal_data["Id"],"name":internal,"internal":internal_data["Internal"],"subnet":internal_config["Subnet"],"gateway":internal_config["Gateway"]},"egress":{"id":egress_data["Id"],"name":egress,"internal":egress_data["Internal"],"subnet":egress_config["Subnet"],"gateway":egress_config["Gateway"]}}}}
     finally:
-        finish_controlled_connect_fixture(context,stopped,package,proxy_name,registry,internal,egress,code,capability,tree,controlled_payload)
+        live_fixture_support.finish(context,stopped,ledger,(package,proxy_name,registry),(internal,egress),code,capability,tree,controlled_payload)
 
 @pytest.mark.docker_boundary
 @pytest.mark.skipif(not docker_ready(),reason="Linux Docker boundary unavailable")
@@ -716,13 +694,13 @@ def test_docker_near_limit_byte_and_inode_profiles_pass_without_weakening_quota(
 def test_docker_disconnect_failure_uses_forced_owned_cleanup(tmp_path,monkeypatch):
     tree,req,context,name=docker_cleanup_context(tmp_path); original=runner._remove_retry
     def inject(command):
-        if command==["docker","network","disconnect",context.internal,name]: raise RuntimeError("injected normal disconnect failure")
+        if command==["docker","network","disconnect",context.ledger.target(context.internal),context.ledger.target(name)]: raise RuntimeError("injected normal disconnect failure")
         return original(command)
     monkeypatch.setattr(runner,"_remove_retry",inject)
     try:
         with pytest.raises(RuntimeError,match="injected normal disconnect"): runner._detach_acquisition(context,name,req)
         monkeypatch.setattr(runner,"_remove_retry",original); runner._cleanup_acquisition(context,name,force=True)
-        assert subprocess.run(["docker","network","inspect",context.internal],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30).returncode!=0
+        assert subprocess.run(["docker","network","inspect",context.ledger.target(context.internal)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30).returncode!=0
     finally: cleanup_docker_context(tree,context,name)
 
 @pytest.mark.docker_boundary
@@ -730,13 +708,13 @@ def test_docker_disconnect_failure_uses_forced_owned_cleanup(tmp_path,monkeypatc
 @pytest.mark.parametrize("target",["proxy","package","egress","internal"])
 def test_docker_cleanup_failure_reports_exact_retained_resource_at_each_boundary(tmp_path,monkeypatch,target):
     tree,req,context,name=docker_cleanup_context(tmp_path); original=runner.provision.run_capped
-    commands={"proxy":["docker","rm","-f",context.proxy],"package":["docker","network","disconnect","-f",context.internal,name],"egress":["docker","network","rm",context.egress],"internal":["docker","network","rm",context.internal]}
+    commands={"proxy":["docker","rm","-f",context.ledger.target(context.proxy)],"package":["docker","network","disconnect","-f",context.ledger.target(context.internal),context.ledger.target(name)],"egress":["docker","network","rm",context.ledger.target(context.egress)],"internal":["docker","network","rm",context.ledger.target(context.internal)]}
     def inject(command,**kwargs):
         if command==commands[target]: return {"returncode":1,"stdout":"","stderr":"injected"}
         return original(command,**kwargs)
     monkeypatch.setattr(runner.provision,"run_capped",inject)
     try:
-        expected={"proxy":context.proxy,"package":name,"egress":context.egress,"internal":context.internal}[target]
+        expected={"proxy":context.ledger.target(context.proxy),"package":context.ledger.target(name),"egress":context.ledger.target(context.egress),"internal":context.ledger.target(context.internal)}[target]
         with pytest.raises(RuntimeError,match=expected): runner._cleanup_acquisition(context,name,force=True)
     finally:
         monkeypatch.setattr(runner.provision,"run_capped",original); cleanup_docker_context(tree,context,name)

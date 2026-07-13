@@ -27,6 +27,7 @@ def test_pre_acquisition_dns_gate_checks_stub_and_both_address_families(kind, to
     script = commands[-1][-1]
     assert all(token in script for token in tokens)
     assert commands[0] == ["docker", "inspect", "package"]
+    if kind == "composer": assert commands[-1][3:6] == ["timeout", "8", "php"]
 
 
 @pytest.mark.parametrize("failure", ["host", "resolv", "lookup"])

@@ -28,5 +28,5 @@ def _lookup_command(name, kind, domain):
 const done=(e)=>{if(!e)b=true;if(!--n)process.exit(b?1:0)};
 d.resolve4(q,done);d.resolve6(q,done);setTimeout(()=>process.exit(2),1800);""" % json.dumps(domain)
         return ["docker", "exec", name, "timeout", "2", "node", "-e", script]
-    script = "$h=%s;$a=dns_get_record($h,DNS_A);$b=dns_get_record($h,DNS_AAAA);exit((($a===false||count($a)===0)&&($b===false||count($b)===0))?0:1);" % json.dumps(domain)
-    return ["docker", "exec", name, "timeout", "2", "php", "-r", script]
+    script = "$h=%s;$r=@dns_get_record($h,DNS_A|DNS_AAAA);exit(($r===false||count($r)===0)?0:1);" % json.dumps(domain)
+    return ["docker", "exec", name, "timeout", "8", "php", "-r", script]
