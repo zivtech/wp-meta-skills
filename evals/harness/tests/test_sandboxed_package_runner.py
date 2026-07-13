@@ -324,13 +324,16 @@ def test_proxy_create_attempt_is_recorded_before_lost_response(tmp_path,monkeypa
         assert any(item.kind=="container" and item.name=="proxy" and item.state=="attempted" for item in ledger.events)
     finally: workspace_lease.cleanup(tree.lease)
 
-def test_wait_proxy_idle_caps_ten_seconds_to_lifecycle_deadline(monkeypatch):
-    lifecycle=time.monotonic()+0.25; seen=[]
-    supervised=type("Supervisor",(),{"lifecycle_deadline":lifecycle})()
-    context=type("Context",(),{"supervisor":supervised})()
+def test_wait_proxy_idle_chooses_earlier_lifecycle_and_keeps_ten_second_cap(monkeypatch):
+    now=100.0; seen=[]
+    monkeypatch.setattr(runner.time,"monotonic",lambda:now)
+    monkeypatch.setattr(runner.time,"sleep",lambda _delay:pytest.fail("idle status was not immediately drained"))
     monkeypatch.setattr(runner,"_read_proxy_status",lambda _context,_request,deadline:seen.append(deadline) or {"active":0})
-    assert runner._wait_proxy_idle(context,object())["active"]==0
-    assert seen==[lifecycle]
+    for lifecycle in (now+5,now+20):
+        supervised=type("Supervisor",(),{"lifecycle_deadline":lifecycle})()
+        context=type("Context",(),{"supervisor":supervised})()
+        assert runner._wait_proxy_idle(context,object())["active"]==0
+    assert seen==[now+5,now+10]
 
 def test_proxy_readiness_and_acquisition_share_launch_lifecycle_deadline(tmp_path,monkeypatch):
     tree=staged(tmp_path); req=request(tree,timeout=300); capability=runner._validate_request(req,retain=True); lifecycle=time.monotonic()+2; seen={}

@@ -4,6 +4,10 @@ import pytest
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
 import dependency_egress_proxy as proxy
 
+def test_production_limits_preserve_concurrency_duration_and_extended_idle():
+    limits=proxy.ProxyLimits()
+    assert (limits.connections,limits.duration,limits.idle)==(8,300,60)
+
 def test_actual_reviewed_locks_validate():
     locks=HARNESS/"approved-locks"
     for name in ("block-scripts-32.4.1-smoke.package-lock.json","block-interactivity-6.48.1.package-lock.json","block-scripts-32.4.1-deprecation.package-lock.json"):

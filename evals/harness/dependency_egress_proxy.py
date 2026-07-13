@@ -67,7 +67,7 @@ class ProxyLimits:
     tunnel_bytes: int = 256 * 1024 * 1024
     acquisition_bytes: int = 256 * 1024 * 1024
     duration: int = 300
-    idle: int = 10
+    idle: int = 60
     dns_timeout: int = 5
 
 
