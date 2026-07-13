@@ -21,7 +21,7 @@ jobs:
   sandbox-feasibility:
     name: No-secrets Linux Docker sandbox feasibility
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions: {}
     env:
       CANARY_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -37,6 +37,64 @@ jobs:
         run: python -m pip install --no-cache-dir pytest==8.4.2
       - name: Verify committed locks, inventory, and topology policy
         run: python -m pytest evals/harness/tests/test_runtime_image_provision.py evals/harness/tests/test_wp_env_network_guard.py -q
+      - name: Trusted-provision exact package and proxy images
+        run: |
+          PYTHONPATH=evals/harness python - <<'PY'
+          import subprocess
+          import runtime_image_provision as provision
+          inventory=provision.inventory()["images"]
+          arch=provision.normalize_arch(subprocess.check_output(["uname","-m"],text=True).strip())
+          for key in ("node","composer","python"):
+              item=inventory[key]
+              reference=f"{item['tag'].split(':')[0]}@{item[arch]}"
+              subprocess.run(["docker","pull",reference],check=True)
+          PY
+      - name: Require bounded host DNS observation capability
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y tcpdump
+          sudo -n true
+          command -v tcpdump
+      - name: Verify package sandbox policy and proxy handlers hermetically
+        run: |
+          python -m pytest \
+            evals/harness/tests/test_artifact_staging.py \
+            evals/harness/tests/test_dependency_egress_proxy.py \
+            evals/harness/tests/test_sandbox_dns_guard.py \
+            evals/harness/tests/test_step4_evidence.py \
+            evals/harness/tests/test_sandboxed_package_runner.py \
+            -m 'not docker_boundary' -q
+      - name: Run implemented package acquisition and endpointless boundary cases
+        run: |
+          evidence_dir="$RUNNER_TEMP/wp-step4-evidence"
+          combined="$RUNNER_TEMP/wp-step4-evidence-combined.json"
+          rm -rf "$evidence_dir"
+          rm -f "$combined" "$combined.tmp"
+          mkdir -m 700 "$evidence_dir"
+          started=$SECONDS
+          set +e
+          STEP4_EVIDENCE_DIR="$evidence_dir" python -m pytest \
+            evals/harness/tests/test_sandboxed_package_runner.py \
+            -m docker_boundary -q
+          pytest_status=$?
+          set -e
+          elapsed=$((SECONDS-started))
+          STEP4_EVIDENCE_DIR="$evidence_dir" STEP4_COMBINED_PATH="$combined" STEP4_PYTEST_STATUS="$pytest_status" STEP4_ELAPSED="$elapsed" PYTHONPATH=evals/harness python - <<'PY'
+          import os
+          from pathlib import Path
+          import step4_evidence
+          path=step4_evidence.combine_records(
+              os.environ["STEP4_EVIDENCE_DIR"],
+              os.environ["STEP4_COMBINED_PATH"],
+              os.environ["CANARY_COMMIT_SHA"],
+              int(os.environ["STEP4_PYTEST_STATUS"]),
+              int(os.environ["STEP4_ELAPSED"]),
+          )
+          encoded=path.read_bytes()
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a",encoding="utf-8") as summary:
+              summary.write("## Step 4 package sandbox evidence\n\n```json\n"+encoded.decode()+"```\n")
+          PY
+          exit "$pytest_status"
       - name: Build and prove the exact committed runtime boundary
         run: |
           free_before=$(df --output=avail -B1 / | tail -1)
@@ -58,11 +116,27 @@ jobs:
         if: always()
         run: |
           docker ps -aq --filter 'name=wp-step0-' | xargs -r docker rm -f
+          docker ps -aq --filter 'name=wp-package-' | xargs -r docker rm -f
+          docker ps -aq --filter 'name=wp-acquire-proxy-' | xargs -r docker rm -f
+          docker ps -aq --filter 'name=wp-cleanup-test-' | xargs -r docker rm -f
+          docker ps -aq --filter 'name=wp-fake-' | xargs -r docker rm -f
+          docker ps -aq --filter 'name=wp-proxy-fake-' | xargs -r docker rm -f
+          docker ps -aq --filter 'name=wp-registry-fake-' | xargs -r docker rm -f
           docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}} {{.Id}}' | awk '$1 ~ /^wpstep0/ {print $2}' | xargs -r docker rm -f
           docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wpstep0/ {print $2}' | xargs -r docker network rm
+          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wp-acquire-(internal|egress)-/ {print $2}' | xargs -r docker network rm
+          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wp-(dns-observe|event-(mutation|alternate)|tunnel-break|fake-(internal|egress))-/ {print $2}' | xargs -r docker network rm
           docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '$1 ~ /^wp-sandbox-(wordpress|database):/ {print $2}' | sort -u | xargs -r docker image rm -f
           test -z "$(docker ps -aq --filter 'name=wp-step0-')"
+          test -z "$(docker ps -aq --filter 'name=wp-package-')"
+          test -z "$(docker ps -aq --filter 'name=wp-acquire-proxy-')"
+          test -z "$(docker ps -aq --filter 'name=wp-cleanup-test-')"
+          test -z "$(docker ps -aq --filter 'name=wp-fake-')"
+          test -z "$(docker ps -aq --filter 'name=wp-proxy-fake-')"
+          test -z "$(docker ps -aq --filter 'name=wp-registry-fake-')"
           test -z "$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wpstep0/')"
+          test -z "$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wp-acquire-(internal|egress)-/')"
+          test -z "$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wp-(dns-observe|event-(mutation|alternate)|tunnel-break|fake-(internal|egress))-/')"
           test -z "$(docker image ls --format '{{.Repository}}:{{.Tag}}' | awk '$1 ~ /^wp-sandbox-(wordpress|database):/')"
   validate:
     runs-on: ubuntu-latest
