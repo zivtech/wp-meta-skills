@@ -141,19 +141,20 @@ def test_term_and_kill_control_failures_are_not_silently_accepted(monkeypatch):
 
 
 def test_signal_control_uses_constant_isolated_python_helper_without_shell_or_kill_binary(monkeypatch):
-    item=_fake(); commands=[]
+    item=_fake(); commands=[]; gates=[]
     monkeypatch.setattr(supervisor,"_process_evidence",lambda *_args:None)
     monkeypatch.setattr(supervisor,"_top_gate",lambda *_args:None)
     monkeypatch.setattr(supervisor,"_top_no_helper_gate",lambda *_args:None)
     monkeypatch.setattr(supervisor.python_preflight,"start_attached",lambda command,limit:commands.append(command) or object())
     monkeypatch.setattr(supervisor.python_preflight,"await_attached",lambda *_args:{"returncode":0,"stdout":"","stderr":""})
-    supervisor._signal_inside(item,lambda *_args:None,"TERM",time.monotonic()+5)
+    supervisor._signal_inside(item,lambda *_args:None,"TERM",time.monotonic()+5,lambda:gates.append(True))
     assert len(commands)==1
     command=commands[0]
     assert command[:7]==["docker","exec","--user","501:20","--","proxy","/usr/bin/env"]
     assert command[7:12]==["-i","/usr/local/bin/python","-I","-S","-c"]
     assert command[12] is supervisor.python_preflight.SIGNAL_HELPER and command[-2:]==["8","TERM"]
     assert "/usr/bin/kill" not in command and not any(item in command for item in ("sh","bash","pkill"))
+    assert gates==[True,True,True]
 
 
 def test_pid_identity_change_blocks_before_signal_helper_starts(monkeypatch):
@@ -168,7 +169,7 @@ def test_pid_identity_change_blocks_before_signal_helper_starts(monkeypatch):
 
 
 def test_launch_uses_exact_user_env_i_isolated_python_argv(monkeypatch):
-    commands=[]
+    commands=[]; gates=[]
     class Process:
         pid=44; returncode=None
         stdout=io.BytesIO(); stderr=io.BytesIO()
@@ -178,11 +179,21 @@ def test_launch_uses_exact_user_env_i_isolated_python_argv(monkeypatch):
     monkeypatch.setattr(supervisor,"_wait_file",lambda *_args,**_kwargs:next(values))
     monkeypatch.setattr(supervisor,"_process_evidence",lambda *_args:None); monkeypatch.setattr(supervisor,"_top_gate",lambda *_args:None)
     argv=("/usr/bin/env","-i","/usr/local/bin/python","-I","-S","-B","/proxy.py","--nonce","n")
-    item=supervisor.launch("proxy","n",argv,"501:20",lambda *_args:None,20)
+    item=supervisor.launch("proxy","n",argv,"501:20",lambda *_args:None,20,lambda:gates.append(True))
     command,options=commands[0]
     assert command==["docker","exec","--user","501:20","--","proxy",*argv]
     assert options["start_new_session"] is True and options["env"]=={"PATH":"/usr/bin:/bin"}
     assert item.argv==argv[2:] and item.executable=="/usr/local/bin/python3.13"
+    assert gates==[True,True]
+
+
+def test_launch_daemon_gate_failure_prevents_attached_exec(monkeypatch):
+    launched=[]
+    monkeypatch.setattr(supervisor.subprocess,"Popen",lambda *_args,**_kwargs:launched.append(True))
+    argv=("/usr/bin/env","-i","/usr/local/bin/python","-I","-S","-B","/proxy.py")
+    with pytest.raises(RuntimeError,match="daemon drift"):
+        supervisor.launch("proxy","n",argv,"501:20",lambda *_args:None,20,lambda:(_ for _ in ()).throw(RuntimeError("daemon drift")))
+    assert launched==[]
 
 
 @pytest.mark.parametrize("failure,target",[
@@ -314,7 +325,7 @@ def test_stop_term_survivor_kill_is_sticky_and_blocks_zero_exit(monkeypatch):
         def wait(self,timeout): raise subprocess.TimeoutExpired("proxy",timeout)
     item=_fake(process=Survivor()); signals=[]
     monkeypatch.setattr(supervisor,"read_status",lambda *_args,**_kwargs:supervisor.StatusRecord(base,1,7))
-    def signal_inside(target,_control,name,_deadline):
+    def signal_inside(target,_control,name,_deadline,*_args):
         signals.append(name)
         if name=="KILL": target.process.returncode=0; supervisor._mark(target,"authenticated-kill")
     monkeypatch.setattr(supervisor,"_signal_inside",signal_inside)

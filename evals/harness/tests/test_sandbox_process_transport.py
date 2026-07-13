@@ -55,6 +55,18 @@ def test_hung_tar_reserves_cleanup_and_joins_drain_watchdog(monkeypatch):
     assert_reaped(processes[0]); assert not observed["threads"][0].is_alive() and not observed["watchdog"].is_alive()
 
 
+def test_streaming_tar_health_failure_kills_transport_before_deadline(monkeypatch):
+    processes=[]; checks=[]; real_popen=transport.subprocess.Popen
+    monkeypatch.setattr(transport,"tar_command",lambda *_args:["/bin/sh","-c","printf x; sleep 30"])
+    monkeypatch.setattr(transport.subprocess,"Popen",lambda *args,**kwargs:processes.append(real_popen(*args,**kwargs)) or processes[-1])
+    def health(): checks.append(True); raise RuntimeError("daemon drift")
+    started=time.monotonic()
+    with pytest.raises(RuntimeError,match="daemon drift"):
+        transport._tar_process("container",request(),False,lambda stream:stream.read(),"test tar",started+5.25,health)
+    assert time.monotonic()-started<2 and checks
+    assert_reaped(processes[0])
+
+
 @pytest.mark.parametrize("target",["run","tar"])
 def test_insufficient_absolute_budget_rejects_before_popen(monkeypatch,target):
     launches=[]; monkeypatch.setattr(transport.subprocess,"Popen",lambda *_args,**_kwargs:launches.append(True))

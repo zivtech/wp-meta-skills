@@ -6,13 +6,13 @@ import artifact_staging, materialize_wordpress_executor_packet as materializer, 
 def staged(tmp_path):
     source=tmp_path/"source"; source.mkdir(); (source/"input.txt").write_text("safe")
     return artifact_staging.stage_tree(source,tmp_path/"leases")
-
 def request(tree,**changes):
     item=runtime_image_provision.inventory()["images"]["node"]
     image=f"node@{runtime_image_provision.platform_digest(item,platform.machine())}"
     base=runner.SandboxRequest(tree,image,("node","-e","process.exit(0)"))
     return dataclasses.replace(base,**changes)
-
+def bypass_daemon(monkeypatch):
+    monkeypatch.setattr(runner.daemon_control,"run",lambda _ledger,command,timeout,control,deadline=None:control(command,timeout))
 def test_request_and_result_are_frozen(tmp_path):
     tree=staged(tmp_path)
     try:
@@ -128,6 +128,7 @@ def test_cleanup_failure_blocks_prior_failure_status(tmp_path,monkeypatch):
 
 def test_cleanup_exception_closes_successful_output_lease(tmp_path,monkeypatch):
     tree=staged(tmp_path); output_parent=tmp_path/"output-parent"; output_parent.mkdir(); output=staged(output_parent); monkeypatch.setattr(runner.platform,"system",lambda:"Linux")
+    bypass_daemon(monkeypatch)
     def live(_request,name,_capability,_profile,ledger):
         ledger.record("container",name,"created"); return runner.SandboxResult("pass",0,"","",output,"passed",name)
     monkeypatch.setattr(runner,"_run_live",live)
@@ -144,6 +145,7 @@ def test_cleanup_exception_closes_successful_output_lease(tmp_path,monkeypatch):
 
 def test_staged_descriptors_remain_open_through_container_removal(tmp_path,monkeypatch):
     tree=staged(tmp_path); held={}; original_validate=runner._validate_request
+    bypass_daemon(monkeypatch)
     monkeypatch.setattr(runner.platform,"system",lambda:"Linux")
     def validate(req,retain=False):
         capability=original_validate(req,retain); held["capability"]=capability; return capability
@@ -163,6 +165,7 @@ def test_staged_descriptors_remain_open_through_container_removal(tmp_path,monke
 def test_run_sandbox_emits_one_authoritative_nonresurrecting_resource_history(tmp_path,monkeypatch):
     tree=staged(tmp_path); req=dataclasses.replace(request(tree),acquisition="block-scripts-32.4.1-smoke")
     profile=runner.dependency_egress_proxy.ACQUISITION_PROFILES[req.acquisition]
+    bypass_daemon(monkeypatch)
     monkeypatch.setattr(runner,"_validate_acquisition",lambda *_args:profile); monkeypatch.setattr(runner.platform,"system",lambda:"Linux")
     monkeypatch.setattr(runner.provision,"run_capped",lambda *_args,**_kwargs:{"returncode":0,"stdout":"","stderr":""})
     def live(_request,name,_capability,_profile,ledger):
@@ -175,8 +178,6 @@ def test_run_sandbox_emits_one_authoritative_nonresurrecting_resource_history(tm
         assert result.status=="pass" and package==["created","detached","removed"]
         assert sum(item["state"]=="created" and item["name"]==result.container_name for item in events)==1
     finally: workspace_lease.cleanup(tree.lease)
-
-
 @pytest.mark.parametrize("kind",["symlink","special"])
 def test_dependency_root_type_gate_rejects_non_directory(kind,tmp_path,monkeypatch):
     tree=staged(tmp_path)
@@ -199,17 +200,19 @@ def test_acquisition_package_is_created_directly_internal_with_dns_denial(tmp_pa
     finally: workspace_lease.cleanup(tree.lease)
 
 def test_normal_detach_is_not_forced_and_cleanup_force_is_ledger_bounded(tmp_path,monkeypatch):
-    tree=staged(tmp_path); context=fake_context(tree); calls=[]
+    tree=staged(tmp_path); context=fake_context(tree); calls=[]; package_target="a"*64; proxy_target="b"*64
     for kind,name in (("network","internal"),("network","egress"),("container","proxy"),("container","package"),("lease",str(tree.lease.root))): context.ledger.record(kind,name,"created")
-    monkeypatch.setattr(runner,"_remove_retry",lambda command:calls.append(command))
+    context.ledger.bind("package",package_target); context.ledger.bind("proxy",proxy_target)
+    monkeypatch.setattr(runner,"_remove_retry",lambda command,*_args:calls.append(command))
     monkeypatch.setattr(runner,"_release_proxy_code",lambda _capability:None)
     runner._detach_acquisition(context,"package",request(tree))
-    assert ["docker","network","disconnect","internal","package"] in calls
+    assert ["docker","rm",proxy_target] in calls and ["docker","network","disconnect","internal",package_target] in calls
     assert not any("-f" in command for command in calls)
     calls.clear(); cleanup=fake_context(tree)
     for kind,name in (("network","internal"),("network","egress"),("container","proxy"),("container","package"),("lease",str(tree.lease.root))): cleanup.ledger.record(kind,name,"created")
+    cleanup.ledger.bind("package",package_target); cleanup.ledger.bind("proxy",proxy_target)
     runner._cleanup_acquisition(cleanup,"package",force=True)
-    assert ["docker","network","disconnect","-f","internal","package"] in calls
+    assert ["docker","rm","-f",proxy_target] in calls and ["docker","network","disconnect","-f","internal",package_target] in calls
     workspace_lease.cleanup(tree.lease)
 
 def test_proxy_code_lease_cleanup_failure_has_safe_manual_recovery_instruction(tmp_path,monkeypatch):
@@ -231,7 +234,8 @@ def event_history(action="disconnect"):
 def test_continuous_event_history_requires_sentinels_and_exact_disconnect():
     runner.docker_event_guard.validate_history(event_history(),"package-id","network-id","pre","post")
     source=inspect.getsource(runner._run_live)
-    assert source.index("_stop_proxy")<source.index("docker_event_guard.start")<source.index("_detach_acquisition")
+    assert source.index("_stop_proxy")<source.index("_start_event_channel")<source.index("_detach_acquisition")
+    assert "docker_event_guard.start" in inspect.getsource(runner._start_event_channel)
     with pytest.raises(RuntimeError,match="lacks disconnect or sentinel"): runner.docker_event_guard.validate_history([],"package-id","network-id","pre","post")
 
 @pytest.mark.parametrize("events",[
@@ -272,6 +276,14 @@ def test_continuous_event_follower_gap_malformed_and_overflow_block():
     follower.malformed=False; follower.overflow=True
     with pytest.raises(RuntimeError,match="32 KiB"): runner.docker_event_guard._health(follower)
 
+def test_event_sentinel_uses_bound_runner_and_daemon_gate(monkeypatch):
+    process=type("Process",(),{"poll":lambda self:None})(); gates=[]; commands=[]
+    follower=runner.docker_event_guard.EventFollower(process,"package-id",gate=lambda:gates.append(True))
+    monkeypatch.setattr(runner.docker_event_guard,"_wait_for",lambda *_args,**_kwargs:None)
+    run=lambda command,timeout:commands.append((command,timeout)) or {"returncode":0,"stdout":"","stderr":""}
+    runner.docker_event_guard.sentinel(follower,"a"*64,"label",run)
+    assert commands==[(["docker","exec","a"*64,"/usr/bin/env","true","label"],10)] and gates==[True,True]
+
 def test_memory_admission_includes_package_workspace_proxy_and_reserve(tmp_path,monkeypatch):
     tree=staged(tmp_path); req=request(tree,memory="1g",workspace_bytes=512*1024**2)
     monkeypatch.setattr("builtins.open",lambda *_args,**_kwargs:io.StringIO("MemAvailable: 2000000 kB\n"))
@@ -281,8 +293,9 @@ def test_memory_admission_includes_package_workspace_proxy_and_reserve(tmp_path,
 
 def test_partial_acquisition_context_preserves_original_and_cleanup_failure(tmp_path,monkeypatch):
     tree=staged(tmp_path); req=request(tree); code=runner.ProxyCapability(tree.lease,3,4,str(tree.lease.root/"proxy.py"),"a"*64); calls=[]; commands=[]
+    bypass_daemon(monkeypatch)
     monkeypatch.setattr(runner,"_memory_admission",lambda _request:8*1024**3); monkeypatch.setattr(runner,"_stage_proxy_code",lambda *_args:code)
-    monkeypatch.setattr(runner,"_control_run",lambda command,*_args:commands.append(command) or {"returncode":0 if "create" in command else 1,"stdout":"","stderr":"inspect failed"})
+    monkeypatch.setattr(runner,"_control_run",lambda command,*_args:commands.append(command) or {"returncode":0 if "create" in command else 1,"stdout":"a"*64 if "create" in command else "","stderr":"inspect failed"})
     def cleanup(context,*_args,**_kwargs): calls.extend(context.ledger.events); raise RuntimeError("retained internal network")
     monkeypatch.setattr(runner,"_cleanup_acquisition",cleanup)
     try:
@@ -292,6 +305,7 @@ def test_partial_acquisition_context_preserves_original_and_cleanup_failure(tmp_
 
 def test_network_create_attempt_is_recorded_before_lost_response(tmp_path,monkeypatch):
     tree=staged(tmp_path); code=runner.ProxyCapability(tree.lease,3,4,str(tree.lease.root/"proxy.py"),"a"*64); captured=[]
+    bypass_daemon(monkeypatch)
     monkeypatch.setattr(runner,"_memory_admission",lambda _request:8*1024**3); monkeypatch.setattr(runner,"_stage_proxy_code",lambda *_args:code)
     monkeypatch.setattr(runner,"_control_run",lambda *_args,**_kwargs:(_ for _ in ()).throw(TimeoutError("lost network response")))
     monkeypatch.setattr(runner,"_cleanup_acquisition",lambda context,*_args,**_kwargs:captured.extend(context.ledger.events))
@@ -302,6 +316,7 @@ def test_network_create_attempt_is_recorded_before_lost_response(tmp_path,monkey
 
 def test_proxy_create_attempt_is_recorded_before_lost_response(tmp_path,monkeypatch):
     tree=staged(tmp_path); req=request(tree); code=runner.ProxyCapability(tree.lease,3,4,str(tree.lease.root/"proxy.py"),"a"*64); ledger=runner.ResourceLedger()
+    bypass_daemon(monkeypatch)
     context=runner.AcquisitionContext("internal","egress","proxy","nonce","172.28.0.2","172.28.0.3","172.28.0.1","python@sha256:"+"a"*64,code,8*1024**3,ledger)
     monkeypatch.setattr(runner,"_reprove_proxy",lambda *_args:None); monkeypatch.setattr(runner,"_control_run",lambda *_args,**_kwargs:(_ for _ in ()).throw(TimeoutError("lost proxy response")))
     try:
@@ -351,16 +366,17 @@ def test_proxy_health_failure_aborts_live_acquisition_transport_before_absolute_
     finally: workspace_lease.cleanup(tree.lease)
 
 def test_wait_proxy_readiness_uses_only_remaining_lifecycle_time(monkeypatch):
-    deadline=time.monotonic()+0.25; seen=[]
+    deadline=time.monotonic()+0.25; seen=[]; ledger=runner.ResourceLedger(); bypass_daemon(monkeypatch)
     monkeypatch.setattr(runner,"_control_run",lambda _command,timeout:seen.append(timeout) or {"returncode":0,"stdout":"","stderr":""})
-    runner._wait_proxy("package","npm","172.28.0.3",object(),deadline)
+    runner._wait_proxy("package","npm","172.28.0.3",object(),deadline,ledger)
     assert len(seen)==1 and 0<seen[0]<=0.25
 
 def test_proxy_readiness_preserves_original_and_abort_failure(tmp_path,monkeypatch):
     tree=staged(tmp_path); req=request(tree); code=runner.ProxyCapability(tree.lease,3,4,str(tree.lease.root/"proxy.py"),"a"*64); ledger=runner.ResourceLedger()
+    bypass_daemon(monkeypatch)
     context=runner.AcquisitionContext("internal","egress","proxy","nonce","172.28.0.2","172.28.0.3","172.28.0.1","python@sha256:"+"a"*64,code,8*1024**3,ledger)
     monkeypatch.setattr(runner,"_reprove_proxy",lambda *_args:None); monkeypatch.setattr(runner,"_configured_proxy_mount_gate",lambda *_args:None); monkeypatch.setattr(runner,"_live_proxy_source_gate",lambda *_args:None); monkeypatch.setattr(runner,"_inspect_proxy",lambda *_args:None)
-    monkeypatch.setattr(runner,"_control_run",lambda *_args,**_kwargs:{"returncode":0,"stdout":"","stderr":""}); monkeypatch.setattr(runner.proxy_supervisor,"launch",lambda *_args,**_kwargs:type("Supervisor",(),{"lifecycle_deadline":time.monotonic()+30})())
+    monkeypatch.setattr(runner,"_control_run",lambda command,*_args,**_kwargs:{"returncode":0,"stdout":"a"*64 if command[1]=="create" else "","stderr":""}); monkeypatch.setattr(runner.proxy_supervisor,"launch",lambda *_args,**_kwargs:type("Supervisor",(),{"lifecycle_deadline":time.monotonic()+30})())
     monkeypatch.setattr(runner,"_wait_proxy",lambda *_args:(_ for _ in ()).throw(RuntimeError("readiness original"))); monkeypatch.setattr(runner.proxy_supervisor,"abort",lambda *_args:(_ for _ in ()).throw(RuntimeError("abort cleanup")))
     try:
         with pytest.raises(RuntimeError,match="readiness original.*abort cleanup"): runner._start_proxy(context,"package",req,runner.dependency_egress_proxy.ACQUISITION_PROFILES["block-scripts-32.4.1-smoke"])
@@ -371,6 +387,7 @@ def test_partial_context_ledger_reaches_final_sandbox_evidence(tmp_path,monkeypa
     profile=runner.dependency_egress_proxy.ACQUISITION_PROFILES[req.acquisition]; retained="wp-acquire-internal-retained"
     monkeypatch.setattr(runner,"_validate_acquisition",lambda *_args:profile)
     monkeypatch.setattr(runner.platform,"system",lambda:"Linux")
+    monkeypatch.setattr(runner.sandbox_none_network,"admit",lambda *_args:("daemon","a"*64,"amd64"))
     monkeypatch.setattr(runner,"_run",lambda *_args,**_kwargs:{"returncode":0,"stdout":"amd64","stderr":""})
     monkeypatch.setattr(runner,"_validate_image",lambda *_args:None); monkeypatch.setattr(runner,"_assert_local_image",lambda *_args:None)
     monkeypatch.setattr(runner.python_preflight,"run",lambda *_args:None)

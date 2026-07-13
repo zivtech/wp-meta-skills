@@ -9,6 +9,8 @@ import pytest
 HARNESS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HARNESS))
 import step4_evidence
+import sandbox_resource_contract
+import sandbox_timing_contract
 
 
 SHA = "a" * 40
@@ -28,6 +30,43 @@ def lifecycle(profile_id="block-scripts-32.4.1-smoke"):
     timings={key:0.1 for key in step4_evidence.TIMING_KEYS}; timings["end_to_end"]=1.0
     metrics={"mem_available":4*1024**3,"proxy_memory_peak":64*1024**2,"package_memory_peak_pre_export":256*1024**2,"workspace_bytes_used_pre_export":100*1024**2,"package_memory_peak":300*1024**2,"workspace_bytes_used":110*1024**2}
     return {"cleanup_events":cleanup,"final_status":"pass","identity":identity(profile_id),"metrics":metrics,"resource_events":events,"timings_seconds":timings}
+
+def test_lifecycle_timing_contract_includes_the_daemon_bound_interpreter_preflight():
+    runtime={"proxy_interpreter_preflight","acquisition_context_setup","container_setup","dependency_acquisition","detach","detached_gate","generated","export"}
+    assert sandbox_timing_contract.RUNTIME_KEYS==runtime
+    assert step4_evidence.TIMING_KEYS==runtime|{"cleanup","end_to_end"}
+    assert set(lifecycle()["timings_seconds"])==step4_evidence.TIMING_KEYS
+
+def test_failed_pytest_is_ineligible_before_partial_leg_payload_validation(tmp_path):
+    evidence=tmp_path/"legs"; evidence.mkdir()
+    for leg in step4_evidence.LEGS: (evidence/f"{leg}.json").write_text("{}")
+    with pytest.raises(ValueError,match="evidence is ineligible"):
+        step4_evidence.combine_records(evidence,tmp_path/"combined.json",SHA,1,10)
+
+def test_diagnostic_resource_ledger_projects_to_the_exact_lifecycle_contract():
+    expected=lifecycle(); raw=[]
+    for item in expected["resource_events"]:
+        if item["state"]=="created" and item["kind"] in {"container","network"}: raw.append({**item,"state":"attempted"})
+        raw.append(item)
+    detail=json.dumps({"outcome":"pass","timings_seconds":expected["timings_seconds"],"metrics":expected["metrics"],"resource_events":raw})
+    result=SimpleNamespace(status="pass",detail=detail,runtime_identity=None)
+    observed=step4_evidence.lifecycle_payload(result,expected["identity"])
+    assert observed["resource_events"]==expected["resource_events"]
+    step4_evidence._validate_lifecycle(observed,"npm_lifecycle")
+
+@pytest.mark.parametrize("event",[
+    {"kind":"volume","name":"wp-package-"+"a"*16,"state":"created"},
+    {"kind":"container","name":"wp-package-"+"a"*16,"state":"running"},
+    {"kind":"container","name":"wp-package-"+"a"*16},
+    {"kind":"preflight","name":"wp-proxy-preflight-"+"a"*16,"state":"duration=0.1"},
+    {"kind":"container","name":"wp-proxy-preflight-"+"a"*16,"state":"created"},
+    {"kind":"termination","name":"wp-acquire-proxy-"+"a"*16,"state":"term-sent"},
+    {"kind":"termination","name":"wp-acquire-proxy-"+"a"*16,"state":"whole-container-cleanup"},
+    {"kind":"container","name":"evil","state":"attempted"},
+    {"kind":"container","name":"wp-acquire-proxy-"+"b"*16,"state":"attempted"},
+])
+def test_resource_projection_rejects_unknown_or_malformed_diagnostics(event):
+    with pytest.raises(ValueError): sandbox_resource_contract.project([event])
 
 
 def controlled():

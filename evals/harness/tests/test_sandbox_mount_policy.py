@@ -48,12 +48,13 @@ def test_bind_spec_and_artifact_command_are_exact(tmp_path):
 def test_proxy_command_has_exact_rprivate_bind(tmp_path):
     tree=staged(tmp_path)
     try:
-        req=request(tree)
+        req=request(tree); ledger=runner.ResourceLedger(); ledger.bind("internal","b"*64)
         context=SimpleNamespace(
             proxy="proxy",internal="internal",proxy_ip="172.28.0.3",
-            proxy_code=SimpleNamespace(source="/lease/proxy.py"),proxy_image="python@sha256:"+"a"*64,
+            proxy_code=SimpleNamespace(source="/lease/proxy.py"),proxy_image="python@sha256:"+"a"*64,ledger=ledger,
         )
         command=runner._proxy_create_command(context,frozenset({"registry.test"}),req)
+        assert command[command.index("--network")+1]=="b"*64
         index=command.index("--mount")
         assert command[index+1]=="type=bind,src=/lease/proxy.py,dst=/proxy.py,readonly,bind-propagation=rprivate"
         assert command.count("--mount")==1

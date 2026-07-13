@@ -184,17 +184,19 @@ def _top_no_helper_gate(control, container, argv, deadline):
         raise RuntimeError(f"proxy control helper survived or process inventory drifted: {_inventory_diagnostic(lines)}")
 
 
-def launch(container, nonce, argv, user, control, timeout):
+def launch(container, nonce, argv, user, control, timeout, gate=lambda:None):
     deadline = time.monotonic() + timeout
     if tuple(argv[:3]) != ("/usr/bin/env", "-i", "/usr/local/bin/python") or tuple(argv[3:6]) != ("-I", "-S", "-B"):
         raise RuntimeError("proxy launch argv is not the reviewed isolated Python command")
     executable = python_preflight.PYTHON_EXE
     process_argv = tuple(argv[2:])
     command = ["docker", "exec", "--user", user, "--", container, *argv]
+    gate()
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, env={"PATH": "/usr/bin:/bin"})
     buffers = {"stdout": bytearray(), "stderr": bytearray()}; overflow = []; streams = (process.stdout, process.stderr); threads=[]
     supervisor = ProxySupervisor(container, nonce, 0, process_argv, executable, process, (), streams, buffers, overflow, deadline, user)
     try:
+        gate()
         for stream,name in zip(streams,("stdout","stderr")):
             thread=threading.Thread(target=_drain,args=(stream,name,buffers,overflow),daemon=True)
             threads.append(thread); supervisor.threads=tuple(threads); thread.start()
@@ -212,7 +214,7 @@ def launch(container, nonce, argv, user, control, timeout):
         return supervisor
     except Exception as original:
         try:
-            if supervisor.pid > 0: abort(supervisor, control)
+            if supervisor.pid > 0: abort(supervisor, control, gate)
             else: _finish_transport(supervisor, time.monotonic() + 20)
         except Exception as cleanup:
             raise RuntimeError(f"proxy launch failed ({original}); teardown also failed ({cleanup})") from original
@@ -245,7 +247,7 @@ def mark_whole_container(supervisor):
     _mark(supervisor,"whole-container-cleanup")
 
 
-def _signal_inside(supervisor, control, signal_name, deadline):
+def _signal_inside(supervisor, control, signal_name, deadline, gate=lambda:None):
     if not supervisor.identity_valid: raise RuntimeError("authenticated proxy PID identity was previously lost")
     try:
         _process_evidence(control, supervisor.container, supervisor.pid, supervisor.argv, supervisor.executable, deadline)
@@ -254,12 +256,17 @@ def _signal_inside(supervisor, control, signal_name, deadline):
         supervisor.identity_valid=False; _mark(supervisor,"pid-identity-loss"); raise
     if signal_name=="KILL": _mark(supervisor,"authenticated-kill")
     command = ["docker", "exec", "--user", supervisor.user, "--", supervisor.container, "/usr/bin/env", "-i", "/usr/local/bin/python", "-I", "-S", "-c", python_preflight.SIGNAL_HELPER, str(supervisor.pid), signal_name]
+    gate()
     transport = python_preflight.start_attached(command, limit=8192)
     try:
+        gate()
         result = python_preflight.await_attached(transport, min(deadline, time.monotonic() + 2))
+        gate()
     except Exception as exc:
         failures = python_preflight.cleanup_attached(transport, deadline)
         suffix = f"; control cleanup retained {', '.join(failures)}" if failures else ""
+        try: gate()
+        except Exception as identity: raise identity from exc
         raise RuntimeError(f"authenticated proxy {signal_name} failed: {exc}{suffix}") from exc
     if result["returncode"] or result["stdout"] or result["stderr"]:
         raise RuntimeError(f"authenticated proxy {signal_name} failed")
@@ -338,21 +345,25 @@ def _finish_transport(supervisor, deadline):
     if failures: raise RuntimeError(f"proxy host transport survived teardown deadline: {', '.join(failures)}")
 
 
-def _container_reap(supervisor, control, deadline):
+def reap_host(supervisor):
+    _finish_transport(supervisor,time.monotonic()+20)
+
+
+def _container_reap(supervisor, control, deadline, gate=lambda:None):
     remaining = deadline - time.monotonic()
     grace = min(deadline, time.monotonic() + min(5, max(0, remaining) / 2))
     if supervisor.process.poll() is None and grace > time.monotonic():
         try: supervisor.process.wait(timeout=grace - time.monotonic())
         except subprocess.TimeoutExpired: pass
     if supervisor.process.poll() is None:
-        _signal_inside(supervisor, control, "KILL", deadline)
+        _signal_inside(supervisor, control, "KILL", deadline, gate)
 
 
-def stop(supervisor, control):
+def stop(supervisor, control, gate=lambda:None):
     deadline = time.monotonic() + 20
     before=read_status(supervisor,control,1,deadline)
-    _signal_inside(supervisor, control, "TERM", deadline)
-    _container_reap(supervisor, control, deadline)
+    _signal_inside(supervisor, control, "TERM", deadline, gate)
+    _container_reap(supervisor, control, deadline, gate)
     _finish_transport(supervisor, deadline)
     if supervisor.overflow or supervisor.process.returncode != 0:
         raise RuntimeError("proxy workload did not exit cleanly")
@@ -366,13 +377,13 @@ def stop(supervisor, control):
     return final_status
 
 
-def abort(supervisor, control):
+def abort(supervisor, control, gate=lambda:None):
     deadline = time.monotonic() + 20
     failure = None
     if supervisor.process.poll() is None:
-        try: _signal_inside(supervisor, control, "TERM", deadline)
+        try: _signal_inside(supervisor, control, "TERM", deadline, gate)
         except Exception as exc: failure = exc
-        try: _container_reap(supervisor, control, deadline)
+        try: _container_reap(supervisor, control, deadline, gate)
         except Exception as exc: failure = failure or exc
     try: _finish_transport(supervisor, deadline)
     except Exception as exc:

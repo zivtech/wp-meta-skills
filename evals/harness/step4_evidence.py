@@ -11,6 +11,8 @@ from pathlib import Path
 
 import dependency_egress_proxy
 import runtime_image_provision
+import sandbox_resource_contract
+import sandbox_timing_contract
 
 LEGS = ("npm_lifecycle", "composer_lifecycle", "controlled_connect")
 PER_LEG_LIMIT = 32768
@@ -26,7 +28,7 @@ MAX_KEY_UTF8_BYTES = 512
 FAKE_PUBLIC_SUBNET = "93.184.216.32/28"
 FAKE_PUBLIC_GATEWAY = "93.184.216.33"
 FAKE_REGISTRY_IP = "93.184.216.34"
-TIMING_KEYS = frozenset({"acquisition_context_setup", "container_setup", "dependency_acquisition", "detach", "detached_gate", "generated", "export", "cleanup", "end_to_end"})
+TIMING_KEYS = sandbox_timing_contract.EVIDENCE_KEYS
 METRIC_KEYS = frozenset({"mem_available", "proxy_memory_peak", "package_memory_peak_pre_export", "workspace_bytes_used_pre_export", "package_memory_peak", "workspace_bytes_used"})
 LIMIT_KEYS = frozenset({"package_memory_limit_bytes","workspace_limit_bytes","proxy_memory_limit_bytes","host_reserve_bytes","admission_required_bytes"})
 IDENTITY_KEYS = frozenset({"profile_id", "manifest_sha256", "lock_sha256", "package_image_ref", "proxy_image_ref", "package_local_image_id", "proxy_local_image_id", "package_container_id", "proxy_container_id", "package_observed_image_id", "proxy_observed_image_id", "toolchain_versions", "runner_os", "runner_arch"})|LIMIT_KEYS
@@ -119,7 +121,7 @@ def _atomic_write(path, encoded):
 
 def lifecycle_payload(result, acquisition_identity):
     detail = _strict_json(result.detail)
-    events = detail.get("resource_events", [])
+    events = sandbox_resource_contract.project(detail.get("resource_events", []),allow_termination=result.status!="pass")
     cleanup = [item for item in events if item.get("state") in {"detached", "removed", "retained"}]
     identity = dict(acquisition_identity)
     identity.update(getattr(result, "runtime_identity", None) or {})
@@ -231,7 +233,7 @@ def _validate_resource_events(payload):
     events, cleanup = payload["resource_events"], payload["cleanup_events"]
     if not isinstance(events, list) or not isinstance(cleanup, list) or not events:
         raise ValueError("Step 4 lifecycle resource evidence is invalid")
-    kinds = {"container", "network", "lease"}; states = {"created", "attached", "detached", "removed", "retained"}
+    kinds = sandbox_resource_contract.KINDS; states = sandbox_resource_contract.STATES
     for item in events:
         if not isinstance(item, dict) or set(item) != {"kind", "name", "state"}: raise ValueError("Step 4 lifecycle resource event schema is invalid")
         if item["kind"] not in kinds or item["state"] not in states or not isinstance(item["name"], str) or not item["name"]: raise ValueError("Step 4 lifecycle resource event value is invalid")
@@ -361,12 +363,12 @@ def combine_records(directory, output_path, commit_sha, pytest_status, duration_
     expected = {f"{leg}.json" for leg in LEGS}
     if {item.name for item in root.iterdir()} != expected:
         raise ValueError("Step 4 evidence directory is missing legs or contains extras")
+    if type(pytest_status) is not int or pytest_status != 0 or type(duration_seconds) is not int or not 0 < duration_seconds <= 3600:
+        raise ValueError("Step 4 evidence is ineligible because Docker pytest status or duration is invalid")
     records = {leg: _read_leg(root / f"{leg}.json", leg, sha) for leg in LEGS}
     _validate_lifecycle(records["npm_lifecycle"]["payload"], "npm_lifecycle")
     _validate_lifecycle(records["composer_lifecycle"]["payload"], "composer_lifecycle")
     _validate_controlled(records["controlled_connect"]["payload"])
-    if type(pytest_status) is not int or pytest_status != 0 or type(duration_seconds) is not int or not 0 < duration_seconds <= 3600:
-        raise ValueError("Step 4 Docker pytest status or duration is invalid")
     _validate_cross_leg(records,duration_seconds)
     combined = {"commit_sha": sha, "duration_seconds": duration_seconds, "legs": records, "pytest_status": pytest_status, "schema_version": SCHEMA_VERSION}
     _atomic_write(output_path, _encode(combined, COMBINED_LIMIT))

@@ -73,14 +73,14 @@ def specification(identity: str, pool_name: str) -> NetworkSpec:
     )
 
 
-def create_command(name: str, spec: NetworkSpec, *, internal: bool, label: str | None = None) -> list[str]:
+def create_command(name: str, spec: NetworkSpec, *, internal: bool, labels: tuple[str, ...] = ()) -> list[str]:
     command = [
         "docker", "network", "create", "--driver", "bridge",
         "--subnet", spec.subnet, "--gateway", spec.gateway,
     ]
     if internal:
         command.append("--internal")
-    if label is not None:
+    for label in labels:
         command.extend(("--label", label))
     command.append(name)
     return command
@@ -106,8 +106,8 @@ def validate_inspection(data: dict, name: str, spec: NetworkSpec, *, internal: b
         raise RuntimeError("sandbox network endpoint policy is invalid")
 
 
-def inspect(run, name: str, spec: NetworkSpec, *, internal: bool) -> NetworkSnapshot:
-    result = run(["docker", "network", "inspect", name], 30)
+def inspect(run, name: str, spec: NetworkSpec, *, internal: bool, target: str | None = None) -> NetworkSnapshot:
+    result = run(["docker", "network", "inspect", target or name], 30)
     if result["returncode"]:
         raise RuntimeError(f"sandbox network inspection failed: {bounded_docker_error(result)}")
     try:

@@ -77,7 +77,7 @@ def test_role_separated_specs_are_deterministic_and_collision_resistant():
 
 def test_network_create_command_binds_explicit_ipam_and_isolation():
     spec = policy.specification(policy.GOLDEN_IDENTITY, "internal")
-    command = policy.create_command("network", spec, internal=True, label="wp-meta-run=run-a")
+    command = policy.create_command("network", spec, internal=True, labels=("wp-meta-run=run-a",))
     assert command == [
         "docker", "network", "create", "--driver", "bridge",
         "--subnet", spec.subnet, "--gateway", spec.gateway,
@@ -172,6 +172,7 @@ def context_mocks(monkeypatch, cleanup):
     monkeypatch.setattr(runner, "_stage_proxy_code", lambda *_args: fake_proxy_code())
     monkeypatch.setattr(runner, "_proxy_image", lambda _arch: "python@sha256:" + "a" * 64)
     monkeypatch.setattr(runner, "_cleanup_acquisition", cleanup)
+    monkeypatch.setattr(runner.daemon_control, "run", lambda _ledger,command,timeout,control,deadline=None:control(command,timeout))
 
 
 def test_internal_create_collision_is_deterministic_fail_closed(monkeypatch):
@@ -191,13 +192,14 @@ def test_egress_create_diagnostic_survives_cleanup_wrapper(monkeypatch):
         raise RuntimeError("cleanup retained exact run-owned network")
     context_mocks(monkeypatch, cleanup)
     internal = policy.specification("eeeeeeeeeeeeeeee", "internal")
+    internal_name = "wp-acquire-internal-eeeeeeeeeeeeeeee"
     def control(command, *_args):
         calls.append(command)
         if command[:3] == ["docker", "network", "inspect"]:
-            return {"returncode": 0, "stdout": json.dumps([inspected(command[-1], internal, True)]), "stderr": ""}
+            return {"returncode": 0, "stdout": json.dumps([inspected(internal_name, internal, True)]), "stderr": ""}
         if command[-1] == "wp-acquire-egress-eeeeeeeeeeeeeeee":
             return {"returncode": 1, "stdout": "", "stderr": "Error response from daemon:\tegress bridge allocation failed\n"}
-        return {"returncode": 0, "stdout": "created", "stderr": ""}
+        return {"returncode": 0, "stdout": "1" * 64, "stderr": ""}
     monkeypatch.setattr(runner, "_control_run", control)
     with pytest.raises(RuntimeError, match="egress network creation failed: Error response from daemon: egress bridge allocation failed.*cleanup also failed.*retained exact"):
         runner._create_acquisition_context(object(), "amd64", run_token="eeeeeeeeeeeeeeee")
@@ -210,7 +212,7 @@ def test_inspect_daemon_diagnostic_survives_sanitization_and_cleanup(monkeypatch
     def control(command, *_args):
         if command[:3] == ["docker", "network", "inspect"]:
             return {"returncode": 1, "stdout": "", "stderr": "Error response from daemon:\nnetwork /proc/421/fd/7 not found\n"}
-        return {"returncode": 0, "stdout": "created", "stderr": ""}
+        return {"returncode": 0, "stdout": "1" * 64, "stderr": ""}
     monkeypatch.setattr(runner, "_control_run", control)
     with pytest.raises(RuntimeError, match=r"sandbox network inspection failed: Error response from daemon: network /proc/<pid>/fd/<fd> not found"):
         runner._create_acquisition_context(object(), "amd64", run_token="dddddddddddddddd")
@@ -253,9 +255,10 @@ def proxy_gate_fixture(tmp_path):
     code = SimpleNamespace(file_fd=descriptor, source=str(path.absolute()), sha256=digest)
     request = SimpleNamespace(user="1001:1001", acquisition="block-scripts-32.4.1-smoke")
     context = runner.AcquisitionContext(f"wp-acquire-internal-{token}", f"wp-acquire-egress-{token}", "proxy", "nonce", internal_spec.package_ip, internal_spec.proxy_ip, internal_spec.gateway, "python@sha256:" + "b" * 64, code, 8 * 1024**3, runner.ResourceLedger())
+    context.ledger.bind(context.internal, "4" * 64); context.ledger.bind(context.egress, "5" * 64)
     proxy_id = "2" * 64; package_id = "3" * 64
     temporary = "size=16777216,nr_inodes=1024,mode=0700,uid=1001,gid=1001,noexec,nosuid,nodev"
-    host = {"ReadonlyRootfs": True, "CapDrop": ["ALL"], "PidsLimit": 64, "Memory": runner.PROXY_MEMORY_BYTES, "MemorySwap": runner.PROXY_MEMORY_BYTES, "NanoCpus": 1_000_000_000, "NetworkMode": context.internal, "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0}, "CapAdd": None, "PidMode": "", "IpcMode": "", "UTSMode": "", "UsernsMode": "", "SecurityOpt": ["no-new-privileges"], "Privileged": False, "PortBindings": {}, "Binds": [], "Dns": [], "ExtraHosts": [], "Devices": [], "Ulimits": [{"Name": "nofile", "Hard": 1024, "Soft": 1024}], "LogConfig": {"Type": "none"}, "Tmpfs": {"/tmp": temporary}}
+    host = {"ReadonlyRootfs": True, "CapDrop": ["ALL"], "PidsLimit": 64, "Memory": runner.PROXY_MEMORY_BYTES, "MemorySwap": runner.PROXY_MEMORY_BYTES, "NanoCpus": 1_000_000_000, "NetworkMode": context.ledger.target(context.internal), "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0}, "CapAdd": None, "PidMode": "", "IpcMode": "", "UTSMode": "", "UsernsMode": "", "SecurityOpt": ["no-new-privileges"], "Privileged": False, "PortBindings": {}, "Binds": [], "Dns": [], "ExtraHosts": [], "Devices": [], "Ulimits": [{"Name": "nofile", "Hard": 1024, "Soft": 1024}], "LogConfig": {"Type": "none"}, "Tmpfs": {"/tmp": temporary}}
     proxy = {"Id": proxy_id, "Image": "sha256:" + "c" * 64, "HostConfig": host, "Config": {"User": request.user, "Entrypoint": ["sleep"], "Cmd": ["infinity"], "Env": list(runner.python_preflight.ENV)}, "Mounts": [{"Type": "bind", "Destination": "/proxy.py", "RW": False, "Propagation": "rprivate", "Source": code.source}], "NetworkSettings": {"Networks": {context.internal: {"IPAddress": context.proxy_ip}, context.egress: {"IPAddress": egress_spec.package_ip}}}}
     package = {"Id": package_id, "NetworkSettings": {"Networks": {context.internal: {"IPAddress": context.package_ip}}}}
     proof = f"{opened.st_dev}:{opened.st_ino}:400\n{digest}\n"
@@ -270,14 +273,15 @@ def test_proxy_gate_uses_one_snapshot_per_network_and_rejects_peer_drift(tmp_pat
         if command[:3] == ["docker", "image", "inspect"]: return {"returncode": 0, "stdout": proxy["Image"] + "\n", "stderr": ""}
         if command[:2] == ["docker", "exec"]: return {"returncode": 0, "stdout": proof, "stderr": ""}
         raise AssertionError(command)
-    def snapshot(_run, name, spec, *, internal):
+    def snapshot(_run, name, spec, *, internal, target=None):
         calls.append(name); peers = {proxy["Id"], package["Id"]} if internal else {proxy["Id"]}
         if drift and internal: peers.remove(package["Id"])
         return policy.NetworkSnapshot(name, ("4" if internal else "5") * 64, internal, spec, frozenset(peers))
     monkeypatch.setattr(runner, "_control_run", control); monkeypatch.setattr(runner.sandbox_network_policy, "inspect", snapshot)
+    monkeypatch.setattr(runner.daemon_control, "run", lambda _ledger,command,timeout,control,deadline=None:control(command,timeout))
     try:
         if drift:
             with pytest.raises(RuntimeError, match="peer membership drift"): runner._inspect_proxy(context, "package", request)
-        else: runner._inspect_proxy(context, "package", request)
+        else: assert runner._inspect_proxy(context, "package", request)==proxy["Id"]
         assert calls == [context.internal, context.egress]
     finally: os.close(descriptor)

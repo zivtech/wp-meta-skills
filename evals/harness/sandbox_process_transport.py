@@ -159,44 +159,52 @@ def tar_command(name,exclude_dependencies=False):
     return command+["-cf","-","."]
 
 
-def _tar_process(name,request,exclude_dependencies,consumer,label,deadline=None):
+def _tar_process(name,request,exclude_dependencies,consumer,label,deadline=None,health_check=None):
     execution_deadline,final_deadline=_deadlines(request.timeout,deadline)
     process=subprocess.Popen(tar_command(name,exclude_dependencies),stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,env={"PATH":"/usr/bin:/bin"})
-    stderr=bytearray(); overflow=[]; timed_out=[]
+    stderr=bytearray(); overflow=[]; timed_out=[]; health_failure=[]; health_stop=threading.Event()
     def drain():
         while chunk:=process.stderr.read(8192):
             if len(stderr)+len(chunk)>request.stderr_limit: overflow.append(True); kill_process(process); return
             stderr.extend(chunk)
     def expire(): timed_out.append(True); kill_process(process)
-    thread=None; watchdog=None; output=None; original=None
+    def health_watch():
+        while not health_stop.wait(0.1):
+            try: health_check()
+            except Exception as exc: health_failure.append(exc); kill_process(process); return
+    thread=None; health_thread=None; watchdog=None; output=None; original=None
     try:
         thread=threading.Thread(target=drain,daemon=True)
+        if health_check is not None: health_thread=threading.Thread(target=health_watch,daemon=True)
         watchdog=threading.Timer(execution_deadline-time.monotonic(),expire)
         thread.start(); watchdog.start()
+        if health_thread is not None: health_thread.start()
         output=consumer(process.stdout)
+        if health_failure: raise health_failure[0]
         remaining=execution_deadline-time.monotonic()
         if remaining<=0: raise TimeoutError(f"{label} operation deadline exceeded")
         try: process.wait(timeout=remaining)
         except subprocess.TimeoutExpired as exc: raise TimeoutError(f"{label} operation deadline exceeded") from exc
+        if health_failure: raise health_failure[0]
         if timed_out or overflow or process.returncode: raise RuntimeError(f"{label} transport failed")
     except Exception as exc: original=exc
-    threads=() if thread is None else (thread,)
-    cleanup=_cleanup_transport(process,threads,(process.stdout,process.stderr),final_deadline,original is not None,watchdog=watchdog)
+    threads=tuple(item for item in (thread,health_thread) if item is not None)
+    cleanup=_cleanup_transport(process,threads,(process.stdout,process.stderr),final_deadline,original is not None,stop=health_stop,watchdog=watchdog)
     if (original is not None or cleanup) and hasattr(output,"lease"):
         _attempt(cleanup,"output lease cleanup",lambda:workspace_lease.cleanup(output.lease))
     _finish(original,cleanup)
     return output
 
 
-def import_output(name,request,run,exclude_dependencies=False):
+def import_output(name,request,run,exclude_dependencies=False,health_check=None):
     if exclude_dependencies: dependency_root_gate(name,request,run)
     consumer=lambda stream:artifact_staging.import_tar_stream(artifact_staging.BoundedArchiveReader(stream,artifact_staging.MAX_ARCHIVE_STREAM_BYTES),request.result_parent,dependency_policy="strict")
-    return _tar_process(name,request,exclude_dependencies,consumer,"output archive")
+    return _tar_process(name,request,exclude_dependencies,consumer,"output archive",health_check=health_check)
 
 
-def verify_copy(name,request,run,exclude_dependencies=False,deadline=None):
+def verify_copy(name,request,run,exclude_dependencies=False,deadline=None,health_check=None):
     if exclude_dependencies: dependency_root_gate(name,request,run,deadline)
-    return _tar_process(name,request,exclude_dependencies,artifact_staging.verify_tar_stream_manifest,"workspace proof",deadline)
+    return _tar_process(name,request,exclude_dependencies,artifact_staging.verify_tar_stream_manifest,"workspace proof",deadline,health_check)
 
 
 def dependency_root_gate(name,request,run=None,deadline=None):

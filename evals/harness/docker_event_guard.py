@@ -26,6 +26,7 @@ class EventFollower:
     overflow: bool = False
     stderr_seen: bool = False
     stopped: bool = False
+    gate: object = lambda: None
 
 
 def _stdout_reader(follower):
@@ -57,18 +58,30 @@ def _stderr_reader(follower):
                 return
 
 
-def start(container_id):
+def start(container_id, gate=lambda:None):
     since = f"{time.time():.9f}"
     command = ["docker", "events", "--since", since, "--format", "{{json .}}"]
+    gate()
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, env={"PATH": "/usr/bin:/bin"})
-    follower = EventFollower(process, container_id)
-    follower.threads = [threading.Thread(target=_stdout_reader, args=(follower,), daemon=True), threading.Thread(target=_stderr_reader, args=(follower,), daemon=True)]
-    for thread in follower.threads:
-        thread.start()
+    follower = EventFollower(process, container_id, gate=gate)
+    try:
+        candidates = [threading.Thread(target=_stdout_reader, args=(follower,), daemon=True), threading.Thread(target=_stderr_reader, args=(follower,), daemon=True)]
+        for thread in candidates:
+            try: thread.start()
+            except Exception:
+                if thread.ident is not None: follower.threads.append(thread)
+                raise
+            follower.threads.append(thread)
+        gate()
+    except Exception as original:
+        try: _stop(follower, signal.SIGKILL)
+        except Exception as cleanup: raise RuntimeError(f"Docker event follower setup failed ({original}); cleanup also failed ({cleanup})") from original
+        raise
     return follower
 
 
 def _health(follower):
+    follower.gate()
     _transport_health(follower)
     if follower.process.poll() is not None:
         raise RuntimeError("Docker event follower exited before post-sentinel")
@@ -96,9 +109,12 @@ def _wait_for(follower, predicate, detail, timeout=5):
     raise RuntimeError(detail)
 
 
-def sentinel(follower, container_name, label):
+def sentinel(follower, container_name, label, run=None):
     command = ["docker", "exec", container_name, "/usr/bin/env", "true", label]
-    result = provision.run_capped(command, timeout=10, limit=TRANSPORT_LIMIT)
+    follower.gate()
+    runner=run or (lambda item,timeout:provision.run_capped(item,timeout=timeout,limit=TRANSPORT_LIMIT))
+    result = runner(command,10)
+    follower.gate()
     if result["returncode"]:
         raise RuntimeError("Docker event sentinel exec failed")
 
@@ -140,10 +156,8 @@ def validate_history(events, container_id, network_id, pre_label, post_label):
         raise RuntimeError("Docker event history is out of order around endpointless disconnect")
 
 
-def _stop(follower, first_signal):
-    if follower.stopped:
-        return
-    deadline = time.monotonic() + 5
+def _reap(follower, first_signal, deadline):
+    failures = []
     try:
         os.killpg(follower.process.pid, first_signal)
     except OSError:
@@ -158,12 +172,29 @@ def _stop(follower, first_signal):
         try:
             follower.process.wait(timeout=max(0.001, deadline - time.monotonic()))
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("Docker event follower survived reap deadline") from exc
-    for thread in follower.threads:
-        thread.join(max(0, deadline - time.monotonic()))
-    if any(thread.is_alive() for thread in follower.threads):
-        raise RuntimeError("Docker event follower reader survived deadline")
-    follower.process.stdout.close(); follower.process.stderr.close(); follower.stopped = True
+            failures.append(f"Docker event follower survived reap deadline: {exc}")
+    return failures
+
+
+def _finish_readers(follower, deadline):
+    failures = []
+    started = [thread for thread in follower.threads if thread.ident is not None]
+    for thread in started:
+        try: thread.join(max(0, deadline - time.monotonic()))
+        except RuntimeError as exc: failures.append(f"Docker event follower reader join failed: {exc}")
+    if any(thread.is_alive() for thread in started): failures.append("Docker event follower reader survived deadline")
+    for stream in (follower.process.stdout, follower.process.stderr):
+        try: stream.close()
+        except Exception as exc: failures.append(f"Docker event follower stream close failed: {exc}")
+    return failures
+
+
+def _stop(follower, first_signal):
+    if follower.stopped: return
+    deadline = time.monotonic() + 5
+    failures = _reap(follower, first_signal, deadline) + _finish_readers(follower, deadline)
+    if failures: raise RuntimeError("; ".join(failures))
+    follower.stopped = True
 
 
 def finish(follower, network_id, pre_label, post_label):
