@@ -98,10 +98,10 @@ jobs:
                   lambda command,timeout:provision.run_capped(command,timeout=timeout,limit=32768),
                   image,identity["stdout"].strip(),f"{os.getuid()}:{os.getgid()}",secrets.token_hex(8),Ledger(),
               )
-          except diagnostic.PostExitTmpfsObservation as blocked:
-              diagnostic.emit_observation(blocked,os.environ["GITHUB_STEP_SUMMARY"])
+          except diagnostic.RawHostConfigProfile as blocked:
+              diagnostic.emit_profile(blocked,os.environ["GITHUB_STEP_SUMMARY"])
               raise SystemExit(diagnostic.BLOCK_MESSAGE)
-          raise RuntimeError("diagnostic unexpectedly returned without a post-exit observation")
+          raise RuntimeError("diagnostic unexpectedly returned without a raw HostConfig profile")
           PY
       - name: Run implemented package acquisition and endpointless boundary cases
         run: |
