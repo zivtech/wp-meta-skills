@@ -1,4 +1,4 @@
-import json, os, socket, stat, sys, threading
+import json, os, signal, socket, stat, subprocess, sys, threading
 from pathlib import Path
 import pytest
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
@@ -167,15 +167,47 @@ def test_server_constructs_one_shared_budget_for_all_workers():
     assert "AcquisitionByteBudget(limits.acquisition_bytes)" in source
     assert "handle_connect(sock, allowed, limits, budget)" in source
 
-def test_resolver_reaper_rejects_surviving_child():
-    class Survivor:
-        def __init__(self): self.joins=0; self.kills=0
-        def join(self,_timeout): self.joins+=1
-        def is_alive(self): return True
-        def kill(self): self.kills+=1
-    process=Survivor()
-    with pytest.raises(RuntimeError,match="survived forced termination"): proxy._reap_resolver_process(process)
-    assert process.joins==2 and process.kills==1
+def resolver_payload(address="93.184.216.34"):
+    value={"records":[[socket.AF_INET,socket.SOCK_STREAM,socket.IPPROTO_TCP,[address,443]]]}
+    return (json.dumps(value,sort_keys=True,separators=(",",":"))+"\n").encode()
+
+def test_resolver_uses_one_isolated_bounded_subprocess_without_multiprocessing(monkeypatch):
+    calls=[]
+    class Process:
+        pid=71; returncode=0
+        def communicate(self,timeout): calls.append(("communicate",timeout)); return resolver_payload(),None
+    monkeypatch.setattr(proxy.subprocess,"Popen",lambda command,**options:calls.append((command,options)) or Process())
+    records=proxy.resolve_public_records("registry.npmjs.org",2)
+    command,options=calls[0]
+    assert command[:6]==[sys.executable,"-I","-S","-B","-c",proxy.RESOLVER_HELPER]
+    assert command[-1]=="registry.npmjs.org" and options["start_new_session"] is True
+    assert options["stderr"] is subprocess.DEVNULL and options["env"]=={"PATH":"/usr/local/bin:/usr/bin:/bin"}
+    assert records[0][-1]==("93.184.216.34",443) and calls[1]==("communicate",2)
+
+@pytest.mark.parametrize("payload",[
+    b'{}\n',
+    b'{"records":[],"records":[]}\n',
+    b'{"records": []}\n',
+    b'{"records":[[2,1,6,["93.184.216.34",80]]]}\n',
+    b'{"records":[[2,1,6,["93.184.216.34",443]], [2,1,6,["93.184.216.35",443]]]}\n',
+])
+def test_resolver_output_rejects_missing_duplicate_noncanonical_or_invalid_payload(payload):
+    with pytest.raises((RuntimeError,ValueError)):
+        proxy._decode_resolver_output(payload)
+
+def test_resolver_timeout_kills_and_reaps_the_exact_process_group(monkeypatch):
+    calls=[]
+    class Process:
+        pid=72; returncode=-signal.SIGKILL
+        def communicate(self,timeout):
+            calls.append(("communicate",timeout))
+            if len(calls)==1: raise subprocess.TimeoutExpired(["resolver"],timeout)
+            return b"",None
+    monkeypatch.setattr(proxy.subprocess,"Popen",lambda *_args,**_kwargs:Process())
+    monkeypatch.setattr(proxy.os,"killpg",lambda pid,sig:calls.append(("killpg",pid,sig)))
+    with pytest.raises(TimeoutError,match="resolution timed out"):
+        proxy.resolve_public_records("registry.npmjs.org",0.25)
+    assert calls==[("communicate",0.25),("killpg",72,signal.SIGKILL),("communicate",1)]
 
 def test_status_record_is_nonce_bound_bounded_and_mode_0600(tmp_path):
     path=tmp_path/"status.json"; status=proxy.ProxyStatus(path,"run-nonce"); status.update(accepted=1,active=1); status.update(active=-1,completed=1,client_bytes=4)

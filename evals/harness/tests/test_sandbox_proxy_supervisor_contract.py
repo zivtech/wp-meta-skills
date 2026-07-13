@@ -66,6 +66,14 @@ def test_top_gate_rejects_nonzero_even_with_exact_inventory():
         supervisor._top_gate(lambda *_args:top_result(["sleep infinity"," ".join(ARGV)],7),"proxy",ARGV,time.monotonic()+1)
 
 
+def test_top_gate_failure_reports_only_bounded_process_fingerprints():
+    secret="authorization-token-must-not-appear"
+    with pytest.raises(RuntimeError) as caught:
+        supervisor._top_gate(lambda *_args:top_result(["sleep infinity",secret]),"proxy",ARGV,time.monotonic()+1)
+    message=str(caught.value)
+    assert secret not in message and '"count":2' in message and '"argv_sha256"' in message
+
+
 @pytest.mark.parametrize("commands",[
     [],[" ".join(ARGV)],["sleep infinity","sleep infinity"],
     ["sleep infinity"," ".join(ARGV),"helper signal"],["sleep infinity","sleep 60"],

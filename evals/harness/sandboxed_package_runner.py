@@ -197,7 +197,8 @@ def _control_run(command,timeout=30):
 def _memory_bytes(value):
     units={"b":1,"k":1024,"m":1024**2,"g":1024**3}; suffix=value[-1].lower()
     return int(value[:-1])*units[suffix] if suffix in units else int(value)
-
+def _require_bare_no_new_privileges(host,boundary):
+    if host.get("SecurityOpt") != ["no-new-privileges"]: raise RuntimeError(f"{boundary} no-new-privileges serialization drift")
 def _inspect_boundary(name,request,capability=None,context=None,deadline=None):
     timeout=lambda value:value if deadline is None else min(value,_remaining(deadline))
     result=_run(["docker","inspect",name],request,timeout(30))
@@ -214,7 +215,9 @@ def _inspect_boundary(name,request,capability=None,context=None,deadline=None):
     if host.get("PidMode") or host.get("IpcMode") not in {"","private"} or host.get("UTSMode") or host.get("UsernsMode"): raise RuntimeError("container namespace drift")
     if host.get("RestartPolicy")!={"Name":"no","MaximumRetryCount":0}: raise RuntimeError("container restart drift")
     if host["PidsLimit"]!=request.pids or host["Memory"]!=_memory_bytes(request.memory) or host["MemorySwap"]!=_memory_bytes(request.memory) or host["NanoCpus"]!=int(float(request.cpus)*1_000_000_000): raise RuntimeError("container resource drift")
-    if host["SecurityOpt"]!=["no-new-privileges:true"] or host["Binds"] or host["Privileged"]: raise RuntimeError("container security drift")
+    _require_bare_no_new_privileges(host,"container")
+    if host["Binds"]: raise RuntimeError("container bind inventory drift")
+    if host["Privileged"]: raise RuntimeError("container privilege drift")
     expected_dns=["127.0.0.1"] if context else []
     if host.get("Devices") or host.get("PortBindings") or host.get("ExtraHosts") or host.get("Dns",[])!=expected_dns or host.get("DnsSearch"): raise RuntimeError("container host surface drift")
     if host.get("Ulimits")!=[{"Name":"nofile","Hard":1024,"Soft":1024}] or host["LogConfig"]["Type"]!="none": raise RuntimeError("container process/logging drift")
@@ -440,7 +443,8 @@ def _inspect_proxy(context,name,request):
     if not host["ReadonlyRootfs"] or host["CapDrop"]!=["ALL"] or host["PidsLimit"]!=64 or host["Memory"]!=PROXY_MEMORY_BYTES or host["MemorySwap"]!=PROXY_MEMORY_BYTES or host["NanoCpus"]!=1_000_000_000: raise RuntimeError("proxy resource boundary drift")
     if host["NetworkMode"]!=context.internal or host.get("RestartPolicy")!={"Name":"no","MaximumRetryCount":0} or host.get("CapAdd"): raise RuntimeError("proxy namespace or restart drift")
     if host.get("PidMode") or host.get("IpcMode") not in {"","private"} or host.get("UTSMode") or host.get("UsernsMode"): raise RuntimeError("proxy namespace sharing drift")
-    if host["SecurityOpt"]!=["no-new-privileges:true"] or host["Privileged"] or host.get("PortBindings") or host.get("Binds") or host.get("Dns") or host.get("ExtraHosts") or host.get("Devices"): raise RuntimeError("proxy host surface drift")
+    _require_bare_no_new_privileges(host,"proxy")
+    if host["Privileged"] or host.get("PortBindings") or host.get("Binds") or host.get("Dns") or host.get("ExtraHosts") or host.get("Devices"): raise RuntimeError("proxy host surface drift")
     if host.get("Ulimits")!=[{"Name":"nofile","Hard":1024,"Soft":1024}] or host["LogConfig"]["Type"]!="none": raise RuntimeError("proxy process/logging drift")
     uid,gid=request.user.split(":"); temporary={"size=16777216","nr_inodes=1024","mode=0700",f"uid={uid}",f"gid={gid}","noexec","nosuid","nodev"}
     if set(host.get("Tmpfs",{}))!={"/tmp"} or set(host["Tmpfs"]["/tmp"].split(","))!=temporary: raise RuntimeError("proxy tmpfs inventory drift")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import signal
@@ -158,12 +159,21 @@ def _process_evidence(control, container, pid, argv, executable, deadline):
         raise RuntimeError("proxy /proc identity drift")
 
 
+def _inventory_diagnostic(lines):
+    sample=[]
+    for line in lines[:8]:
+        command=line[1] if len(line)==2 else ""
+        encoded=command.encode("utf-8","replace")
+        sample.append({"argv_bytes":len(encoded),"argv_sha256":hashlib.sha256(encoded).hexdigest(),"pid_decimal":bool(line and line[0].isascii() and line[0].isdecimal())})
+    return json.dumps({"count":len(lines),"sample":sample},sort_keys=True,separators=(",",":"))
+
+
 def _top_gate(control, container, argv, deadline):
     result = control(["docker", "top", container, "-eo", "pid,args"], _timeout(deadline))
     lines = [line.split(None, 1) for line in result["stdout"].splitlines()[1:] if line.strip()]
     commands = [line[1] for line in lines if len(line) == 2]
     if result["returncode"] or commands != ["sleep infinity", " ".join(argv)]:
-        raise RuntimeError("proxy process inventory drift")
+        raise RuntimeError(f"proxy process inventory drift: {_inventory_diagnostic(lines)}")
 
 
 def _top_no_helper_gate(control, container, argv, deadline):
@@ -171,7 +181,7 @@ def _top_no_helper_gate(control, container, argv, deadline):
     lines = [line.split(None, 1) for line in result["stdout"].splitlines()[1:] if line.strip()]
     commands = [line[1] for line in lines if len(line) == 2]
     if result["returncode"] or commands not in (["sleep infinity"], ["sleep infinity", " ".join(argv)]):
-        raise RuntimeError("proxy control helper survived or process inventory drifted")
+        raise RuntimeError(f"proxy control helper survived or process inventory drifted: {_inventory_diagnostic(lines)}")
 
 
 def launch(container, nonce, argv, user, control, timeout):

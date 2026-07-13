@@ -2,7 +2,7 @@ import dataclasses, inspect, io, ipaddress, json, os, platform, re, select, shut
 from pathlib import Path
 import pytest
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
-import artifact_staging, materialize_wordpress_executor_packet as materializer, runtime_image_provision, sandboxed_package_runner as runner, step4_evidence, workspace_lease
+import artifact_staging, materialize_wordpress_executor_packet as materializer, runtime_image_provision, sandbox_native_poll as native_poll, sandboxed_package_runner as runner, step4_evidence, workspace_lease
 def staged(tmp_path):
     source=tmp_path/"source"; source.mkdir(); (source/"input.txt").write_text("safe")
     return artifact_staging.stage_tree(source,tmp_path/"leases")
@@ -567,21 +567,30 @@ def test_docker_dns_query_never_reaches_host_egress_interface(tmp_path):
     try:
         spec=runner.sandbox_network_policy.specification(token[:12],"fixture"); subprocess.run(runner.sandbox_network_policy.create_command(network,spec,internal=True),check=True,stdout=subprocess.DEVNULL,timeout=60)
         _gateway,package_ip,_proxy_ip=runner.sandbox_network_policy.inspect(runner._control_run,network,spec,internal=True).addresses
+        network_id=subprocess.check_output(["docker","network","inspect",network,"--format","{{.Id}}"],text=True,timeout=30).strip()
+        bridge=f"br-{network_id[:12]}"
+        if bridge not in {name for _index,name in socket.if_nameindex()}: raise RuntimeError("owned Docker bridge interface is unavailable")
         subprocess.run(runner._create_command(req,name,capability,network,package_ip),check=True,stdout=subprocess.DEVNULL,timeout=120)
         subprocess.run(["docker","start",name],check=True,stdout=subprocess.DEVNULL,timeout=60)
-        command=["sudo","-n","tcpdump","-i","any","-U","-c","64","-s","128","-w",str(capture),"(","udp","port","53","or","tcp","port","53",")","and","not","net","127.0.0.0/8","and","not","ip6","net","::1/128"]
+        command=["sudo","-n","tcpdump","-i",bridge,"-U","-c","64","-s","128","-w",str(capture),"udp","port","53","or","tcp","port","53"]
         watcher=subprocess.Popen(command,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,start_new_session=True)
         stop_deadline=time.monotonic()+10
         _wait_tcpdump_ready(watcher,min(stop_deadline,time.monotonic()+3))
+        needle=lambda value:b"".join(bytes([len(label)])+label.encode() for label in value.split("."))
         positive=f"wp-positive-{token}.invalid"; udp=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-        try: udp.sendto(_dns_query_packet(positive),(package_ip,53))
+        def emit_positive(timeout):
+            udp.sendto(_dns_query_packet(positive),(package_ip,53))
+            time.sleep(min(0.05,timeout))
+            visible=capture.exists() and needle(positive) in capture.read_bytes()
+            return subprocess.CompletedProcess([],0 if visible else 1)
+        try: native_poll.until_success(emit_positive,min(stop_deadline,time.monotonic()+3))
         finally: udp.close()
-        time.sleep(0.2); assert watcher.poll() is None
+        assert watcher.poll() is None
         domain=f"wp-step4-{token}.invalid"; script=f"require('dns').lookup('{domain}',e=>process.exit(e?0:1));setTimeout(()=>process.exit(2),1800)"
         lookup=subprocess.run(["docker","exec",name,"timeout","2","node","-e",script],timeout=5)
         assert lookup.returncode==0; time.sleep(0.25); assert watcher.poll() is None
         _stop_tcpdump(watcher,stop_deadline); watcher=None
-        payload=capture.read_bytes(); needle=lambda value:b"".join(bytes([len(label)])+label.encode() for label in value.split("."))
+        payload=capture.read_bytes()
         assert len(payload)<=64*(128+32)+24 and needle(positive) in payload and needle(domain) not in payload
     finally:
         if watcher is not None: _stop_tcpdump(watcher,stop_deadline or time.monotonic()+5)

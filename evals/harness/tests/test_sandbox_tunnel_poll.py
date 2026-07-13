@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import os
 import platform
 import subprocess
@@ -99,14 +100,29 @@ def test_docker_disconnect_breaks_established_tunnel(tmp_path):
     try:
         spec=runner.sandbox_network_policy.specification(token,"fixture"); subprocess.run(runner.sandbox_network_policy.create_command(network,spec,internal=True),check=True,stdout=subprocess.DEVNULL,timeout=60)
         _gateway,package_ip,server_ip=runner.sandbox_network_policy.inspect(runner._control_run,network,spec,internal=True).addresses
-        subprocess.run(runner._create_command(req,package,capability,network,package_ip),check=True,stdout=subprocess.DEVNULL,timeout=120)
-        listener="import socket;s=socket.create_server(('0.0.0.0',9090));c,_=s.accept();c.recv(1)"
+        user=f"{os.getuid()}:{os.getgid()}"; tmpfs=f"/tmp:size=1048576,nr_inodes=64,mode=0700,uid={os.getuid()},gid={os.getgid()},noexec,nosuid,nodev"
+        create=["docker","create","--pull=never","--name",package,"--network",network,"--ip",package_ip,"--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--user",user,"--pids-limit","32","--memory","67108864","--memory-swap","67108864","--tmpfs",tmpfs,"--entrypoint","sleep",python_image,"infinity"]
+        subprocess.run(create,check=True,stdout=subprocess.DEVNULL,timeout=120)
+        listener="import socket,time;s=socket.create_server(('0.0.0.0',9090));c,_=s.accept();\nwhile True:\n c.sendall(b'x');time.sleep(.05)"
         subprocess.run(["docker","create","--pull=never","--name",server,"--network",network,"--ip",server_ip,"--entrypoint","python",python_image,"-c",listener],check=True,stdout=subprocess.DEVNULL,timeout=120)
         subprocess.run(["docker","start",server,package],check=True,stdout=subprocess.DEVNULL,timeout=60); time.sleep(0.2)
-        script=f"const f=require('fs'),n=require('net');const s=n.connect(9090,'{server_ip}',()=>f.writeFileSync('/tmp/connected','1'));let d=false;function x(){{if(!d){{d=true;f.writeFileSync('/tmp/broken','1')}}}}s.on('error',x);s.on('close',x);setTimeout(()=>process.exit(2),10000)"
-        subprocess.run(["docker","exec","-d",package,"node","-e",script],check=True,timeout=30)
-        assert _observe_file(package,"/tmp/connected",time.monotonic()+5)>0
+        script=f"""import socket
+s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1);s.setsockopt(socket.IPPROTO_TCP,socket.TCP_USER_TIMEOUT,1000);s.settimeout(1);s.connect(('{server_ip}',9090))
+try:
+ first=True
+ while True:
+  if not s.recv(1): raise EOFError()
+  if first: open('/tmp/heartbeat','w').write('1');first=False
+except (EOFError,OSError,TimeoutError):
+ open('/tmp/broken','w').write('1')
+"""
+        subprocess.run(["docker","exec","-d",package,"/usr/local/bin/python","-I","-S","-B","-c",script],check=True,timeout=30)
+        assert _observe_file(package,"/tmp/heartbeat",time.monotonic()+5)>0
+        assert subprocess.run(["docker","exec",package,"test","!","-f","/tmp/broken"],timeout=5).returncode==0
         subprocess.run(["docker","network","disconnect",network,package],check=True,timeout=60)
+        inspected=json.loads(subprocess.check_output(["docker","inspect",package],text=True,timeout=30))[0]
+        network_data=json.loads(subprocess.check_output(["docker","network","inspect",network],text=True,timeout=30))[0]
+        assert inspected["NetworkSettings"]["Networks"]=={} and inspected["Id"] not in network_data.get("Containers",{})
         assert _observe_file(package,"/tmp/broken",time.monotonic()+5)>0
     finally:
         subprocess.run(["docker","rm","-f",package,server],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=60)

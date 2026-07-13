@@ -6,13 +6,14 @@ import base64
 import binascii
 import ipaddress
 import json
-import multiprocessing
 import os
 import re
 import selectors
 import signal
 import socket
 import stat
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -23,6 +24,16 @@ from urllib.parse import urlsplit
 NPM_HOSTS = frozenset({"registry.npmjs.org"})
 COMPOSER_HOSTS = frozenset({"api.github.com", "codeload.github.com"})
 HEADER_LIMIT = 8192
+RESOLVER_OUTPUT_LIMIT = 8192
+RESOLVER_HELPER = """import json,socket,sys
+try:
+    answer=socket.getaddrinfo(sys.argv[1],443,type=socket.SOCK_STREAM)
+    if not 1<=len(answer)<=64: raise OverflowError()
+    value={"records":[[int(f),int(s),int(p),list(a)] for f,s,p,_c,a in answer]}
+except BaseException as exc:
+    value={"error":type(exc).__name__}
+sys.stdout.write(json.dumps(value,sort_keys=True,separators=(",",":"),allow_nan=False)+"\\n")
+"""
 
 
 @dataclass(frozen=True)
@@ -191,41 +202,59 @@ def validate_listener_ip(address):
     return str(ip)
 
 
-def _resolver_child(host, connection):
-    try:
-        connection.send(socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM))
-    except BaseException as exc:
-        connection.send({"error": f"{type(exc).__name__}: {exc}"})
-    finally:
-        connection.close()
+def _resolver_record(value):
+    if type(value) is not list or len(value) != 4:
+        raise ValueError("resolver record shape drift")
+    family,socktype,proto,address=value
+    integers=(family,socktype,proto)
+    if any(type(item) is not int for item in integers):
+        raise ValueError("resolver record type drift")
+    if family not in {socket.AF_INET,socket.AF_INET6} or socktype != socket.SOCK_STREAM or proto != socket.IPPROTO_TCP:
+        raise ValueError("resolver socket profile drift")
+    expected=2 if family==socket.AF_INET else 4
+    if type(address) is not list or len(address)!=expected or type(address[0]) is not str or address[1]!=443:
+        raise ValueError("resolver socket address drift")
+    if family==socket.AF_INET6 and (type(address[2]) is not int or type(address[3]) is not int or address[2:]!=[0,0]):
+        raise ValueError("resolver IPv6 scope drift")
+    return family,socktype,proto,"",tuple(address)
+
+
+def _decode_resolver_output(payload):
+    if not isinstance(payload,bytes) or len(payload)>RESOLVER_OUTPUT_LIMIT or not payload.endswith(b"\n") or payload.count(b"\n")!=1:
+        raise RuntimeError("resolver output framing drift")
+    value=_strict_json_bytes(payload)
+    canonical=(json.dumps(value,sort_keys=True,separators=(",",":"),allow_nan=False)+"\n").encode()
+    if payload!=canonical or type(value) is not dict:
+        raise RuntimeError("resolver output canonical encoding drift")
+    if set(value)=={"error"} and isinstance(value["error"],str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}",value["error"]):
+        raise ValueError(f"CONNECT DNS resolution failed: {value['error']}")
+    if set(value)!={"records"} or type(value["records"]) is not list or not 1<=len(value["records"])<=64:
+        raise ValueError("resolver output schema drift")
+    return tuple(_resolver_record(item) for item in value["records"])
+
+
+def _kill_and_reap_resolver(process):
+    try: os.killpg(process.pid,signal.SIGKILL)
+    except ProcessLookupError: pass
+    try: process.communicate(timeout=1)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("DNS resolver process group survived forced termination") from exc
+    if process.returncode is None:
+        raise RuntimeError("DNS resolver process was not reaped")
 
 
 def resolve_public_records(host, timeout=5):
-    context = multiprocessing.get_context("spawn")
-    parent, child = context.Pipe(duplex=False)
-    process = context.Process(target=_resolver_child, args=(host, child))
-    process.start()
-    child.close()
-    try:
-        if not parent.poll(timeout):
-            process.kill()
-            raise TimeoutError("CONNECT DNS resolution timed out")
-        answer = parent.recv()
-    finally:
-        parent.close()
-        _reap_resolver_process(process)
-    if isinstance(answer, dict):
-        raise ValueError(answer["error"])
-    return _validate_records(answer)
-
-
-def _reap_resolver_process(process):
-    process.join(1)
-    if process.is_alive():
-        process.kill()
-        process.join(1)
-    if process.is_alive():
-        raise RuntimeError("DNS resolver process survived forced termination")
+    if host not in NPM_HOSTS|COMPOSER_HOSTS:
+        raise ValueError("CONNECT DNS host is not reviewed")
+    command=[sys.executable,"-I","-S","-B","-c",RESOLVER_HELPER,host]
+    process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env={"PATH":"/usr/local/bin:/usr/bin:/bin"},start_new_session=True)
+    try: payload,_stderr=process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _kill_and_reap_resolver(process)
+        raise TimeoutError("CONNECT DNS resolution timed out") from exc
+    if process.returncode:
+        raise ValueError("CONNECT DNS resolver exited nonzero")
+    return _validate_records(_decode_resolver_output(payload))
 
 
 def _validate_records(answer):

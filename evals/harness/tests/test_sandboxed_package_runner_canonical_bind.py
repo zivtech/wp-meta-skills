@@ -65,6 +65,12 @@ def test_mount_comma_path_is_rejected(tmp_path):
         with pytest.raises(ValueError,match="mount metacharacter"): runner._validate_request(request(tree))
     finally: workspace_lease.cleanup(tree.lease)
 
+@pytest.mark.parametrize("value",[None,[],["no-new-privileges:true"],["no-new-privileges","seccomp=unconfined"]])
+def test_package_and_proxy_require_the_exact_bare_no_new_privileges_serialization(value):
+    assert runner._require_bare_no_new_privileges({"SecurityOpt":["no-new-privileges"]},"fixture") is None
+    with pytest.raises(RuntimeError,match="fixture no-new-privileges serialization drift"):
+        runner._require_bare_no_new_privileges({"SecurityOpt":value},"fixture")
+
 def test_canonical_mount_source_fails_closed_after_lexical_swap(tmp_path):
     tree=staged(tmp_path); capability=runner._validate_request(request(tree),retain=True)
     moved=tree.lease.root/"moved"; tree.root.rename(moved); tree.root.symlink_to(Path.home(),target_is_directory=True)
