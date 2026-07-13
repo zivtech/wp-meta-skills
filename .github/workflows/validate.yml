@@ -71,6 +71,7 @@ jobs:
             evals/harness/tests/test_sandbox_tunnel_poll.py \
             evals/harness/tests/test_sandbox_dns_guard.py \
             evals/harness/tests/test_sandbox_acquisition_diagnostic.py \
+            evals/harness/tests/test_sandbox_acquisition_failure.py \
             evals/harness/tests/test_sandbox_network_policy.py \
             evals/harness/tests/test_sandbox_daemon_control.py \
             evals/harness/tests/test_sandbox_none_network.py \

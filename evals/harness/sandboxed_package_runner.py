@@ -9,8 +9,7 @@ import docker_event_guard
 import runtime_image_provision as provision
 import sandbox_evidence
 import sandbox_dns_guard
-import sandbox_active_daemon as active_daemon
-import sandbox_acquisition_diagnostic
+import sandbox_acquisition_diagnostic, sandbox_active_daemon as active_daemon
 import sandbox_daemon_control as daemon_control
 import sandbox_mount_policy
 import sandbox_network_policy, sandbox_none_network
@@ -564,9 +563,8 @@ def _cleanup_acquisition(context,name,force=False):
         suffix=f"; recovery: {'; '.join(recovery)}" if recovery else ""
         identity="; verify the original Docker daemon before recovery" if context.ledger.identity_tainted else ""
         raise RuntimeError(f"acquisition cleanup retained: {retained}{identity}{suffix}")
-
+def _start_acquisition(name,request,profile,context): _probe_versions(name,request,profile); sandbox_dns_guard.pre_acquisition(name,profile.kind,lambda command,timeout:_run(command,request,timeout)); _prepare_acquisition_paths(name,request,profile); return _start_proxy(context,name,request,profile)
 def _acquire(name,request,profile,context,capability):
-    _probe_versions(name,request,profile); sandbox_dns_guard.pre_acquisition(name,profile.kind,lambda command,timeout:_run(command,request,timeout)); _prepare_acquisition_paths(name,request,profile); context=_start_proxy(context,name,request,profile)
     deadline=context.supervisor.lifecycle_deadline
     health=lambda:proxy_supervisor.check(context.supervisor)
     result=_run_capped_process(["docker","exec","--workdir","/workspace","--",name,*_acquisition_argv(profile.kind,context.proxy_ip)],request,deadline=deadline,health_check=health)
@@ -574,7 +572,6 @@ def _acquire(name,request,profile,context,capability):
     health(); _assert_package_process(name,request,deadline); health(); _wait_proxy_idle(context,request); _assert_proxy_process(context,request); proof=_verify_copy(name,request,exclude_dependencies=True,deadline=deadline)
     if proof.manifest!=request.staged.manifest or proof.path_kinds!=capability.path_kinds: raise RuntimeError("nondependency artifact changed during acquisition")
     return context
-
 def _capture_identity(name,context,request,daemon_id,deadline=None):
     timeout=15 if deadline is None else _phase_timeout(deadline,15)
     result=_bound_control(context.ledger,["docker","inspect",name,_proxy_target(context)],timeout,deadline)
@@ -706,7 +703,7 @@ def _run_live(request,name,capability,profile=None,run_ledger=None):
         package_target=_inspect_boundary(name,request,capability,context,preparation_deadline,daemon_id,none_network_id,run_ledger,run_ledger.target(name)); _prepare(package_target,request,capability,bool(context),preparation_deadline); timings["container_setup"]=time.monotonic()-mark
         if context:
             sandbox_none_network.require_daemon(control,daemon_id,preparation_deadline,taint); mark=time.monotonic()
-            context=_acquire(package_target,request,profile,context,capability); timings["dependency_acquisition"]=time.monotonic()-mark
+            context=_start_acquisition(package_target,request,profile,context); context=_acquire(package_target,request,profile,context,capability); timings["dependency_acquisition"]=time.monotonic()-mark
             lifecycle=context.supervisor.lifecycle_deadline
             metrics={"mem_available":context.memory_available,"proxy_memory_peak":_memory_peak(_proxy_target(context),request,context,lifecycle)}; identity=_capture_identity(package_target,context,request,daemon_id,lifecycle); runtime_identity=_runtime_identity(identity,request)
             mark=time.monotonic(); _stop_proxy(context,request); follower,bound_event=_start_event_channel(run_ledger,request,identity)
