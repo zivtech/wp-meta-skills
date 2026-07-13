@@ -693,9 +693,9 @@ def test_docker_near_limit_byte_and_inode_profiles_pass_without_weakening_quota(
 @pytest.mark.skipif(not docker_ready(),reason="Linux Docker boundary unavailable")
 def test_docker_disconnect_failure_uses_forced_owned_cleanup(tmp_path,monkeypatch):
     tree,req,context,name=docker_cleanup_context(tmp_path); original=runner._remove_retry
-    def inject(command):
+    def inject(command,*args,**kwargs):
         if command==["docker","network","disconnect",context.ledger.target(context.internal),context.ledger.target(name)]: raise RuntimeError("injected normal disconnect failure")
-        return original(command)
+        return original(command,*args,**kwargs)
     monkeypatch.setattr(runner,"_remove_retry",inject)
     try:
         with pytest.raises(RuntimeError,match="injected normal disconnect"): runner._detach_acquisition(context,name,req)

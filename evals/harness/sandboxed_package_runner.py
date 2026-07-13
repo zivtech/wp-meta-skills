@@ -10,6 +10,7 @@ import runtime_image_provision as provision
 import sandbox_evidence
 import sandbox_dns_guard
 import sandbox_active_daemon as active_daemon
+import sandbox_acquisition_diagnostic
 import sandbox_daemon_control as daemon_control
 import sandbox_mount_policy
 import sandbox_network_policy, sandbox_none_network
@@ -569,7 +570,7 @@ def _acquire(name,request,profile,context,capability):
     deadline=context.supervisor.lifecycle_deadline
     health=lambda:proxy_supervisor.check(context.supervisor)
     result=_run_capped_process(["docker","exec","--workdir","/workspace","--",name,*_acquisition_argv(profile.kind,context.proxy_ip)],request,deadline=deadline,health_check=health)
-    if result["returncode"]: raise RuntimeError(f"{profile.kind} acquisition failed")
+    if result["returncode"]: raise RuntimeError(f"{profile.kind} acquisition failed: {sandbox_acquisition_diagnostic.describe(profile,result)}")
     health(); _assert_package_process(name,request,deadline); health(); _wait_proxy_idle(context,request); _assert_proxy_process(context,request); proof=_verify_copy(name,request,exclude_dependencies=True,deadline=deadline)
     if proof.manifest!=request.staged.manifest or proof.path_kinds!=capability.path_kinds: raise RuntimeError("nondependency artifact changed during acquisition")
     return context
