@@ -1,6 +1,6 @@
 """Linux-Docker boundary for direct generated package commands."""
 from __future__ import annotations
-import hashlib, ipaddress, json, math, os, platform, queue, re, stat, subprocess, threading, time, uuid
+import hashlib, json, math, os, platform, queue, re, stat, subprocess, threading, time, uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 import artifact_staging
@@ -9,6 +9,7 @@ import docker_event_guard
 import runtime_image_provision as provision
 import sandbox_evidence
 import sandbox_dns_guard
+import sandbox_network_policy
 import workspace_lease
 
 ENV_ALLOWLIST=frozenset({"HOME","TMPDIR","XDG_CACHE_HOME"})
@@ -422,17 +423,6 @@ def _release_proxy_code(capability):
         except Exception as exc: failure=exc
     raise RuntimeError(f"proxy code lease cleanup failed: {failure}")
 
-def _network_addresses(name,request):
-    result=_control_run(["docker","network","inspect",name],30)
-    if result["returncode"]: raise RuntimeError("internal network inspection failed")
-    data=json.loads(result["stdout"])[0]; configs=data.get("IPAM",{}).get("Config",[])
-    if len(configs)!=1 or not configs[0].get("Subnet") or not configs[0].get("Gateway"): raise RuntimeError("internal network has ambiguous IPAM")
-    network=ipaddress.ip_network(configs[0]["Subnet"]); gateway=ipaddress.ip_address(configs[0]["Gateway"])
-    if network.version!=4 or network.num_addresses<8: raise RuntimeError("internal network is not bounded IPv4")
-    package_ip,proxy_ip=network.network_address+2,network.network_address+3
-    if gateway not in network or gateway in {package_ip,proxy_ip} or not all(item.is_private for item in (gateway,package_ip,proxy_ip)): raise RuntimeError("internal network addressing is not private and conflict-free")
-    return str(gateway),str(package_ip),str(proxy_ip)
-
 def _create_acquisition_context(request,server_arch,ledger=None,run_token=None):
     ledger=ledger if ledger is not None else ResourceLedger()
     token=run_token or uuid.uuid4().hex[:16]
@@ -442,13 +432,17 @@ def _create_acquisition_context(request,server_arch,ledger=None,run_token=None):
     image=_proxy_image(server_arch)
     context=AcquisitionContext(internal,egress,proxy,uuid.uuid4().hex,"","","",image,code,memory_available,ledger)
     try:
-        result=_control_run(["docker","network","create","--internal","--label",f"wp-meta-run={token}",internal],60)
-        if result["returncode"]: raise RuntimeError("internal network creation failed")
-        ledger.record("network",internal,"created"); gateway,package_ip,proxy_ip=_network_addresses(internal,request)
+        internal_spec=sandbox_network_policy.specification(token,"internal")
+        command=sandbox_network_policy.create_command(internal,internal_spec,internal=True,label=f"wp-meta-run={token}")
+        result=_control_run(command,60)
+        if result["returncode"]: raise RuntimeError(f"internal network creation failed: {sandbox_network_policy.bounded_docker_error(result)}")
+        ledger.record("network",internal,"created"); gateway,package_ip,proxy_ip=sandbox_network_policy.inspect(_control_run,internal,internal_spec,internal=True).addresses
         context=replace(context,gateway_ip=gateway,package_ip=package_ip,proxy_ip=proxy_ip)
-        result=_control_run(["docker","network","create","--label",f"wp-meta-run={token}",egress],60)
-        if result["returncode"]: raise RuntimeError("egress network creation failed")
-        ledger.record("network",egress,"created")
+        egress_spec=sandbox_network_policy.specification(token,"egress")
+        command=sandbox_network_policy.create_command(egress,egress_spec,internal=False,label=f"wp-meta-run={token}")
+        result=_control_run(command,60)
+        if result["returncode"]: raise RuntimeError(f"egress network creation failed: {sandbox_network_policy.bounded_docker_error(result)}")
+        ledger.record("network",egress,"created"); sandbox_network_policy.inspect(_control_run,egress,egress_spec,internal=False)
         return context
     except Exception as original:
         try: _cleanup_acquisition(context,"",force=True)
@@ -515,11 +509,10 @@ def _inspect_proxy(context,name,request):
     proxy_networks=proxy["NetworkSettings"]["Networks"]; package_networks=package["NetworkSettings"]["Networks"]
     if set(proxy_networks)!={context.internal,context.egress} or proxy_networks[context.internal]["IPAddress"]!=context.proxy_ip: raise RuntimeError("proxy endpoint drift")
     if set(package_networks)!={context.internal} or package_networks[context.internal]["IPAddress"]!=context.package_ip: raise RuntimeError("package endpoint drift")
-    for network,expected in ((context.internal,{proxy["Id"],package["Id"]}),(context.egress,{proxy["Id"]})):
-        inspected=_control_run(["docker","network","inspect",network],30)
-        if inspected["returncode"]: raise RuntimeError("network inspection failed")
-        network_data=json.loads(inspected["stdout"])[0]
-        if set(network_data.get("Containers",{}))!=expected or bool(network_data["Internal"])!=(network==context.internal): raise RuntimeError("network peer or egress classification drift")
+    internal_spec,egress_spec=sandbox_network_policy.acquisition_specifications(context.internal,context.egress)
+    internal_snapshot=sandbox_network_policy.inspect(_control_run,context.internal,internal_spec,internal=True)
+    egress_snapshot=sandbox_network_policy.inspect(_control_run,context.egress,egress_spec,internal=False)
+    if internal_snapshot.containers!={proxy["Id"],package["Id"]} or egress_snapshot.containers!={proxy["Id"]}: raise RuntimeError("network peer membership drift")
 
 def _read_proxy_status(context,request):
     uid,gid=request.user.split(":")
@@ -720,12 +713,12 @@ def _run_live(request,name,capability,profile=None,run_ledger=None):
     try:
         if profile: context=_create_acquisition_context(request,server_arch,acquisition_ledger,name.removeprefix("wp-package-")); timings["acquisition_context_setup"]=time.monotonic()-mark
         mark=time.monotonic(); command=_create_command(request,name,capability,context.internal if context else None,context.package_ip if context else None); created=_run(command,request,120)
-        if created["returncode"]: raise RuntimeError("container creation failed")
+        if created["returncode"]: raise RuntimeError(f"container creation failed: {sandbox_network_policy.bounded_docker_error(created)}")
         ledger=context.ledger if context else run_ledger
         if ledger: ledger.record("container",name,"created")
         if context: context.ledger.record("network",context.internal,"attached")
         started=_run(["docker","start",name],request,60)
-        if started["returncode"]: raise RuntimeError("container start failed")
+        if started["returncode"]: raise RuntimeError(f"container start failed: {sandbox_network_policy.bounded_docker_error(started)}")
         _inspect_boundary(name,request,capability,context); _prepare(name,request,capability); timings["container_setup"]=time.monotonic()-mark
         if context:
             daemon=_run(["docker","info","--format","{{.ID}}"],request,15); mark=time.monotonic()

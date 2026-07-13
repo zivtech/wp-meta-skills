@@ -61,6 +61,7 @@ jobs:
             evals/harness/tests/test_artifact_staging.py \
             evals/harness/tests/test_dependency_egress_proxy.py \
             evals/harness/tests/test_sandbox_dns_guard.py \
+            evals/harness/tests/test_sandbox_network_policy.py \
             evals/harness/tests/test_step4_evidence.py \
             evals/harness/tests/test_sandboxed_package_runner.py \
             -m 'not docker_boundary' -q

@@ -1,4 +1,4 @@
-import dataclasses, inspect, io, json, os, platform, select, shutil, signal, socket, stat, subprocess, sys, time
+import dataclasses, inspect, io, ipaddress, json, os, platform, select, shutil, signal, socket, stat, subprocess, sys, time
 from pathlib import Path
 import pytest
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
@@ -365,14 +365,14 @@ def test_memory_admission_includes_package_workspace_proxy_and_reserve(tmp_path,
     finally: workspace_lease.cleanup(tree.lease)
 
 def test_partial_acquisition_context_preserves_original_and_cleanup_failure(tmp_path,monkeypatch):
-    tree=staged(tmp_path); req=request(tree); code=runner.ProxyCapability(tree.lease,3,4,"/proc/3/fd/4","a"*64); calls=[]
+    tree=staged(tmp_path); req=request(tree); code=runner.ProxyCapability(tree.lease,3,4,"/proc/3/fd/4","a"*64); calls=[]; commands=[]
     monkeypatch.setattr(runner,"_memory_admission",lambda _request:8*1024**3); monkeypatch.setattr(runner,"_stage_proxy_code",lambda *_args:code)
-    monkeypatch.setattr(runner,"_control_run",lambda command,*_args:{"returncode":0 if "create" in command else 1,"stdout":"","stderr":"inspect failed"})
+    monkeypatch.setattr(runner,"_control_run",lambda command,*_args:commands.append(command) or {"returncode":0 if "create" in command else 1,"stdout":"","stderr":"inspect failed"})
     def cleanup(context,*_args,**_kwargs): calls.extend(context.ledger.events); raise RuntimeError("retained internal network")
     monkeypatch.setattr(runner,"_cleanup_acquisition",cleanup)
     try:
-        with pytest.raises(RuntimeError,match="internal network inspection failed.*cleanup also failed.*retained internal"): runner._create_acquisition_context(req,"amd64")
-        assert any(event.state=="created" and event.kind=="network" for event in calls)
+        with pytest.raises(RuntimeError,match="sandbox network inspection failed.*cleanup also failed.*retained internal"): runner._create_acquisition_context(req,"amd64")
+        assert any(event.state=="created" and event.kind=="network" for event in calls) and {"--subnet","--gateway","--internal"}<=set(commands[0])
     finally: workspace_lease.cleanup(tree.lease)
 
 def test_partial_context_ledger_reaches_final_sandbox_evidence(tmp_path,monkeypatch):
@@ -559,8 +559,8 @@ def test_docker_dns_query_never_reaches_host_egress_interface(tmp_path):
     token=__import__("uuid").uuid4().hex; network=f"wp-dns-observe-{token[:12]}"; name=f"wp-package-dns-{token[:12]}"; capture=tmp_path/"dns.pcap"
     watcher=None; stop_deadline=None
     try:
-        subprocess.run(["docker","network","create","--internal",network],check=True,stdout=subprocess.DEVNULL,timeout=60)
-        _gateway,package_ip,_proxy_ip=runner._network_addresses(network,req)
+        spec=runner.sandbox_network_policy.specification(token[:12],"fixture"); subprocess.run(runner.sandbox_network_policy.create_command(network,spec,internal=True),check=True,stdout=subprocess.DEVNULL,timeout=60)
+        _gateway,package_ip,_proxy_ip=runner.sandbox_network_policy.inspect(runner._control_run,network,spec,internal=True).addresses
         subprocess.run(runner._create_command(req,name,capability,network,package_ip),check=True,stdout=subprocess.DEVNULL,timeout=120)
         subprocess.run(["docker","start",name],check=True,stdout=subprocess.DEVNULL,timeout=60)
         command=["sudo","-n","tcpdump","-i","any","-U","-c","64","-s","128","-w",str(capture),"(","udp","port","53","or","tcp","port","53",")","and","not","net","127.0.0.0/8","and","not","ip6","net","::1/128"]
@@ -587,11 +587,11 @@ def test_docker_dns_query_never_reaches_host_egress_interface(tmp_path):
 @pytest.mark.skipif(not docker_ready(),reason="Linux Docker boundary unavailable")
 @pytest.mark.parametrize("mutation",["alternate-network","restart"])
 def test_docker_continuous_event_guard_rejects_post_detach_mutation(tmp_path,mutation):
-    tree=staged(tmp_path); req=request(tree); capability=runner._validate_request(req,retain=True); token=__import__("uuid").uuid4().hex[:12]
-    network=f"wp-event-mutation-{token}"; alternate=f"wp-event-alternate-{token}"; name=f"wp-package-event-{token}"; follower=None
+    tree=staged(tmp_path); req=request(tree); capability=runner._validate_request(req,retain=True); token=__import__("uuid").uuid4().hex[:12]; alternate_token=__import__("uuid").uuid4().hex[:12]
+    network=f"wp-event-mutation-{token}"; alternate=f"wp-event-alternate-{alternate_token}"; name=f"wp-package-event-{token}"; follower=None
     try:
-        subprocess.run(["docker","network","create","--internal",network],check=True,stdout=subprocess.DEVNULL,timeout=60)
-        _gateway,package_ip,_proxy_ip=runner._network_addresses(network,req)
+        spec=runner.sandbox_network_policy.specification(token,"fixture"); subprocess.run(runner.sandbox_network_policy.create_command(network,spec,internal=True),check=True,stdout=subprocess.DEVNULL,timeout=60)
+        _gateway,package_ip,_proxy_ip=runner.sandbox_network_policy.inspect(runner._control_run,network,spec,internal=True).addresses
         subprocess.run(runner._create_command(req,name,capability,network,package_ip),check=True,stdout=subprocess.DEVNULL,timeout=120)
         subprocess.run(["docker","start",name],check=True,stdout=subprocess.DEVNULL,timeout=60)
         container_id=subprocess.check_output(["docker","inspect",name,"--format","{{.Id}}"],text=True,timeout=30).strip()
@@ -599,7 +599,7 @@ def test_docker_continuous_event_guard_rejects_post_detach_mutation(tmp_path,mut
         follower=runner.docker_event_guard.start(container_id); runner.docker_event_guard.sentinel(follower,name,"pre-reconnect")
         subprocess.run(["docker","network","disconnect",network,name],check=True,timeout=60); runner.docker_event_guard.await_disconnect(follower,network_id)
         if mutation=="alternate-network":
-            subprocess.run(["docker","network","create","--internal",alternate],check=True,stdout=subprocess.DEVNULL,timeout=60)
+            alternate_spec=runner.sandbox_network_policy.specification(alternate_token,"fixture"); subprocess.run(runner.sandbox_network_policy.create_command(alternate,alternate_spec,internal=True),check=True,stdout=subprocess.DEVNULL,timeout=60); runner.sandbox_network_policy.inspect(runner._control_run,alternate,alternate_spec,internal=True)
             subprocess.run(["docker","network","connect",alternate,name],check=True,timeout=60); subprocess.run(["docker","network","disconnect",alternate,name],check=True,timeout=60)
         else: subprocess.run(["docker","restart",name],check=True,stdout=subprocess.DEVNULL,timeout=60)
         runner.docker_event_guard.sentinel(follower,name,"post-reconnect")
@@ -620,9 +620,10 @@ def test_docker_production_proxy_connect_canary_uses_only_fake_public_egress_end
     internal=f"wp-fake-internal-{token}"; egress=f"wp-fake-egress-{token}"; package=f"wp-package-fake-{token}"; proxy_name=f"wp-proxy-fake-{token}"; registry=f"wp-registry-fake-{token}"; code=None; controlled_payload=None
     arch=runner._normalize_server_arch(subprocess.check_output(["docker","info","--format","{{.Architecture}}"],text=True,timeout=30)); python_image=runner._proxy_image(arch)
     try:
-        subprocess.run(["docker","network","create","--internal",internal],check=True,stdout=subprocess.DEVNULL,timeout=60)
+        spec=runner.sandbox_network_policy.specification(token,"fixture"); subprocess.run(runner.sandbox_network_policy.create_command(internal,spec,internal=True),check=True,stdout=subprocess.DEVNULL,timeout=60)
+        # Exact globally classified subnet is a controlled-CONNECT canary only; production allocation never uses it.
         subprocess.run(["docker","network","create","--subnet",step4_evidence.FAKE_PUBLIC_SUBNET,"--gateway",step4_evidence.FAKE_PUBLIC_GATEWAY,egress],check=True,stdout=subprocess.DEVNULL,timeout=60)
-        gateway,package_ip,proxy_ip=runner._network_addresses(internal,req); code=runner._stage_proxy_code()
+        gateway,package_ip,proxy_ip=runner.sandbox_network_policy.inspect(runner._control_run,internal,spec,internal=True).addresses; code=runner._stage_proxy_code()
         run_nonce=f"wp-status-{__import__('uuid').uuid4().hex}"; context=runner.AcquisitionContext(internal,egress,proxy_name,run_nonce,package_ip,proxy_ip,gateway,python_image,code,8*1024**3,runner.ResourceLedger())
         subprocess.run(runner._create_command(req,package,capability,internal,package_ip),check=True,stdout=subprocess.DEVNULL,timeout=120)
         relay_nonce=f"wp-{token}"; server=f"import socket;s=socket.create_server(('0.0.0.0',443));c,_=s.accept();d=c.recv(64);c.sendall(d if d==b'{relay_nonce}' else b'bad');c.close()"
@@ -637,7 +638,7 @@ def test_docker_production_proxy_connect_canary_uses_only_fake_public_egress_end
         assert package_data["NetworkSettings"]["Networks"][internal]["IPAddress"]==package_ip
         assert proxy_data["NetworkSettings"]["Networks"][internal]["IPAddress"]==proxy_ip and set(proxy_data["NetworkSettings"]["Networks"])=={internal,egress}
         proxy_egress_ip=proxy_data["NetworkSettings"]["Networks"][egress]["IPAddress"]
-        assert runner.ipaddress.ip_address(proxy_egress_ip) in runner.ipaddress.ip_network(step4_evidence.FAKE_PUBLIC_SUBNET)
+        assert ipaddress.ip_address(proxy_egress_ip) in ipaddress.ip_network(step4_evidence.FAKE_PUBLIC_SUBNET)
         assert registry_data["NetworkSettings"]["Networks"][egress]["IPAddress"]==step4_evidence.FAKE_REGISTRY_IP
         assert set(internal_data["Containers"])=={package_data["Id"],proxy_data["Id"]} and set(egress_data["Containers"])=={proxy_data["Id"],registry_data["Id"]}
         assert internal_data["Containers"][package_data["Id"]]["IPv4Address"].split("/")[0]==package_ip and internal_data["Containers"][proxy_data["Id"]]["IPv4Address"].split("/")[0]==proxy_ip
@@ -669,8 +670,8 @@ def test_docker_disconnect_breaks_established_tunnel(tmp_path):
     network=f"wp-tunnel-break-{token}"; package=f"wp-package-tunnel-{token}"; server=f"wp-acquire-proxy-break-{token}"
     python_image=runner._proxy_image(runner._normalize_server_arch(subprocess.check_output(["docker","info","--format","{{.Architecture}}"],text=True,timeout=30)))
     try:
-        subprocess.run(["docker","network","create","--internal",network],check=True,stdout=subprocess.DEVNULL,timeout=60)
-        _gateway,package_ip,server_ip=runner._network_addresses(network,req)
+        spec=runner.sandbox_network_policy.specification(token,"fixture"); subprocess.run(runner.sandbox_network_policy.create_command(network,spec,internal=True),check=True,stdout=subprocess.DEVNULL,timeout=60)
+        _gateway,package_ip,server_ip=runner.sandbox_network_policy.inspect(runner._control_run,network,spec,internal=True).addresses
         subprocess.run(runner._create_command(req,package,capability,network,package_ip),check=True,stdout=subprocess.DEVNULL,timeout=120)
         listener="import socket;s=socket.create_server(('0.0.0.0',9090));c,_=s.accept();c.recv(1)"
         subprocess.run(["docker","create","--pull=never","--name",server,"--network",network,"--ip",server_ip,"--entrypoint","python",python_image,"-c",listener],check=True,stdout=subprocess.DEVNULL,timeout=120)
