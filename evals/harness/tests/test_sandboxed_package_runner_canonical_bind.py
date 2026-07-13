@@ -70,7 +70,7 @@ def test_canonical_mount_source_fails_closed_after_lexical_swap(tmp_path):
     moved=tree.lease.root/"moved"; tree.root.rename(moved); tree.root.symlink_to(Path.home(),target_is_directory=True)
     try:
         command=runner._create_command(request(tree),"container",capability)
-        assert f"src={capability.source},dst=/input,readonly" in " ".join(command)
+        assert f"src={capability.source},dst=/input,readonly,bind-propagation=rprivate" in " ".join(command)
         assert capability.source==str(tree.root.absolute()) and "/proc/" not in capability.source
         assert os.fstat(capability.root_fd).st_ino==capability.inode
         with pytest.raises((OSError,ValueError,RuntimeError)): runner._reprove_artifact(capability)
@@ -187,7 +187,7 @@ def test_proxy_container_is_pinned_dual_network_orchestrator_without_artifact(tm
     assert image in command and "--network internal" in joined and "--network-alias" not in command
     assert "--pull=never" in command
     assert "--read-only" in command and "--cap-drop ALL" in joined and "--log-driver none" in joined
-    assert f"src={code.source},dst=/proxy.py,readonly" in joined and "/proc/" not in joined and "/input" not in joined and "--env" not in command
+    assert f"src={code.source},dst=/proxy.py,readonly,bind-propagation=rprivate" in joined and "/proc/" not in joined and "/input" not in joined and "--env" not in command
     assert f"--memory-swap {runner.PROXY_MEMORY_BYTES}" in joined and "nofile=1024:1024" in joined and f"--user {req.user}" in joined
     workspace_lease.cleanup(tree.lease)
 

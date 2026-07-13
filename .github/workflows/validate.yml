@@ -65,7 +65,10 @@ jobs:
             evals/harness/tests/test_sandbox_proxy_supervisor_contract.py \
             evals/harness/tests/test_sandbox_python_preflight.py \
             evals/harness/tests/test_sandbox_python_preflight_contract.py \
+            evals/harness/tests/test_sandbox_python_preflight_diagnostic.py \
+            evals/harness/tests/test_sandbox_mount_policy.py \
             evals/harness/tests/test_sandbox_source_proof.py \
+            evals/harness/tests/test_sandbox_tunnel_poll.py \
             evals/harness/tests/test_sandbox_dns_guard.py \
             evals/harness/tests/test_sandbox_network_policy.py \
             evals/harness/tests/test_step4_evidence.py \
@@ -73,6 +76,33 @@ jobs:
             evals/harness/tests/test_sandboxed_package_runner_canonical_bind.py \
             evals/harness/tests/test_workspace_lease.py \
             -m 'not docker_boundary' -q
+      - name: Observe exact zero-mount preflight serialization
+        run: |
+          PYTHONPATH=evals/harness python - <<'PY'
+          import json
+          import os
+          import secrets
+          import runtime_image_provision as provision
+          import sandbox_python_preflight_diagnostic as diagnostic
+          class Ledger:
+              def __init__(self): self.events=[]
+              def record(self,*event): self.events.append(event)
+          architecture=provision.run_capped(["docker","info","--format","{{.Architecture}}"],timeout=30,limit=32768)
+          if architecture["returncode"]: raise RuntimeError("Docker architecture observation failed")
+          arch=provision.normalize_arch(architecture["stdout"].strip())
+          item=provision.inventory()["images"]["python"]
+          image=f"{item['tag'].split(':')[0]}@{item[arch]}"
+          identity=provision.run_capped(["docker","image","inspect",image,"--format","{{.Id}}"],timeout=30,limit=32768)
+          if identity["returncode"]: raise RuntimeError("pinned Python image identity unavailable")
+          result=diagnostic.run(
+              lambda command,timeout:provision.run_capped(command,timeout=timeout,limit=32768),
+              image,identity["stdout"].strip(),f"{os.getuid()}:{os.getgid()}",secrets.token_hex(8),Ledger(),
+          )
+          encoded=json.dumps(result,sort_keys=True,separators=(",",":"),allow_nan=False)
+          print(encoded)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a",encoding="utf-8") as summary:
+              summary.write("## Zero-mount preflight serialization\n\n```json\n"+encoded+"\n```\n")
+          PY
       - name: Run implemented package acquisition and endpointless boundary cases
         run: |
           evidence_dir="$RUNNER_TEMP/wp-step4-evidence"
@@ -87,6 +117,7 @@ jobs:
             evals/harness/tests/test_sandboxed_package_runner_canonical_bind.py \
             evals/harness/tests/test_sandbox_proxy_supervisor_contract.py \
             evals/harness/tests/test_sandbox_python_preflight.py \
+            evals/harness/tests/test_sandbox_tunnel_poll.py \
             -m docker_boundary -q
           pytest_status=$?
           set -e

@@ -1,4 +1,4 @@
-import dataclasses, inspect, io, ipaddress, json, os, platform, select, shutil, signal, socket, stat, subprocess, sys, threading, time
+import dataclasses, inspect, io, ipaddress, json, os, platform, re, select, shutil, signal, socket, stat, subprocess, sys, threading, time
 from pathlib import Path
 import pytest
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
@@ -574,7 +574,7 @@ def test_docker_dns_query_never_reaches_host_egress_interface(tmp_path):
         stop_deadline=time.monotonic()+10
         _wait_tcpdump_ready(watcher,min(stop_deadline,time.monotonic()+3))
         positive=f"wp-positive-{token}.invalid"; udp=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-        try: udp.sendto(_dns_query_packet(positive),("1.1.1.1",53))
+        try: udp.sendto(_dns_query_packet(positive),(package_ip,53))
         finally: udp.close()
         time.sleep(0.2); assert watcher.poll() is None
         domain=f"wp-step4-{token}.invalid"; script=f"require('dns').lookup('{domain}',e=>process.exit(e?0:1));setTimeout(()=>process.exit(2),1800)"
@@ -663,32 +663,6 @@ def test_docker_production_proxy_connect_canary_uses_only_fake_public_egress_end
         controlled_payload={"cleanup_disposition":None,"proxy_status":status.value,"relay_nonce":relay_nonce,"run_nonce":run_nonce,"topology":{"containers":{"package":{"id":package_data["Id"],"name":package,"ips":{internal:package_ip}},"proxy":{"id":proxy_data["Id"],"name":proxy_name,"ips":{internal:proxy_ip,egress:proxy_egress_ip}},"registry":{"id":registry_data["Id"],"name":registry,"ips":{egress:step4_evidence.FAKE_REGISTRY_IP}}},"networks":{"internal":{"id":internal_data["Id"],"name":internal,"internal":internal_data["Internal"],"subnet":internal_config["Subnet"],"gateway":internal_config["Gateway"]},"egress":{"id":egress_data["Id"],"name":egress,"internal":egress_data["Internal"],"subnet":egress_config["Subnet"],"gateway":egress_config["Gateway"]}}}}
     finally:
         finish_controlled_connect_fixture(context,stopped,package,proxy_name,registry,internal,egress,code,capability,tree,controlled_payload)
-
-@pytest.mark.docker_boundary
-@pytest.mark.skipif(not docker_ready(),reason="Linux Docker boundary unavailable")
-def test_docker_disconnect_breaks_established_tunnel(tmp_path):
-    tree=staged(tmp_path); req=request(tree); capability=runner._validate_request(req,retain=True); token=__import__("uuid").uuid4().hex[:12]
-    network=f"wp-tunnel-break-{token}"; package=f"wp-package-tunnel-{token}"; server=f"wp-acquire-proxy-break-{token}"
-    python_image=runner._proxy_image(runner._normalize_server_arch(subprocess.check_output(["docker","info","--format","{{.Architecture}}"],text=True,timeout=30)))
-    try:
-        spec=runner.sandbox_network_policy.specification(token,"fixture"); subprocess.run(runner.sandbox_network_policy.create_command(network,spec,internal=True),check=True,stdout=subprocess.DEVNULL,timeout=60)
-        _gateway,package_ip,server_ip=runner.sandbox_network_policy.inspect(runner._control_run,network,spec,internal=True).addresses
-        subprocess.run(runner._create_command(req,package,capability,network,package_ip),check=True,stdout=subprocess.DEVNULL,timeout=120)
-        listener="import socket;s=socket.create_server(('0.0.0.0',9090));c,_=s.accept();c.recv(1)"
-        subprocess.run(["docker","create","--pull=never","--name",server,"--network",network,"--ip",server_ip,"--entrypoint","python",python_image,"-c",listener],check=True,stdout=subprocess.DEVNULL,timeout=120)
-        subprocess.run(["docker","start",server,package],check=True,stdout=subprocess.DEVNULL,timeout=60); time.sleep(0.2)
-        script=f"const f=require('fs'),n=require('net');const s=n.connect(9090,'{server_ip}',()=>f.writeFileSync('/tmp/connected','1'));let d=false;function x(){{if(!d){{d=true;f.writeFileSync('/tmp/broken','1')}}}}s.on('error',x);s.on('close',x);setTimeout(()=>process.exit(2),10000)"
-        subprocess.run(["docker","exec","-d",package,"node","-e",script],check=True,timeout=30)
-        deadline=time.monotonic()+5
-        while subprocess.run(["docker","exec",package,"test","-f","/tmp/connected"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5).returncode and time.monotonic()<deadline: time.sleep(0.05)
-        assert time.monotonic()<deadline; subprocess.run(["docker","network","disconnect",network,package],check=True,timeout=60)
-        deadline=time.monotonic()+5
-        while subprocess.run(["docker","exec",package,"test","-f","/tmp/broken"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5).returncode and time.monotonic()<deadline: time.sleep(0.05)
-        assert time.monotonic()<deadline
-    finally:
-        subprocess.run(["docker","rm","-f",package,server],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=60)
-        subprocess.run(["docker","network","rm",network],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=60)
-        os.close(capability.root_fd); os.close(capability.lease_fd); workspace_lease.cleanup(tree.lease)
 
 @pytest.mark.docker_boundary
 @pytest.mark.skipif(not docker_ready(),reason="Linux Docker boundary unavailable")

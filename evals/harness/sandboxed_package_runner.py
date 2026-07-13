@@ -9,6 +9,7 @@ import docker_event_guard
 import runtime_image_provision as provision
 import sandbox_evidence
 import sandbox_dns_guard
+import sandbox_mount_policy
 import sandbox_network_policy
 import sandbox_process_transport as process_transport
 import sandbox_python_preflight as python_preflight
@@ -162,18 +163,14 @@ def _configured_mount_gate(name,request,source,destination):
     result=_run(["docker","inspect",name],request,30)
     if result["returncode"]: raise RuntimeError(f"pre-start container inspection failed: {result['stderr'][:4096]}")
     data=json.loads(result["stdout"])[0]; mounts=data["HostConfig"].get("Mounts",[])
-    if len(mounts)!=1: raise RuntimeError("pre-start bind inventory drift")
-    mount=mounts[0]; options=mount.get("BindOptions") or {}
-    if mount.get("Type")!="bind" or mount.get("Source")!=source or mount.get("Target")!=destination or mount.get("ReadOnly") is not True or options.get("Propagation")!="rprivate": raise RuntimeError("pre-start canonical bind drift")
+    sandbox_mount_policy.require_configured(mounts,source,destination,"pre-start canonical bind")
 
 def _configured_proxy_mount_gate(context):
     result=_control_run(["docker","inspect",context.proxy],30)
     if result["returncode"]: raise RuntimeError(f"pre-start proxy inspection failed: {result['stderr'][:4096]}")
     data=json.loads(result["stdout"])[0]; python_preflight.assert_image_environment(data["Config"].get("Env"))
     mounts=data["HostConfig"].get("Mounts",[])
-    if len(mounts)!=1: raise RuntimeError("pre-start proxy bind inventory drift")
-    mount=mounts[0]; options=mount.get("BindOptions") or {}
-    if mount.get("Type")!="bind" or mount.get("Source")!=context.proxy_code.source or mount.get("Target")!="/proxy.py" or mount.get("ReadOnly") is not True or options.get("Propagation")!="rprivate": raise RuntimeError("pre-start canonical proxy bind drift")
+    sandbox_mount_policy.require_configured(mounts,context.proxy_code.source,"/proxy.py","pre-start canonical proxy bind")
 
 def _live_input_identity(name,request,capability,deadline=None):
     observed=_run(["docker","exec",name,"stat","-c","%d:%i","/input"],request,30 if deadline is None else min(30,_remaining(deadline)))
@@ -187,7 +184,7 @@ def _create_command(request,name,capability=None,network=None,ip=None):
     command.extend(("--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--user",request.user,"--pids-limit",str(request.pids),"--memory",request.memory,"--memory-swap",request.memory,"--cpus",request.cpus,"--ulimit","nofile=1024:1024","--log-driver","none","--tmpfs",work))
     for path in ("/tmp","/home/sandbox","/cache"): command.extend(("--tmpfs",temp(path)))
     source=capability.source if capability else str(request.staged.root)
-    command.extend(("--mount",f"type=bind,src={source},dst=/input,readonly"))
+    command.extend(("--mount",sandbox_mount_policy.bind_spec(source,"/input")))
     for key,value in request.environment: command.extend(("--env",f"{key}={value}"))
     command.extend(("--entrypoint","sleep",request.image,"infinity")); return command
 
@@ -223,7 +220,7 @@ def _inspect_boundary(name,request,capability=None,context=None,deadline=None):
     if host.get("Ulimits")!=[{"Name":"nofile","Hard":1024,"Soft":1024}] or host["LogConfig"]["Type"]!="none": raise RuntimeError("container process/logging drift")
     mounts=data["Mounts"]
     expected_source=capability.source if capability else str(request.staged.root)
-    if len(mounts)!=1 or mounts[0]["Type"]!="bind" or mounts[0]["Destination"]!="/input" or mounts[0]["RW"] or mounts[0].get("Propagation")!="rprivate" or mounts[0]["Source"]!=expected_source: raise RuntimeError("input bind drift")
+    sandbox_mount_policy.require_live(mounts,expected_source,"/input","input bind")
     if capability:
         observed=_run(["docker","exec",name,"stat","-c","%d:%i","/input"],request,timeout(30))
         if observed["returncode"] or observed["stdout"].strip()!=f"{capability.device}:{capability.inode}": raise RuntimeError("input descriptor identity drift")
@@ -394,7 +391,7 @@ def _create_acquisition_context(request,server_arch,ledger=None,run_token=None,p
 def _proxy_create_command(context,hosts,request):
     uid,gid=request.user.split(":")
     temporary=f"/tmp:size=16777216,nr_inodes=1024,mode=0700,uid={uid},gid={gid},noexec,nosuid,nodev"
-    command=["docker","create","--pull=never","--name",context.proxy,"--network",context.internal,"--ip",context.proxy_ip,"--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--user",request.user,"--pids-limit","64","--memory",str(PROXY_MEMORY_BYTES),"--memory-swap",str(PROXY_MEMORY_BYTES),"--cpus","1","--ulimit","nofile=1024:1024","--log-driver","none","--tmpfs",temporary,"--mount",f"type=bind,src={context.proxy_code.source},dst=/proxy.py,readonly","--entrypoint","sleep",context.proxy_image,"infinity"]
+    command=["docker","create","--pull=never","--name",context.proxy,"--network",context.internal,"--ip",context.proxy_ip,"--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--user",request.user,"--pids-limit","64","--memory",str(PROXY_MEMORY_BYTES),"--memory-swap",str(PROXY_MEMORY_BYTES),"--cpus","1","--ulimit","nofile=1024:1024","--log-driver","none","--tmpfs",temporary,"--mount",sandbox_mount_policy.bind_spec(context.proxy_code.source,"/proxy.py"),"--entrypoint","sleep",context.proxy_image,"infinity"]
     return command
 
 def _proxy_argv(context,hosts):
@@ -451,7 +448,7 @@ def _inspect_proxy(context,name,request):
     env_keys={item.split("=",1)[0].casefold() for item in proxy["Config"].get("Env",[])}
     if env_keys&{"http_proxy","https_proxy","all_proxy","no_proxy","node_extra_ca_certs","requests_ca_bundle","curl_ca_bundle","docker_config"}: raise RuntimeError("proxy inherited host credential or transport environment")
     mounts=proxy["Mounts"]
-    if len(mounts)!=1 or mounts[0]["Destination"]!="/proxy.py" or mounts[0]["RW"] or mounts[0].get("Propagation")!="rprivate" or mounts[0]["Source"]!=context.proxy_code.source: raise RuntimeError("proxy code mount drift")
+    sandbox_mount_policy.require_live(mounts,context.proxy_code.source,"/proxy.py","proxy code mount")
     opened=os.fstat(context.proxy_code.file_fd)
     proof=_control_run(["docker","exec",context.proxy,"python","-c","import hashlib,os; s=os.stat('/proxy.py'); print(f'{s.st_dev}:{s.st_ino}:{s.st_mode&0o777:o}'); print(hashlib.sha256(open('/proxy.py','rb').read()).hexdigest())"],15)
     if proof["returncode"] or proof["stdout"].splitlines()!=[f"{opened.st_dev}:{opened.st_ino}:400",context.proxy_code.sha256]: raise RuntimeError("proxy descriptor identity or digest drift")
