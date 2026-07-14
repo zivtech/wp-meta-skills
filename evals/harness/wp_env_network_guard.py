@@ -139,7 +139,10 @@ def execute_failure_diagnostic(container, runtime):
     return evidence
 
 def compose_start_failure_diagnostic(base):
-    ids=provision.run_capped(base+["ps","-aq"],timeout=15,limit=4096)
+    try:
+        ids=provision.run_capped(base+["ps","-aq"],timeout=15,limit=4096)
+    except Exception as exc:
+        return {"stage":"container_ids","error":type(exc).__name__}
     containers=ids.get("stdout","").split()
     if ids.get("returncode") or not containers:
         return {"container_ids":ids,"inspection":None}
@@ -150,10 +153,20 @@ def compose_start_failure_diagnostic(base):
               '"exit_code":{{json .State.ExitCode}},"error":{{json .State.Error}},'
               '"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}}},'
               '"networks":{{json .NetworkSettings.Networks}}}')
-    inspected=provision.run_capped(
-        ["docker","inspect","--format",template,*containers],timeout=15,limit=32768,
-    )
+    try:
+        inspected=provision.run_capped(
+            ["docker","inspect","--format",template,*containers],timeout=15,limit=32768,
+        )
+    except Exception as exc:
+        inspected={"stage":"inspection","error":type(exc).__name__}
     return {"container_ids":{"returncode":0,"count":len(containers)},"inspection":inspected}
+
+def compose_start_failure(result,base):
+    try:
+        diagnostic=compose_start_failure_diagnostic(base)
+    except Exception as exc:
+        diagnostic={"stage":"diagnostic","error":type(exc).__name__}
+    return RuntimeError(f"{result['stderr']}; diagnostic={json.dumps(diagnostic,sort_keys=True)}")
 
 WRITABLE_PATHS={"database":{"/var/lib/mysql","/run/mysqld","/tmp"},"wordpress":{"/tmp","/var/www/html/wp-content/uploads"},"cli":{"/tmp"},"browser":{"/tmp"}}
 SERVICE_NETWORKS={
@@ -383,8 +396,7 @@ def _run_linux_canary(work):
         if configured != {built["wordpress"],built["database"],playwright}: raise RuntimeError("final Compose image inventory mismatch")
         result=provision.run_capped(base+["up","-d","--wait"],timeout=300)
         if result["returncode"]:
-            diagnostic=compose_start_failure_diagnostic(base)
-            raise RuntimeError(f"{result['stderr']}; diagnostic={json.dumps(diagnostic,sort_keys=True)}")
+            raise compose_start_failure(result,base)
         for probe in runtime_probe_specs(base): run_named_probe(probe)
         live_ids={}; gateways=set(); observed_profiles=[]; exhaustion_targets={"size":{},"inodes":{}}
         for service,image_tag in (("wordpress",wp_tag),("cli",wp_tag),("database",db_tag),("browser",playwright)):

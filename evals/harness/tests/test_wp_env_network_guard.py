@@ -286,7 +286,27 @@ def test_compose_start_failure_diagnostic_is_bounded_and_excludes_config(monkeyp
     assert inspect[-2:] == ["container-a","container-b"]
     assert all(field in inspect[3] for field in (".State.Status",".State.ExitCode",".State.Error",".NetworkSettings.Networks"))
     assert all(field not in inspect[3] for field in ("{{json .State}}",".State.Health",".Config","Env","Mounts"))
+    assert calls[0][1] == {"timeout":15,"limit":4096}
     assert options == {"timeout":15,"limit":32768}
+
+@pytest.mark.parametrize("failure_call,expected_stage",[(1,"container_ids"),(2,"inspection")])
+def test_compose_start_failure_diagnostic_never_masks_primary_failure(monkeypatch,failure_call,expected_stage):
+    calls=0
+    def fake(_command,**_kwargs):
+        nonlocal calls
+        calls+=1
+        if calls==failure_call: raise RuntimeError("diagnostic failed")
+        return {"returncode":0,"stdout":"container-a\n","stderr":""}
+    monkeypatch.setattr(guard.provision,"run_capped",fake)
+    evidence=guard.compose_start_failure_diagnostic(["docker","compose"])
+    failure=evidence if failure_call==1 else evidence["inspection"]
+    assert failure == {"stage":expected_stage,"error":"RuntimeError"}
+
+def test_compose_start_failure_preserves_primary_when_diagnostic_itself_raises(monkeypatch):
+    monkeypatch.setattr(guard,"compose_start_failure_diagnostic",lambda _base:(_ for _ in ()).throw(ValueError("broken")))
+    error=guard.compose_start_failure({"stderr":"primary compose failure"},["docker","compose"])
+    assert "primary compose failure" in str(error)
+    assert '"stage": "diagnostic"' in str(error) and '"error": "ValueError"' in str(error)
 
 def test_execute_failure_preserves_original_return_code(monkeypatch,tmp_path):
     monkeypatch.setattr(guard.materializer,"materialize_packet",lambda *_args,**_kwargs:{"pass":True})
