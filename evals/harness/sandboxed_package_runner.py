@@ -21,6 +21,7 @@ ENV_ALLOWLIST=frozenset({"HOME","TMPDIR","XDG_CACHE_HOME"})
 _TEST_BARRIERS={}
 MAX_WORKSPACE_BYTES=2*1024**3; MAX_WORKSPACE_INODES=200_000; MAX_PIDS=256
 MAX_TIMEOUT=900; MAX_STREAM_BYTES=1024*1024; MAX_CPUS=4.0; MAX_MEMORY_BYTES=4*1024**3; PROXY_MEMORY_BYTES=256*1024**2; HOST_RESERVE_BYTES=1024**3
+COMPOSER_PARALLEL_HTTP=4
 def _allowed_images(server_arch):
     inventory=provision.inventory()["images"]; allowed=set()
     for key in ("node","composer"):
@@ -261,7 +262,7 @@ def _acquisition_argv(kind,proxy_ip):
     proxy=f"http://{proxy_ip}:8080"
     prefix=["/usr/bin/env","-i","PATH=/usr/local/bin","HOME=/home/sandbox",f"HTTPS_PROXY={proxy}",f"HTTP_PROXY={proxy}",f"https_proxy={proxy}",f"http_proxy={proxy}","NO_PROXY=","no_proxy="]
     if kind=="npm": return prefix+["npm_config_cache=/workspace/sandbox-cache/npm","npm_config_userconfig=/home/sandbox/empty-npmrc","npm_config_strict_ssl=true","npm_config_maxsockets=8","npm","ci","--ignore-scripts","--no-audit","--no-fund"]
-    return prefix+["COMPOSER_HOME=/home/sandbox/composer","COMPOSER_CACHE_DIR=/workspace/sandbox-cache/composer","COMPOSER_MAX_PARALLEL_HTTP=8","/usr/local/bin/php","/usr/bin/composer","install","--no-scripts","--no-plugins","--no-interaction","--no-progress","--prefer-dist"]
+    return prefix+["COMPOSER_HOME=/home/sandbox/composer","COMPOSER_CACHE_DIR=/workspace/sandbox-cache/composer",f"COMPOSER_MAX_PARALLEL_HTTP={COMPOSER_PARALLEL_HTTP}","/usr/local/bin/php","/usr/bin/composer","install","--no-scripts","--no-plugins","--no-interaction","--no-progress","--prefer-dist"]
 def _memory_admission(request):
     available=None
     with open("/proc/meminfo",encoding="ascii") as stream:

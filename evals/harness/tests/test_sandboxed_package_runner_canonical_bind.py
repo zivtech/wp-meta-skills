@@ -236,7 +236,9 @@ def test_acquisition_argv_is_exact_and_source_fallback_tools_absent():
     assert "HTTPS_PROXY=http://172.28.0.3:8080" in npm and "NO_PROXY=" in npm
     assert not any("http://proxy" in item for item in npm)
     assert "npm_config_cache=/workspace/sandbox-cache/npm" in npm and "npm_config_maxsockets=8" in npm
-    assert "COMPOSER_CACHE_DIR=/workspace/sandbox-cache/composer" in composer and "COMPOSER_MAX_PARALLEL_HTTP=8" in composer
+    assert "COMPOSER_CACHE_DIR=/workspace/sandbox-cache/composer" in composer and "COMPOSER_MAX_PARALLEL_HTTP=4" in composer
+    assert runner.dependency_egress_proxy.COMPOSER_HOSTS==frozenset({"api.github.com","codeload.github.com"})
+    assert runner.COMPOSER_PARALLEL_HTTP*len(runner.dependency_egress_proxy.COMPOSER_HOSTS)==runner.dependency_egress_proxy.ProxyLimits().connections
 
 def test_proxy_container_is_pinned_dual_network_orchestrator_without_artifact(tmp_path):
     item=runtime_image_provision.inventory()["images"]["python"]
