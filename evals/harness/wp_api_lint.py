@@ -659,7 +659,7 @@ def iter_php_files(path: Path) -> list[Path]:
         for child in path.rglob("*")
         if child.is_file()
         and child.suffix.lower() in PHP_SUFFIXES
-        and not any(part in IGNORED_DIRS for part in child.parts)
+        and not any(part in IGNORED_DIRS for part in child.relative_to(path).parts[:-1])
     ]
     return sorted(files)
 

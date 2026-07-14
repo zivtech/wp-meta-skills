@@ -74,7 +74,8 @@ def iter_files(path: Path, suffixes: set[str]) -> list[Path]:
     ignored = {".git", "node_modules", "vendor", ".wp-env", "coverage", "dist", "build"}
     files: list[Path] = []
     for child in path.rglob("*"):
-        if any(part in ignored for part in child.parts):
+        relative = child.relative_to(path)
+        if any(part in ignored for part in relative.parts[:-1]):
             continue
         if child.is_file() and child.suffix.lower() in suffixes:
             files.append(child)
