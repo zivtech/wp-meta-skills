@@ -51,7 +51,12 @@ def test_database_probe_uses_native_wordpress_database_oracle():
     probe=next(probe for probe in guard.runtime_probe_specs(["docker","compose"]) if probe["name"]=="cli-db-ready")
     command=" ".join(probe["command"])
     assert "mysqli_report(MYSQLI_REPORT_OFF)" in command and "wp core install" in command and "wp option get siteurl" in command
+    assert "http://wordpress-application:8080" in command
     assert "wp db check" not in command
+
+def test_browser_probe_uses_the_reviewed_wordpress_application_alias():
+    probe=next(probe for probe in guard.runtime_probe_specs(["docker","compose"]) if probe["name"]=="browser-wordpress-http")
+    assert "http://wordpress-application:8080" in " ".join(probe["command"])
 
 def test_browser_inode_exhaustion_cleans_and_proves_recovery():
     probe=next(probe for probe in guard.runtime_probe_specs(["docker","compose"]) if probe["name"]=="browser-inode-quota")
@@ -90,6 +95,20 @@ def test_compatibility_failure_names_phase_and_bounds_output():
 
 def test_canary_is_internal_digest_only_and_bounded():
     assert guard.validate_compose(guard.canary_compose())
+
+def test_wordpress_application_alias_matches_the_image_listener():
+    spec=guard.canary_compose()
+    networks=spec["services"]["wordpress"]["networks"]
+    assert networks == {"wp_db":{},"browser_wp":{"aliases":["wordpress-application"]}}
+    dockerfile=(HARNESS/"runtime-images/wordpress/Dockerfile").read_text(encoding="utf-8")
+    assert "Listen wordpress-application:8080" in dockerfile
+    for mutation in (
+        lambda value:value["browser_wp"].update(aliases=[]),
+        lambda value:value["wp_db"].update(aliases=["wordpress-application"]),
+    ):
+        mutated=guard.canary_compose(); mutation(mutated["services"]["wordpress"]["networks"])
+        with pytest.raises(RuntimeError,match="network attachment drift"):
+            guard.validate_compose(mutated)
 
 def test_flat_wordpress_image_metadata_allowlist_rejects_inherited_runtime_state():
     config={"Hostname":"","Domainname":"","AttachStdin":False,"AttachStdout":False,"AttachStderr":False,"Tty":False,"OpenStdin":False,"StdinOnce":False,"Cmd":None,"Image":"","Volumes":None,"OnBuild":None,"Labels":None,**guard.WORDPRESS_IMAGE_ACTIVE_CONFIG}

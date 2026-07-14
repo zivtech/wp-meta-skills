@@ -138,7 +138,12 @@ def execute_failure_diagnostic(container, runtime):
         except Exception as exc: evidence[name]={"diagnostic_error":type(exc).__name__}
     return evidence
 WRITABLE_PATHS={"database":{"/var/lib/mysql","/run/mysqld","/tmp"},"wordpress":{"/tmp","/var/www/html/wp-content/uploads"},"cli":{"/tmp"},"browser":{"/tmp"}}
-SERVICE_NETWORKS={"database":["wp_db"],"wordpress":["wp_db","browser_wp"],"cli":["wp_db"],"browser":["browser_wp"]}
+SERVICE_NETWORKS={
+    "database":["wp_db"],
+    "wordpress":{"wp_db":{},"browser_wp":{"aliases":["wordpress-application"]}},
+    "cli":["wp_db"],
+    "browser":["browser_wp"],
+}
 WORDPRESS_IMAGE_ACTIVE_CONFIG={
   "User":"www-data",
   "ExposedPorts":{"8080/tcp":{}},
@@ -182,10 +187,10 @@ def validate_df_profile(output, size_bytes, nr_inodes):
 def runtime_probe_specs(base):
     browser=lambda script:base+["exec","-T","browser","node","-e",script]
     cli=lambda *args:base+["exec","-T","cli",*args]
-    db_ready="test $(id -u) != 0; wp --info; i=0; until php -r 'mysqli_report(MYSQLI_REPORT_OFF);$m=@new mysqli(\"database\",\"wordpress\",\"wordpress-canary\",\"wordpress\",3306);exit($m->connect_errno?1:0);'; do i=$((i+1)); test $i -lt 60; sleep 1; done; wp core install --url=http://wordpress:8080 --title='Sandbox Canary' --admin_user=sandbox --admin_password=not-a-secret-canary --admin_email=sandbox@example.invalid --skip-email; test \"$(wp option get siteurl)\" = http://wordpress:8080"
+    db_ready="test $(id -u) != 0; wp --info; i=0; until php -r 'mysqli_report(MYSQLI_REPORT_OFF);$m=@new mysqli(\"database\",\"wordpress\",\"wordpress-canary\",\"wordpress\",3306);exit($m->connect_errno?1:0);'; do i=$((i+1)); test $i -lt 60; sleep 1; done; wp core install --url=http://wordpress-application:8080 --title='Sandbox Canary' --admin_user=sandbox --admin_password=not-a-secret-canary --admin_email=sandbox@example.invalid --skip-email; test \"$(wp option get siteurl)\" = http://wordpress-application:8080"
     return (
       {"name":"cli-db-ready","command":cli("sh","-c",db_ready),"timeout":70},
-      {"name":"browser-wordpress-http","network":True,"self_timeout":True,"command":browser("fetch('http://wordpress:8080',{signal:AbortSignal.timeout(5000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"),"timeout":10},
+      {"name":"browser-wordpress-http","network":True,"self_timeout":True,"command":browser("fetch('http://wordpress-application:8080',{signal:AbortSignal.timeout(5000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"),"timeout":10},
       {"name":"browser-public-http-denied","network":True,"self_timeout":True,"command":browser("fetch('https://example.com',{signal:AbortSignal.timeout(3000)}).then(()=>process.exit(1),()=>process.exit(0))"),"timeout":8},
       {"name":"browser-private-http-denied","network":True,"self_timeout":True,"command":browser("const t=['http://host.docker.internal','http://169.254.169.254','http://10.0.0.1','http://127.0.0.1'];Promise.all(t.map(u=>fetch(u,{signal:AbortSignal.timeout(2000)}).then(()=>{throw Error('escaped')},()=>true))).then(()=>process.exit(0),()=>process.exit(1))"),"timeout":8},
       {"name":"browser-public-dns-denied","network":True,"self_timeout":True,"command":browser("const {Resolver}=require('dns');const r=new Resolver({timeout:1000,tries:1});const t=setTimeout(()=>process.exit(0),2500);r.resolve4('example.com',e=>{clearTimeout(t);process.exit(e?0:1)})"),"timeout":6},
@@ -253,7 +258,7 @@ def canary_compose(built_images=None, identities=None):
     limits={"security_opt":["no-new-privileges:true"],"pids_limit":128,"mem_limit":"512m","cpus":"1.0","ulimits":{"nofile":{"soft":1024,"hard":1024}},"logging":{"driver":"none"}}
     return {"services":{
       "database":{**limits,"image":built_images["database"],"read_only":True,"cap_drop":["ALL"],"user":identities["database"],"networks":["wp_db"],"tmpfs":[f"/var/lib/mysql:uid={identities['database'].split(':')[0]},gid={identities['database'].split(':')[1]},mode=0700,size=134217728,nr_inodes=8192",f"/run/mysqld:uid={identities['database'].split(':')[0]},gid={identities['database'].split(':')[1]},mode=0700,size=8388608,nr_inodes=512",f"/tmp:uid={identities['database'].split(':')[0]},gid={identities['database'].split(':')[1]},mode=0700,size=16777216,nr_inodes=1024"]},
-      "wordpress":{**limits,"image":built_images["wordpress"],"read_only":True,"cap_drop":["ALL"],"user":identities["wordpress"],"networks":["wp_db","browser_wp"],"tmpfs":[f"/tmp:uid={identities['wordpress'].split(':')[0]},gid={identities['wordpress'].split(':')[1]},mode=0700,size=33554432,nr_inodes=2048",f"/var/www/html/wp-content/uploads:uid={identities['wordpress'].split(':')[0]},gid={identities['wordpress'].split(':')[1]},mode=0700,size=33554432,nr_inodes=2048"]},
+      "wordpress":{**limits,"image":built_images["wordpress"],"read_only":True,"cap_drop":["ALL"],"user":identities["wordpress"],"networks":{"wp_db":{},"browser_wp":{"aliases":["wordpress-application"]}},"tmpfs":[f"/tmp:uid={identities['wordpress'].split(':')[0]},gid={identities['wordpress'].split(':')[1]},mode=0700,size=33554432,nr_inodes=2048",f"/var/www/html/wp-content/uploads:uid={identities['wordpress'].split(':')[0]},gid={identities['wordpress'].split(':')[1]},mode=0700,size=33554432,nr_inodes=2048"]},
       "cli":{**limits,"image":built_images["wordpress"],"read_only":True,"cap_drop":["ALL"],"user":identities["wordpress"],"entrypoint":["sleep"],"command":["infinity"],"networks":["wp_db"],"tmpfs":[f"/tmp:uid={identities['wordpress'].split(':')[0]},gid={identities['wordpress'].split(':')[1]},mode=0700,size=16777216,nr_inodes=1024"]},
       "browser":{**limits,"image":image("playwright"),"read_only":True,"cap_drop":["ALL"],"user":identities["browser"],"command":["sleep","infinity"],"networks":["browser_wp"],"tmpfs":[f"/tmp:uid={identities['browser'].split(':')[0]},gid={identities['browser'].split(':')[1]},mode=0700,size=67108864,nr_inodes=4096"]}},
       "networks":{"wp_db":{"internal":True},"browser_wp":{"internal":True}}}
