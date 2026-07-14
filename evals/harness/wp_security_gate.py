@@ -40,9 +40,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import stat
 import subprocess
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -151,6 +154,55 @@ def iter_php_files(path: Path) -> list[Path]:
             continue
         files.append(child)
     return sorted(files)
+
+
+def _trusted_explicit_files(scan_root: Path, explicit_files: Iterable[Path | str]) -> list[Path]:
+    """Validate exact files from a factory-authentic SCAN_HANDOFF.
+
+    This boundary is not for original untrusted artifact paths. It deliberately
+    uses lexical normalization rather than ``Path.resolve()``; the handoff has
+    already been created and authenticated by the no-follow staging layer.
+    """
+    root = Path(os.path.abspath(scan_root))
+    try:
+        root_mode = root.lstat().st_mode
+    except OSError as exc:
+        raise ValueError(f"trusted scan root is unavailable: {root}") from exc
+    if not stat.S_ISDIR(root_mode):
+        raise ValueError(f"trusted scan root is not a directory: {root}")
+
+    selected: list[Path] = []
+    seen: set[Path] = set()
+    for raw_file in explicit_files:
+        supplied = Path(raw_file)
+        candidate = supplied if supplied.is_absolute() else root / supplied
+        canonical = Path(os.path.abspath(candidate))
+        try:
+            canonical.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"explicit scan file escapes trusted root: {raw_file}") from exc
+        if canonical in seen:
+            raise ValueError(f"duplicate explicit scan file: {canonical}")
+        try:
+            mode = canonical.lstat().st_mode
+        except OSError as exc:
+            raise ValueError(f"explicit scan file is unavailable: {canonical}") from exc
+        if not stat.S_ISREG(mode):
+            raise ValueError(f"explicit scan path is not a regular file: {canonical}")
+        seen.add(canonical)
+        selected.append(canonical)
+    return selected
+
+
+def _prepare_scan_files(
+    path: Path,
+    explicit_files: Iterable[Path | str] | None,
+) -> tuple[Path, list[Path]]:
+    if explicit_files is None:
+        resolved = path.resolve()
+        return resolved, iter_php_files(resolved)
+    trusted_root = Path(os.path.abspath(path))
+    return trusted_root, _trusted_explicit_files(trusted_root, explicit_files)
 
 
 def _relative_file(raw_path: str, artifact_path: Path) -> str:
@@ -380,8 +432,9 @@ def run_security_gate(
     timeout_sec: int = 120,
     php_tools_root: Path | None = None,
     allow_suppression_prefixes: list[str] | None = None,
+    explicit_files: Iterable[Path | str] | None = None,
 ) -> dict[str, Any]:
-    path = path.resolve()
+    path, php_files = _prepare_scan_files(path, explicit_files)
     allow = tuple(allow_suppression_prefixes or ())
     report: dict[str, Any] = {
         "schema": SCHEMA,
@@ -397,7 +450,6 @@ def run_security_gate(
         "allow_suppression_prefixes": list(allow),
         "negative_space": list(NEGATIVE_SPACE),
     }
-    php_files = iter_php_files(path)
     if not php_files:
         report["status"] = "skip"
         return report

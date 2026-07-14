@@ -53,11 +53,14 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -399,7 +402,7 @@ def _make_finding(
     }
 
 
-def _artifact_php_texts(path: Path) -> dict[Path, str]:
+def _artifact_php_texts(path: Path, explicit_files: list[Path] | None = None) -> dict[Path, str]:
     """Artifact PHP texts, excluding test dirs INSIDE the artifact only.
 
     Matching any absolute path part would also exclude artifacts that
@@ -407,8 +410,9 @@ def _artifact_php_texts(path: Path) -> dict[Path, str]:
     — the same trap `build_neon` scopes its excludePaths against.
     """
     files = {}
-    for file_path in iter_php_files(path):
-        if path.is_dir():
+    selected_files = explicit_files if explicit_files is not None else iter_php_files(path)
+    for file_path in selected_files:
+        if explicit_files is None and path.is_dir():
             inner_dirs = file_path.relative_to(path).parts[:-1]
             if any(part in ("tests", "test") for part in inner_dirs):
                 continue
@@ -430,6 +434,7 @@ def native_php_findings(
     prefixes: list[str],
     declared_range: dict[str, Any],
     include_existence: bool,
+    explicit_files: list[Path] | None = None,
 ) -> list[dict[str, Any]]:
     """Snapshot-backed findings over artifact PHP.
 
@@ -439,7 +444,7 @@ def native_php_findings(
     with real scope analysis).
     """
     findings: list[dict[str, Any]] = []
-    raw_texts = _artifact_php_texts(path)
+    raw_texts = _artifact_php_texts(path, explicit_files)
     stripped_texts = {file_path: strip_strings_and_comments(text) for file_path, text in raw_texts.items()}
     aggregate_raw = "\n".join(raw_texts.values())
     guarded = {match.group(1).lower() for match in FUNCTION_EXISTS_RE.finditer(aggregate_raw)}
@@ -542,10 +547,11 @@ def hook_findings(
     path: Path,
     hooks: dict[str, dict[str, Any]],
     prefixes: list[str],
+    explicit_files: list[Path] | None = None,
 ) -> list[dict[str, Any]]:
     """`unknown_hook` findings for hook consumers against the vendor hooks data."""
     findings: list[dict[str, Any]] = []
-    raw_texts = _artifact_php_texts(path)
+    raw_texts = _artifact_php_texts(path, explicit_files)
     hook_calls_by_file = {file_path: extract_hook_calls(raw) for file_path, raw in raw_texts.items()}
 
     defined_hooks: set[str] = set()
@@ -664,22 +670,75 @@ def iter_php_files(path: Path) -> list[Path]:
     return sorted(files)
 
 
+def _trusted_explicit_files(scan_root: Path, explicit_files: Iterable[Path | str]) -> list[Path]:
+    """Validate exact files from a factory-authentic SCAN_HANDOFF.
+
+    This boundary is not for original untrusted artifact paths. It deliberately
+    uses lexical normalization rather than ``Path.resolve()``; the handoff has
+    already been created and authenticated by the no-follow staging layer.
+    """
+    root = Path(os.path.abspath(scan_root))
+    try:
+        root_mode = root.lstat().st_mode
+    except OSError as exc:
+        raise ValueError(f"trusted scan root is unavailable: {root}") from exc
+    if not stat.S_ISDIR(root_mode):
+        raise ValueError(f"trusted scan root is not a directory: {root}")
+
+    selected: list[Path] = []
+    seen: set[Path] = set()
+    for raw_file in explicit_files:
+        supplied = Path(raw_file)
+        candidate = supplied if supplied.is_absolute() else root / supplied
+        canonical = Path(os.path.abspath(candidate))
+        try:
+            canonical.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"explicit scan file escapes trusted root: {raw_file}") from exc
+        if canonical in seen:
+            raise ValueError(f"duplicate explicit scan file: {canonical}")
+        try:
+            mode = canonical.lstat().st_mode
+        except OSError as exc:
+            raise ValueError(f"explicit scan file is unavailable: {canonical}") from exc
+        if not stat.S_ISREG(mode):
+            raise ValueError(f"explicit scan path is not a regular file: {canonical}")
+        seen.add(canonical)
+        selected.append(canonical)
+    return selected
+
+
+def _prepare_scan_files(
+    path: Path,
+    explicit_files: Iterable[Path | str] | None,
+) -> tuple[Path, list[Path] | None]:
+    if explicit_files is None:
+        return path.resolve(), None
+    trusted_root = Path(os.path.abspath(path))
+    return trusted_root, _trusted_explicit_files(trusted_root, explicit_files)
+
+
 def _read_header(path: Path) -> str:
     text = path.read_text(encoding="utf-8", errors="replace")[:HEADER_BYTES]
     return text.replace("\r", "\n")
 
 
-def _header_files(path: Path) -> list[Path]:
-    candidates = [file_path for file_path in iter_php_files(path) if "Plugin Name:" in _read_header(file_path)]
-    if path.is_dir():
+def _header_files(path: Path, explicit_files: list[Path] | None = None) -> list[Path]:
+    files = explicit_files if explicit_files is not None else iter_php_files(path)
+    candidates: list[Path] = []
+    for file_path in files:
+        header = _read_header(file_path)
+        if "Plugin Name:" in header or (explicit_files is not None and "Theme Name:" in header):
+            candidates.append(file_path)
+    if explicit_files is None and path.is_dir():
         style_css = path / "style.css"
         if style_css.exists() and "Theme Name:" in _read_header(style_css):
             candidates.append(style_css)
     return candidates
 
 
-def declared_requires_at_least(path: Path) -> str | None:
-    for header_file in _header_files(path):
+def declared_requires_at_least(path: Path, explicit_files: list[Path] | None = None) -> str | None:
+    for header_file in _header_files(path, explicit_files):
         match = REQUIRES_AT_LEAST_RE.search(_read_header(header_file))
         if match and match.group(1).strip():
             cleaned = re.sub(r"[^0-9.]", "", match.group(1))
@@ -688,9 +747,9 @@ def declared_requires_at_least(path: Path) -> str | None:
     return None
 
 
-def declared_plugin_dependencies(path: Path) -> list[str]:
+def declared_plugin_dependencies(path: Path, explicit_files: list[Path] | None = None) -> list[str]:
     slugs: list[str] = []
-    for header_file in _header_files(path):
+    for header_file in _header_files(path, explicit_files):
         match = REQUIRES_PLUGINS_RE.search(_read_header(header_file))
         if not match:
             continue
@@ -701,39 +760,49 @@ def declared_plugin_dependencies(path: Path) -> list[str]:
     return slugs
 
 
-def allowlist_prefixes(path: Path, extra_prefixes: list[str] | None = None) -> list[str]:
+def allowlist_prefixes(
+    path: Path,
+    extra_prefixes: list[str] | None = None,
+    explicit_files: list[Path] | None = None,
+) -> list[str]:
     prefixes = list(extra_prefixes or [])
-    for slug in declared_plugin_dependencies(path):
+    for slug in declared_plugin_dependencies(path, explicit_files):
         for prefix in KNOWN_PLUGIN_PREFIXES.get(slug, (slug.replace("-", "_") + "_",)):
             if prefix not in prefixes:
                 prefixes.append(prefix)
     return prefixes
 
 
-def build_neon(artifact_path: Path, toolchain: Toolchain, tmp_dir: Path, requires_at_least: str | None) -> str:
+def build_neon(
+    artifact_path: Path,
+    toolchain: Toolchain,
+    tmp_dir: Path,
+    requires_at_least: str | None,
+    explicit_files: list[Path] | None = None,
+) -> str:
     lines: list[str] = []
     if requires_at_least is not None:
         lines += ["includes:", f'    - "{toolchain.wp_compat_neon}"', ""]
     # Excludes are scoped to directories INSIDE the artifact: a bare */tests/*
     # pattern would also exclude artifacts that themselves live under a tests/
     # directory (the committed bait fixtures do).
-    exclude_base = artifact_path if artifact_path.is_dir() else artifact_path.parent
-    exclude_lines = [
-        f'        - "{exclude_base}/{ignored}/*"' for ignored in ("vendor", "node_modules", "tests", "test")
-    ] + [
-        f'        - "{exclude_base}/*/{ignored}/*"' for ignored in ("vendor", "node_modules", "tests", "test")
-    ]
+    phpstan_paths = explicit_files if explicit_files is not None else [artifact_path]
     lines += [
         "parameters:",
         "    level: 0",
         f'    tmpDir: "{tmp_dir}"',
         "    paths:",
-        f'        - "{artifact_path}"',
-        "    excludePaths:",
-        *exclude_lines,
-        "    scanFiles:",
-        f'        - "{toolchain.stubs}"',
+        *(f'        - "{file_path}"' for file_path in phpstan_paths),
     ]
+    if explicit_files is None:
+        exclude_base = artifact_path if artifact_path.is_dir() else artifact_path.parent
+        excluded = ("vendor", "node_modules", "tests", "test")
+        lines += [
+            "    excludePaths:",
+            *(f'        - "{exclude_base}/{ignored}/*"' for ignored in excluded),
+            *(f'        - "{exclude_base}/*/{ignored}/*"' for ignored in excluded),
+        ]
+    lines += ["    scanFiles:", f'        - "{toolchain.stubs}"']
     if requires_at_least is not None:
         lines += [
             "    WPCompat:",
@@ -886,14 +955,15 @@ def run_api_lint(
     php_tools_root: Path | None = None,
     extra_allow_prefixes: list[str] | None = None,
     snapshot_path: Path | None = None,
+    explicit_files: Iterable[Path | str] | None = None,
 ) -> dict[str, Any]:
-    path = path.resolve()
+    path, scan_files = _prepare_scan_files(path, explicit_files)
     toolchain, blocked_reason = resolve_toolchain(php_tools_root)
     native_snapshot = load_native_snapshot(snapshot_path)
     vendor_hooks = load_vendor_hooks(php_tools_root)
     versions = toolchain_versions((php_tools_root or DEFAULT_PHP_TOOLS_ROOT).resolve())
-    declared = declared_requires_at_least(path)
-    prefixes = allowlist_prefixes(path, extra_allow_prefixes)
+    declared = declared_requires_at_least(path, explicit_files=scan_files)
+    prefixes = allowlist_prefixes(path, extra_allow_prefixes, explicit_files=scan_files)
     stubs_version = versions.get("php-stubs/wordpress-stubs")
     snapshot_version = stubs_version.lstrip("v") if stubs_version else None
     declared_range = {"requires_at_least": declared, "snapshot": snapshot_version or (native_snapshot or {}).get("wp_version")}
@@ -935,6 +1005,7 @@ def run_api_lint(
                 prefixes,
                 declared_range,
                 include_existence=toolchain is None,
+                explicit_files=scan_files,
             )
         )
         if toolchain is None:
@@ -949,7 +1020,7 @@ def run_api_lint(
         )
 
     if vendor_hooks is not None:
-        all_findings.extend(hook_findings(path, vendor_hooks, prefixes))
+        all_findings.extend(hook_findings(path, vendor_hooks, prefixes, explicit_files=scan_files))
     else:
         negative_space.append(
             "Vendor wp-hooks data unavailable: unknown-hook detection did not run."
@@ -968,7 +1039,10 @@ def run_api_lint(
         phpstan_tmp = tmp_path / "phpstan-tmp"
         phpstan_tmp.mkdir()
         neon_path = tmp_path / "phpstan.neon"
-        neon_path.write_text(build_neon(path, toolchain, phpstan_tmp, declared), encoding="utf-8")
+        neon_path.write_text(
+            build_neon(path, toolchain, phpstan_tmp, declared, explicit_files=scan_files),
+            encoding="utf-8",
+        )
         command = [
             toolchain.php,
             str(toolchain.phpstan),
