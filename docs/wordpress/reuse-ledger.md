@@ -41,7 +41,7 @@ introduced-in versions — no prose, descriptions, or code are copied.
 |---|---|---|---|---|
 | Function/class existence, `@deprecated` versions and replacements | php-stubs/wordpress-stubs | `v7.0.0` | MIT | Symbol names, deprecation version, successor API name (via PHP reflection over the stubs) |
 | Per-function `since` versions | johnbillion/wp-compat `symbols.json` | `trunk` (WP 7.0 data) | MIT | Function name → introduced-in version |
-# Plan 009 sandbox feasibility inventory (2026-07-12)
+# Plan 009 sandbox feasibility inventory (verified 2026-07-14)
 
 Step 0 records the official Node, Composer, Python, Playwright, WordPress,
 WP-CLI, and MariaDB images in `evals/harness/container-images.json`. Each entry
@@ -57,6 +57,14 @@ The no-secrets Linux job installs Pytest 8.4.2 from PyPI without a credentialed
 cache; Pytest is MIT-licensed. The boundary job uses no actions or helper
 images: it fetches the exact public `$GITHUB_SHA` over HTTPS without credentials
 and uses the GitHub-hosted runner's Python and Docker installations.
+
+On 2026-07-14 the mutable provenance tags for Node, Python, and WordPress moved.
+Their official OCI indexes and linux/amd64 and linux/arm64 child manifests were
+re-reviewed together; the inventory and Node acquisition profiles now record
+those replacements. Composer, Playwright, WP-CLI, and MariaDB still resolved to
+their previously reviewed identities. Execution remains child-digest-only; the
+tags are checked solely as a fail-closed signal that a new provenance review is
+required.
 
 The final generated-code runtime additionally derives three local images from
 the immutable WordPress 7.0.1, MariaDB 11.8.5, and Playwright 1.58.0 platform
