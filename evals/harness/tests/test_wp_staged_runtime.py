@@ -246,6 +246,12 @@ def test_artifact_cleanup_uses_bounded_formatted_absence_probes(monkeypatch):
     assert commands[2][1:4]==["image","rm","-f"] and "--format" in commands[3]
 
 
+def test_artifact_image_config_drift_diagnostic_names_keys_not_values():
+    base = {"User": "www-data", "Hostname": "", "Env": ["SECRET=value"]}
+    derived = {"User": "www-data", "Hostname": "container-id", "Env": ["SECRET=changed"]}
+    assert wp_runtime_export._config_drift_keys(base, derived) == ("Env", "Hostname")
+
+
 def test_artifact_cleanup_reports_seed_and_image_failures(monkeypatch):
     monkeypatch.setattr(wp_runtime_export,"_remove_seed",lambda *_args:(_ for _ in ()).throw(RuntimeError("overflow")))
     monkeypatch.setattr(wp_runtime_export,"_remove_image",lambda *_args:False)

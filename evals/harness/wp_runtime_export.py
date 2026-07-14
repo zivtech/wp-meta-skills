@@ -85,6 +85,11 @@ def _inspect_image(image,deadline):
     return json.loads(_run(["docker","image","inspect",image],deadline,30,131072)["stdout"])[0]
 
 
+def _config_drift_keys(base, derived):
+    keys = sorted(set(base) | set(derived))
+    return tuple(key for key in keys if base.get(key) != derived.get(key))
+
+
 def materialize_export(held,work,slug,runtime,deadline,project):
     suffix=hashlib.sha256((project+slug).encode()).hexdigest()[:12]
     seed=f"{project}-artifact-seed"; tag=f"wp-isolated-artifact:{suffix}"; created=False
@@ -101,8 +106,13 @@ def materialize_export(held,work,slug,runtime,deadline,project):
                  65536,stdin=archive)
         derived=_run(["docker","commit","--pause=false",seed,tag],deadline,120)["stdout"].strip()
         exact=_inspect_image(tag,deadline)
-        if exact["Id"]!=derived or exact["Config"]!=base["Config"]:
-            raise RuntimeBlocked("derived artifact image identity or WordPress metadata drift")
+        if exact["Id"] != derived:
+            raise RuntimeBlocked("derived artifact image identity drift")
+        drift = _config_drift_keys(base["Config"], exact["Config"])
+        if drift:
+            raise RuntimeBlocked(
+                f"derived artifact image WordPress metadata drift fields: {','.join(drift)}"
+            )
         if not _remove_seed(seed,deadline): raise RuntimeBlocked("artifact seed container cleanup failed")
         plugin_manifest=_plugin_manifest(manifest,slug)
         evidence={"seed_started":False,"seed_removed":True,"artifact_mounts":0,
