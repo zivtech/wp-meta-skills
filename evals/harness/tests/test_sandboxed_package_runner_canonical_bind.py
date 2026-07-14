@@ -239,6 +239,11 @@ def test_acquisition_argv_is_exact_and_source_fallback_tools_absent():
     assert "COMPOSER_CACHE_DIR=/workspace/sandbox-cache/composer" in composer and "COMPOSER_MAX_PARALLEL_HTTP=4" in composer
     assert runner.dependency_egress_proxy.COMPOSER_HOSTS==frozenset({"api.github.com","codeload.github.com"})
     assert runner.COMPOSER_PARALLEL_HTTP*len(runner.dependency_egress_proxy.COMPOSER_HOSTS)==runner.dependency_egress_proxy.ProxyLimits().connections
+    context=type("Context",(),{"proxy_ip":"172.28.0.3","gateway_ip":"172.28.0.1"})(); php=runner._php_detached_script(context,"192.0.2.10",1234)
+    assert "\x00" not in php and "dns_get_record" not in php and "gethostbyname" not in php and "socket_" not in php.replace("stream_socket_","")
+    assert '["proxy","api.github.com","codeload.github.com"]' in php and "foreach([1,28] as $t)" in php
+    for signal in ("udp://127.0.0.11:53","STREAM_CLIENT_CONNECT","stream_set_blocking","fwrite","strlen($q)","microtime(true)+1.2","stream_select","fread($s,4097)","strlen($d)>4096","nns/nar","0x8000","0x7800","0x0200","['qd']!=1","['an']!=0","['ns']!=0","['ar']!=0","strlen($d)!=12+strlen($question)","[2,3,5]","hash_equals","$bad=[","exit(21)"):
+        assert signal in php
 
 def test_proxy_container_is_pinned_dual_network_orchestrator_without_artifact(tmp_path):
     item=runtime_image_provision.inventory()["images"]["python"]
