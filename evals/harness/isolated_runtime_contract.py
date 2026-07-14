@@ -308,11 +308,12 @@ def stopped_block_prerequisite_result(
 ) -> dict[str, Any]:
     """Return both block prerequisite verdicts without starting WordPress."""
     build_status = _gate_status(True, build_gate)
-    artifact_status = _gate_status(runtime_artifact_requested, runtime_artifact_gate)
-    proof_status = _execution_proof_status(runtime_artifact_requested, execution_proof_digest)
+    artifact_required = runtime_artifact_requested and build_status == "pass"
+    artifact_status = _gate_status(artifact_required, runtime_artifact_gate)
+    proof_status = _execution_proof_status(artifact_required, execution_proof_digest)
     phpunit_status = "blocked" if phpunit_requested else "not_run"
     required = [build_status]
-    if runtime_artifact_requested:
+    if artifact_required:
         required.extend((artifact_status, proof_status))
     if phpunit_requested:
         required.append(phpunit_status)

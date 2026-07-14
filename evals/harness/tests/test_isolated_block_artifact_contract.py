@@ -129,9 +129,9 @@ def test_stopped_result_keeps_both_gates_digest_and_receipts():
         execution_proof_digest=EXECUTION_DIGEST, receipts=receipts,
         phpunit_requested=False,
     )
-    assert result["status"] == "blocked" and result["pass"] is False
+    assert result["status"] == "fail" and result["pass"] is False
     assert result["block_build_smoke_status"] == "fail"
-    assert result["block_runtime_artifact_gate_status"] == "blocked"
+    assert result["block_runtime_artifact_gate_status"] == "not_run"
     assert result["execution_proof_digest"] == EXECUTION_DIGEST
     assert result["_artifact_retention_receipts"] is receipts
 
