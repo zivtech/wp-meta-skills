@@ -271,6 +271,23 @@ def test_execute_failure_diagnostic_is_bounded_and_nonsecret(monkeypatch):
     assert "env" not in flattened.lower()
     assert "cat /work" not in flattened
 
+def test_compose_start_failure_diagnostic_is_bounded_and_excludes_config(monkeypatch):
+    calls=[]
+    def fake(command,**kwargs):
+        calls.append((command,kwargs))
+        if command[-2:]==["ps","-aq"]:
+            return {"returncode":0,"stdout":"container-a\ncontainer-b\n","stderr":""}
+        return {"returncode":0,"stdout":"bounded-state","stderr":""}
+    monkeypatch.setattr(guard.provision,"run_capped",fake)
+    evidence=guard.compose_start_failure_diagnostic(["docker","compose"])
+    assert evidence["container_ids"] == {"returncode":0,"count":2}
+    inspect,options=calls[-1]
+    assert inspect[:3] == ["docker","inspect","--format"]
+    assert inspect[-2:] == ["container-a","container-b"]
+    assert all(field in inspect[3] for field in (".State.Status",".State.ExitCode",".State.Error",".NetworkSettings.Networks"))
+    assert all(field not in inspect[3] for field in ("{{json .State}}",".State.Health",".Config","Env","Mounts"))
+    assert options == {"timeout":15,"limit":32768}
+
 def test_execute_failure_preserves_original_return_code(monkeypatch,tmp_path):
     monkeypatch.setattr(guard.materializer,"materialize_packet",lambda *_args,**_kwargs:{"pass":True})
     monkeypatch.setattr(guard,"execute_failure_diagnostic",lambda *_args:{"state":{"returncode":0,"stdout":"running","stderr":""}})

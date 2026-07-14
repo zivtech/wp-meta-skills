@@ -137,6 +137,24 @@ def execute_failure_diagnostic(container, runtime):
         try: evidence[name]=provision.run_capped(command,timeout=15,limit=32768)
         except Exception as exc: evidence[name]={"diagnostic_error":type(exc).__name__}
     return evidence
+
+def compose_start_failure_diagnostic(base):
+    ids=provision.run_capped(base+["ps","-aq"],timeout=15,limit=4096)
+    containers=ids.get("stdout","").split()
+    if ids.get("returncode") or not containers:
+        return {"container_ids":ids,"inspection":None}
+    template=('{"name":{{json .Name}},"state":{"status":{{json .State.Status}},'
+              '"running":{{json .State.Running}},"paused":{{json .State.Paused}},'
+              '"restarting":{{json .State.Restarting}},"oom_killed":{{json .State.OOMKilled}},'
+              '"dead":{{json .State.Dead}},"pid":{{json .State.Pid}},'
+              '"exit_code":{{json .State.ExitCode}},"error":{{json .State.Error}},'
+              '"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}}},'
+              '"networks":{{json .NetworkSettings.Networks}}}')
+    inspected=provision.run_capped(
+        ["docker","inspect","--format",template,*containers],timeout=15,limit=32768,
+    )
+    return {"container_ids":{"returncode":0,"count":len(containers)},"inspection":inspected}
+
 WRITABLE_PATHS={"database":{"/var/lib/mysql","/run/mysqld","/tmp"},"wordpress":{"/tmp","/var/www/html/wp-content/uploads"},"cli":{"/tmp"},"browser":{"/tmp"}}
 SERVICE_NETWORKS={
     "database":["wp_db"],
@@ -364,7 +382,9 @@ def _run_linux_canary(work):
         configured=set(result["stdout"].splitlines())
         if configured != {built["wordpress"],built["database"],playwright}: raise RuntimeError("final Compose image inventory mismatch")
         result=provision.run_capped(base+["up","-d","--wait"],timeout=300)
-        if result["returncode"]: raise RuntimeError(result["stderr"])
+        if result["returncode"]:
+            diagnostic=compose_start_failure_diagnostic(base)
+            raise RuntimeError(f"{result['stderr']}; diagnostic={json.dumps(diagnostic,sort_keys=True)}")
         for probe in runtime_probe_specs(base): run_named_probe(probe)
         live_ids={}; gateways=set(); observed_profiles=[]; exhaustion_targets={"size":{},"inodes":{}}
         for service,image_tag in (("wordpress",wp_tag),("cli",wp_tag),("database",db_tag),("browser",playwright)):
