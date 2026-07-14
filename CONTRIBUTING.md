@@ -121,5 +121,10 @@ registry endpoints represented by the committed locks. The final generated-code
 runtime has no public acquisition route: the browser can reach only the exact
 WordPress gateway origin, WordPress and CLI can reach only the database peer,
 and the database has no application-facing peer beyond that backend network.
+Each final bridge is both `internal` and configured with Docker's IPv4 gateway
+mode `isolated`; live inspection requires no host bridge address and each
+generated-code container must have no default route. The generated runtime
+therefore requires Docker Engine 28 or newer and blocks before provisioning on
+older or unparseable daemon versions.
 Widening either allowlist is a security change requiring inventory review,
 hostile-route canaries, both test profiles, and a new hosted Linux proof.

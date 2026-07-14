@@ -1,6 +1,7 @@
 """Static-normalized and live inspection of the generated-code runtime."""
 from __future__ import annotations
 
+import ipaddress
 import json
 from pathlib import Path
 
@@ -88,10 +89,12 @@ def inspect_normalized(base: list[str], images: dict[str, str], identities:dict[
         raise RuntimeError("normalized Compose service inventory drift")
     if set(config.get("networks", {})) != {"backend", "application", "frontend"}:
         raise RuntimeError("normalized Compose network inventory drift")
-    if not all(set(value)=={"name","ipam","internal"} and value.get("internal") is True
+    if not all(set(value)=={"name","driver","driver_opts","ipam","internal"}
+               and value.get("internal") is True and value.get("driver")=="bridge"
+               and value.get("driver_opts")==topology.ISOLATED_BRIDGE_OPTIONS
                and value.get("ipam")=={} and isinstance(value.get("name"),str)
                for value in config["networks"].values()):
-        raise RuntimeError("normalized Compose contains an external network")
+        raise RuntimeError("normalized Compose network isolation drift")
     observed = {name: service.get("image") for name, service in config["services"].items()}
     expected = {"database": images["database"], "wordpress": artifact_image,
                 "cli": artifact_image,"gateway":images["browser"],"browser": images["browser"]}
@@ -174,10 +177,21 @@ def _inspect_networks(evidence,project,deadline=None):
         labels=network.get("Labels") or {}; actual=set((network.get("Containers") or {}).keys())
         key=name.rsplit("_",1)[-1]
         expected={item["id"] for service,item in evidence.items() if key in topology.SERVICE_NETWORKS[service]}
-        if not network.get("Internal") or labels.get("com.docker.compose.project")!=project or actual!=expected:
+        options=network.get("Options") or {}; configs=network.get("IPAM",{}).get("Config") or []
+        try:
+            isolated=(network.get("Driver")=="bridge" and network.get("Internal") is True
+                      and network.get("EnableIPv6") is False
+                      and options==topology.ISOLATED_BRIDGE_OPTIONS and len(configs)==1
+                      and set(configs[0])=={"Subnet"}
+                      and isinstance(ipaddress.ip_network(configs[0]["Subnet"]),ipaddress.IPv4Network)
+                      and ipaddress.ip_network(configs[0]["Subnet"]).is_private)
+        except (TypeError,ValueError):
+            isolated=False
+        if (not isolated or labels.get("com.docker.compose.project")!=project
+                or actual!=expected):
             raise RuntimeError("live network identity, label, or member drift")
         result[name]={"id":network["Id"],"internal":True,"members":sorted(actual),
-            "gateway":[item.get("Gateway") for item in (network.get("IPAM",{}).get("Config") or [])]}
+            "gateway":[],"gateway_mode":"isolated","subnet":configs[0]["Subnet"]}
     return result
 
 

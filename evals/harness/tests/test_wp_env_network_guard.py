@@ -1,4 +1,4 @@
-import json, re, sys
+import json, re, subprocess, sys
 from pathlib import Path
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
 import pytest, wp_env_network_guard as guard
@@ -145,6 +145,40 @@ def test_workflow_fetches_and_verifies_explicit_canary_sha():
     assert 'fetch --no-tags --depth=1 origin "$CANARY_COMMIT_SHA"' in sandbox
     assert 'test "$(git rev-parse HEAD)" = "$CANARY_COMMIT_SHA"' in sandbox
     assert 'origin "$GITHUB_SHA"' not in sandbox
+
+
+def test_workflow_always_emits_runtime_timing_and_post_cleanup_disk_evidence():
+    workflow=(HARNESS.parent.parent / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+    sandbox=workflow.split("sandbox-feasibility:",1)[1].split("  generated-runtime-boundary:",1)[0]
+    generated=workflow.split("generated-runtime-boundary:",1)[1].split("  validate:",1)[0]
+    assert "sandbox_status=$?" in sandbox and "sandbox_canary_seconds=" in sandbox
+    assert "SANDBOX_FREE_BEFORE" in sandbox and "sandbox_post_cleanup_disk_delta_bytes=" in sandbox
+    assert "runtime_status=$?" in generated and "isolated_runtime_seconds=" in generated
+    assert "ISOLATED_FREE_BEFORE" in generated and "isolated_runtime_post_cleanup_disk_delta_bytes=" in generated
+    for section,label in ((sandbox,"sandbox_post_cleanup_disk_delta_bytes"),
+                          (generated,"isolated_runtime_post_cleanup_disk_delta_bytes")):
+        cleanup=section.split("Remove and measure",1)[1]
+        assert "set +e" in cleanup and "cleanup_status=0" in cleanup
+        assert f'echo "{label}=unavailable"' in cleanup and 'exit "$cleanup_status"' in cleanup
+        assert 'test -z "$(' not in cleanup and 'test -z "$remaining"' in cleanup
+    assert sandbox.index('echo "SANDBOX_FREE_BEFORE=') < sandbox.index('test "$free_before" -ge')
+    assert generated.index('echo "ISOLATED_FREE_BEFORE=') < generated.index('test "$free_before" -ge')
+    assert 'sandbox_canary_seconds=${SANDBOX_CANARY_SECONDS:-unavailable}' in sandbox
+    assert 'isolated_runtime_seconds=${ISOLATED_RUNTIME_SECONDS:-unavailable}' in generated
+
+
+def test_cleanup_empty_query_failure_sets_aggregate_status():
+    script=("set +e; set -o pipefail; cleanup_status=0; "
+            "remaining=$(false) || cleanup_status=1; "
+            "test -z \"$remaining\" || cleanup_status=1; "
+            "test \"$cleanup_status\" -eq 1")
+    assert subprocess.run(["bash","-c",script],check=False).returncode==0
+
+
+def test_legacy_runtime_uses_shared_plugin_check_build_context():
+    source=Path(guard.__file__).read_text(encoding="utf-8")
+    assert "wp_runtime_provisioning.prepare_build_contexts" in source
+    assert "PLUGIN_CHECK_SHA256=" in source
 
 def test_services_have_complete_static_resource_policy():
     for service in guard.canary_compose()["services"].values():

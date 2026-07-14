@@ -642,8 +642,14 @@ generated phase exports the already-held staged bytes into a sealed local image
 and creates a normalized, inspected Compose topology with five services:
 database, WordPress, CLI, gateway, and browser.
 
-Three internal networks enforce the peer allowlist. Database, WordPress, and
-CLI share `backend`; only WordPress/CLI can initiate required database traffic.
+Three internal bridge networks enforce the peer allowlist. Each uses Docker's
+`com.docker.network.bridge.gateway_mode_ipv4=isolated` driver option, so the
+host receives no bridge address. Live inspection requires that exact option,
+an IPv4 subnet with no configured gateway, empty endpoint gateway fields, and
+no default route inside the WordPress, CLI, or browser container. This mode
+requires Docker Engine 28 or newer; older or unparseable daemon versions block
+before image provisioning. Database,
+WordPress, and CLI share `backend`; only WordPress/CLI can initiate required database traffic.
 WordPress and gateway share `application`, where Apache binds only
 `wordpress-application:8080`, allowing gateway-to-WordPress traffic while the
 gateway listener is unavailable to WordPress. Gateway and browser share
@@ -655,7 +661,10 @@ network. The browser policy permits the exact
 gateway origin and rejects loopback, RFC1918, link-local/metadata, public IP,
 public DNS, database-peer, host-gateway, WebSocket, WebRTC, service-worker,
 popup, download, and external-navigation attempts from both frontend and editor
-generated JavaScript.
+generated JavaScript. A bounded listener on the host's selected non-loopback
+IPv4 address is attempted by generated PHP, a raw browser-network probe, and
+both generated JavaScript contexts; any connection or queued accept fails the
+gate. The listener address itself is not persisted in accepted evidence.
 
 Every final service is non-root, drops all capabilities, uses
 `no-new-privileges` and Docker's default seccomp profile, has a read-only root,

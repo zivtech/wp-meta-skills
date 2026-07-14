@@ -147,9 +147,15 @@ def test_topology_uses_exact_artifact_image_and_has_zero_mounts():
     assert spec["services"]["wordpress"]["image"]==artifact_image
     assert spec["services"]["cli"]["image"]==artifact_image
     assert all(service["logging"] == {"driver": "none"} for service in spec["services"].values())
+    assert all(network=={"driver":"bridge","driver_opts":topology.ISOLATED_BRIDGE_OPTIONS,
+                         "internal":True} for network in spec["networks"].values())
     mutated = json.loads(json.dumps(spec))
     mutated["services"]["wordpress"]["ports"] = ["8080:8080"]
     with pytest.raises(ValueError, match="field"):
+        topology.validate_compose(mutated, artifact_image)
+    mutated = json.loads(json.dumps(spec))
+    mutated["networks"]["application"]["driver_opts"] = {}
+    with pytest.raises(ValueError, match="topology"):
         topology.validate_compose(mutated, artifact_image)
 
 
@@ -357,11 +363,16 @@ def _oracle_fake_run(command, commands, digest, canaries, denial_keys):
         return {"returncode": 0, "stdout": json.dumps(evidence) + "\n", "stderr": ""}
     if any("/proc/mounts" in item for item in command):
         return {"returncode": 0, "stdout": "tmpfs|rw,nosuid,nodev,noexec\n1\n1\n33:33:700\n33\n33\n", "stderr": ""}
+    if any("/proc/net/route" in item for item in command):
+        return {"returncode":0,"stdout":"Iface Destination Gateway\neth0 00001EAC 00000000\n","stderr":""}
     if command[:3] == ["docker", "network", "inspect"]:
-        return {"returncode": 0, "stdout": '[{"Gateway":"172.30.0.1"}]\n', "stderr": ""}
+        network={"Driver":"bridge","Internal":True,"EnableIPv6":False,
+                 "Options":topology.ISOLATED_BRIDGE_OPTIONS,
+                 "IPAM":{"Config":[{"Subnet":"172.30.0.0/16"}]}}
+        return {"returncode": 0, "stdout": json.dumps(network)+"\n", "stderr": ""}
     if command[:3] == ["docker", "inspect", "--format"]:
         stdout = "none|\n" if "LogConfig" in command[3] else (
-            '{"project_application":{"Gateway":"172.30.0.1","IPAddress":"172.30.0.2"}}\n'
+            '{"project_application":{"Gateway":"","IPv6Gateway":"","IPAddress":"172.30.0.2"}}\n'
         )
         return {"returncode": 0, "stdout": stdout, "stderr": ""}
     if "ps" in command and "-q" in command:
@@ -380,7 +391,8 @@ def test_named_runtime_oracle_bundle_covers_peer_and_resource_boundaries(monkeyp
     canaries={name:True for name in {"same_origin","generated_frontend_js","generated_editor_js",
         "external_http","external_navigation","websocket","webrtc","service_worker","download","popup"}}
     denial_keys={"loopback","rfc1918","metadata","public_ip","public_dns","database_peer",
-        "host_gateway","websocket","webrtc","service_worker","external_navigation","download","popup"}
+        "host_gateway","host_listener","websocket","webrtc","service_worker",
+        "external_navigation","download","popup"}
     run = lambda command, _deadline, _cap: _oracle_fake_run(
         command, commands, digest, canaries, denial_keys,
     )
@@ -409,6 +421,9 @@ def test_named_runtime_oracle_bundle_covers_peer_and_resource_boundaries(monkeyp
     )
     assert any("wordpress" in command and "php" in command for command in commands)
     assert any(any("database" in item for item in command) for command in commands if "browser" in command)
+    route_services={command[command.index("-T")+1] for command in commands
+                    if "/proc/net/route" in command}
+    assert route_services=={"wordpress","cli","browser"}
     tmpfs_checks={item["id"]:item for item in checks if item["id"] in {
         "runtime_storage_ceiling","runtime_inode_ceiling",
     }}
@@ -416,6 +431,50 @@ def test_named_runtime_oracle_bundle_covers_peer_and_resource_boundaries(monkeyp
     assert all(set(item["paths"])==expected_paths and item["recovery"]=="verified"
                for item in tmpfs_checks.values())
     assert "172.17.0.1" not in Path(wp_runtime_oracles.__file__).read_text(encoding="utf-8")
+
+
+def test_runtime_isolated_network_oracle_rejects_gateway_and_driver_drift(monkeypatch):
+    endpoint={"project_frontend":{"Gateway":"","IPv6Gateway":"","IPAddress":"172.30.0.2"}}
+    network={"Driver":"bridge","Internal":True,"EnableIPv6":False,
+             "Options":topology.ISOLATED_BRIDGE_OPTIONS,
+             "IPAM":{"Config":[{"Subnet":"172.30.0.0/16"}]}}
+    def run(command,*_args):
+        if "ps" in command: payload="container-id\n"
+        elif command[:3]==["docker","inspect","--format"]: payload=json.dumps(endpoint)
+        else: payload=json.dumps(network)
+        return {"returncode":0,"stdout":payload,"stderr":""}
+    monkeypatch.setattr(wp_runtime_oracles,"_run",run)
+    assert wp_runtime_oracles._isolated_networks(
+        ["docker","compose"],"browser",RuntimeDeadline.start(60),
+    ) == ("project_frontend",)
+    endpoint["project_frontend"]["Gateway"]="172.30.0.1"
+    with pytest.raises(RuntimeError,match="isolated-network"):
+        wp_runtime_oracles._isolated_networks(
+            ["docker","compose"],"browser",RuntimeDeadline.start(60),
+        )
+    endpoint["project_frontend"]["Gateway"]=""; network["Options"]={}
+    with pytest.raises(RuntimeError,match="isolated-network"):
+        wp_runtime_oracles._isolated_networks(
+            ["docker","compose"],"browser",RuntimeDeadline.start(60),
+        )
+
+
+def test_runtime_default_route_oracle_rejects_a_default_route(monkeypatch):
+    result={"returncode":0,"stdout":"Iface Destination Gateway\neth0 00001EAC 00000000\n","stderr":""}
+    monkeypatch.setattr(wp_runtime_oracles,"_run",lambda *_args:result)
+    assert wp_runtime_oracles._default_route_absence(
+        ["docker","compose"],"browser",RuntimeDeadline.start(60),
+    ) == 1
+    result["stdout"] += "eth0 00000000 01001EAC\n"
+    with pytest.raises(RuntimeError,match="default route"):
+        wp_runtime_oracles._default_route_absence(
+            ["docker","compose"],"browser",RuntimeDeadline.start(60),
+        )
+    result["stdout"]="unexpected header\neth0 00001EAC 00000000\n"
+    with pytest.raises(RuntimeError,match="malformed"):
+        wp_runtime_oracles._default_route_absence(
+            ["docker","compose"],"browser",RuntimeDeadline.start(60),
+        )
 
 
 def test_one_off_output_is_inspected_before_generated_code(monkeypatch):
@@ -496,6 +555,13 @@ def test_plain_permalink_rest_canary_is_query_bounded():
     assert expected in browser and expected in gateway
     assert "rest_route" in browser and "rest_route" in gateway
     assert "/wp-json/wp-runtime-canary/v1/" not in browser + gateway
+
+
+def test_generated_browser_fixture_attempts_the_controlled_host_listener():
+    fixture=Path(HARNESS/"tests/fixtures/adversarial-runtime-plugin.js").read_text(encoding="utf-8")
+    policy=Path(HARNESS/"runtime-images/browser/browser-policy.js").read_text(encoding="utf-8")
+    assert "__WP_RUNTIME_HOST_LISTENER_URL__" in fixture and "host_listener:" in fixture
+    assert "controlledHostListener" in policy and "host_listener" in policy
 
 
 def test_daemon_log_stress_script_is_valid_javascript():

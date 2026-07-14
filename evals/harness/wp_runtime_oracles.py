@@ -1,16 +1,15 @@
 """WordPress-native, route-denial, resource, and browser runtime oracles."""
 from __future__ import annotations
 
-import contextlib
 import ipaddress
 import json
 import re
-import socket
 import time
 
 import isolated_runtime_contract as contract
 import runtime_image_provision as transport
 import wp_runtime_inspection as inspection
+import wp_runtime_network as runtime_network
 import wp_runtime_topology as topology
 from wp_runtime_evidence import RuntimeDeadline, docker_absence_proved, scrub_tail
 
@@ -178,7 +177,7 @@ def _browser_network_denials(base, deadline):
                          "public_dns", "database_peer"]}
 
 
-def _network_gateways(base, service, deadline):
+def _isolated_networks(base, service, deadline):
     container = _run(
         base + ["ps", "-q", "--all", service], deadline, 10,
     )["stdout"].strip()
@@ -190,20 +189,39 @@ def _network_gateways(base, service, deadline):
     )
     try:
         networks = json.loads(result["stdout"])
-        gateways=set()
+        if not networks or any(item.get("Gateway") or item.get("IPv6Gateway")
+                               for item in networks.values()):
+            raise ValueError("container endpoint exposes a gateway")
         for name in networks:
             payload=_run(
-                ["docker","network","inspect","--format","{{json .IPAM.Config}}",name],
+                ["docker","network","inspect","--format","{{json .}}",name],
                 deadline,15,
             )
-            configs=json.loads(payload["stdout"])
-            gateways.update(item["Gateway"] for item in configs if item.get("Gateway"))
-        gateways=sorted(gateways)
-        if not gateways or any(ipaddress.ip_address(value).version != 4 for value in gateways):
-            raise ValueError("missing IPv4 gateway")
+            network=json.loads(payload["stdout"])
+            configs=network.get("IPAM",{}).get("Config") or []
+            options=network.get("Options") or {}
+            subnet=ipaddress.ip_network(configs[0]["Subnet"]) if len(configs)==1 else None
+            if (network.get("Driver")!="bridge" or network.get("Internal") is not True
+                    or network.get("EnableIPv6") is not False
+                    or options!=topology.ISOLATED_BRIDGE_OPTIONS or len(configs)!=1
+                    or set(configs[0])!={"Subnet"}
+                    or not isinstance(subnet,ipaddress.IPv4Network) or not subnet.is_private):
+                raise ValueError("network is not an isolated bridge")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"{service} live gateway evidence is malformed") from exc
-    return tuple(gateways)
+        raise RuntimeError(f"{service} live isolated-network evidence is malformed") from exc
+    return tuple(sorted(networks))
+
+
+def _default_route_absence(base,service,deadline):
+    result=_run(base+["exec","-T",service,"cat","/proc/net/route"],deadline,10)
+    lines=[line.split() for line in result["stdout"].splitlines() if line.strip()]
+    rows=lines[1:]
+    if (not lines or lines[0][:3] != ["Iface","Destination","Gateway"] or not rows
+            or any(len(row)<3 or not re.fullmatch(r"[0-9A-Fa-f]{8}",row[1])
+                   or not re.fullmatch(r"[0-9A-Fa-f]{8}",row[2]) for row in rows)
+            or any(row[1]=="00000000" for row in rows)):
+        raise RuntimeError(f"{service} live default route is present or malformed")
+    return len(rows)
 
 
 def _network_address(base, service, network_suffix, deadline):
@@ -224,18 +242,6 @@ def _network_address(base, service, network_suffix, deadline):
     return matches[0]
 
 
-@contextlib.contextmanager
-def _controlled_host_listener():
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(("0.0.0.0", 0))
-    server.listen(8)
-    try:
-        yield server, server.getsockname()[1]
-    finally:
-        server.close()
-
-
 def _php_gateway_probe(base, gateways, port, deadline, generated):
     encoded = json.dumps(list(gateways), separators=(",", ":"))
     if generated:
@@ -254,53 +260,57 @@ def _php_gateway_probe(base, gateways, port, deadline, generated):
     return _run(command, deadline, 20)
 
 
-def _browser_gateway_probe(base, gateways, port, deadline):
-    targets = json.dumps(list(gateways), separators=(",", ":"))
-    script = (
-        f"const targets={targets},port={port},net=require('net');"
-        "const blocked=h=>new Promise((ok,bad)=>{const s=net.connect(port,h,()=>bad(Error('escape')));"
-        "s.once('error',ok);setTimeout(()=>{s.destroy();ok()},1500)});"
-        "Promise.all(targets.map(blocked)).then(()=>process.exit(0),()=>process.exit(41))"
+def _browser_host_probe(base,target,port,deadline):
+    script=(
+        f"const net=require('net'),s=net.connect({port},{json.dumps(target)},()=>process.exit(41));"
+        "s.once('error',()=>process.exit(0));setTimeout(()=>{s.destroy();process.exit(0)},1500)"
     )
-    _run(base + ["exec", "-T", "browser", "node", "-e", script], deadline, 20)
+    return _run(base+["exec","-T","browser","node","-e",script],deadline,20)
 
 
 def _gateway_denials(base, deadline, generated):
-    wordpress = _network_gateways(base, "wordpress", deadline)
-    browser = _network_gateways(base, "browser", deadline)
+    isolated={service:_isolated_networks(base,service,deadline)
+              for service in ("wordpress","cli","browser")}
     gateway_application = _network_address(base, "gateway", "application", deadline)
-    peer_result = _php_gateway_probe(
-        base, (gateway_application,), 8081, deadline, generated,
-    )
-    with _controlled_host_listener() as (server, port):
-        php_result = _php_gateway_probe(base, wordpress, port, deadline, generated)
-        _browser_gateway_probe(base, browser, port, deadline)
-        server.setblocking(False)
-        try:
-            connection, _address = server.accept()
-        except BlockingIOError:
-            connection = None
-        if connection is not None:
-            connection.close()
-            raise RuntimeError("controlled host gateway listener was reachable")
+    try:
+        peer_result = _php_gateway_probe(
+            base, (gateway_application,), 8081, deadline, generated,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(f"generated_php_gateway_peer_denial: {exc}") from exc
+    route_rows={service:_default_route_absence(base,service,deadline) for service in isolated}
+    with runtime_network.controlled_host_listener() as (server,target,port):
+        try: host_result=_php_gateway_probe(base,(target,),port,deadline,generated)
+        except RuntimeError as exc:
+            raise RuntimeError(f"generated_php_host_listener_denial: {exc}") from exc
+        try: _browser_host_probe(base,target,port,deadline)
+        except RuntimeError as exc:
+            raise RuntimeError(f"browser_host_listener_denial: {exc}") from exc
+        runtime_network.assert_listener_unreached(server)
     checks = [{"id": "runtime_gateway_denials", "status": "pass", "required": True,
-               "gateways": {"wordpress": list(wordpress), "browser": list(browser)},
+               "isolated_networks": {key:list(value) for key,value in isolated.items()},
                "gateway_application_peer": gateway_application,
-               "controlled_listener": True}]
+               "host_bridge_gateways": [],"default_routes":False,"route_rows":route_rows,
+               "controlled_host_listener":True,"listener_target_class":"host_primary_ipv4"}]
     if generated:
-        if (php_result["stdout"].strip() != "generated-php-canary"
-                or peer_result["stdout"].strip() != "generated-php-canary"):
+        if (peer_result["stdout"].strip()!="generated-php-canary"
+                or host_result["stdout"].strip()!="generated-php-canary"):
             raise RuntimeError("generated PHP canary evidence mismatch")
         checks.append({"id": "generated_php_canary", "status": "pass", "required": True})
     return tuple(checks)
 
 
 def _browser_policy_evidence(base, deadline, profile, slug):
-    command = base + [
-        "exec", "-T", "browser", "node", "/opt/wp-runtime/browser-policy.js",
-        profile, BROWSER_ORIGIN, slug,
-    ]
-    result = _run(command, deadline, 60)
+    target=""
+    if profile==contract.ADVERSARIAL_PROFILE:
+        with runtime_network.controlled_host_listener() as (server,address,port):
+            target=f"http://{address}:{port}"
+            result=_run(base+["exec","-T","browser","node",
+                "/opt/wp-runtime/browser-policy.js",profile,BROWSER_ORIGIN,slug,target],deadline,60)
+            runtime_network.assert_listener_unreached(server)
+    else:
+        result=_run(base+["exec","-T","browser","node",
+            "/opt/wp-runtime/browser-policy.js",profile,BROWSER_ORIGIN,slug,target],deadline,60)
     try:
         evidence = json.loads(result["stdout"].splitlines()[-1])
     except (ValueError, IndexError) as exc:
@@ -323,7 +333,7 @@ def _browser_policy_evidence(base, deadline, profile, slug):
 def _generated_browser_check(evidence, generated):
     denial_keys = {
         "loopback", "rfc1918", "metadata", "public_ip", "public_dns",
-        "database_peer", "host_gateway", "websocket", "webrtc",
+        "database_peer", "host_gateway", "host_listener", "websocket", "webrtc",
         "service_worker", "external_navigation", "download", "popup",
     }
     generated_denials = evidence.get("generated_denials")

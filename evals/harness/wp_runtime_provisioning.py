@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import platform
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,14 @@ def _verify_inputs(inventory: dict) -> None:
         actual = hashlib.sha256((HARNESS / relative).read_bytes()).hexdigest()
         if actual != expected:
             raise RuntimeError(f"reviewed runtime build input drift: {relative}")
+
+
+def _require_isolated_gateway_mode(deadline=None) -> str:
+    result=_run(["docker","version","--format","{{.Server.Version}}"],30,deadline)
+    version=result["stdout"].strip(); matched=re.fullmatch(r"([0-9]+)\.[0-9]+(?:\.[0-9]+)?[^\s]*",version)
+    if not matched or int(matched.group(1))<28:
+        raise RuntimeError("generated runtime requires Docker Engine 28+ isolated gateway mode")
+    return version
 
 
 def _pinned_references(inventory: dict, machine: str) -> dict[str, str]:
@@ -90,9 +99,7 @@ def _copy_build_contexts(work: Path, archive: Path, plugin_check:Path) -> tuple[
     return wordpress, database, browser
 
 
-def _build_images(work: Path, references: dict[str, str], inventory: dict,deadline=None) -> tuple[dict, tuple[str, ...]]:
-    run_id = hashlib.sha256(str(work).encode()).hexdigest()[:12]
-    tags = tuple(f"wp-isolated-{name}:{run_id}" for name in ("wordpress", "database", "browser"))
+def prepare_build_contexts(work:Path,inventory:dict,deadline=None) -> tuple[Path,Path,Path]:
     archive = work / "wordpress.tar.gz"
     plugin_check=work/"plugin-check.zip"
     core_timeout=deadline.remaining(65) if deadline is not None else 60
@@ -101,7 +108,13 @@ def _build_images(work: Path, references: dict[str, str], inventory: dict,deadli
     provision.download_pinned(
         inventory["plugin_check"],plugin_check,timeout=plugin_timeout,maximum=32*1024*1024,
     )
-    wordpress, database, browser = _copy_build_contexts(work, archive,plugin_check)
+    return _copy_build_contexts(work,archive,plugin_check)
+
+
+def _build_images(work: Path, references: dict[str, str], inventory: dict,deadline=None) -> tuple[dict, tuple[str, ...]]:
+    run_id = hashlib.sha256(str(work).encode()).hexdigest()[:12]
+    tags = tuple(f"wp-isolated-{name}:{run_id}" for name in ("wordpress", "database", "browser"))
+    wordpress, database, browser = prepare_build_contexts(work,inventory,deadline)
     commands = (
         ["docker", "build", "--network=none", "--pull=false", "-t", tags[0],
          "--build-arg", f"WORDPRESS_BASE={references['wordpress']}",
@@ -141,6 +154,7 @@ def _identity(image: str, user: str,deadline=None) -> str:
 def provision_runtime(work: Path,deadline:RuntimeDeadline|None=None) -> ProvisionedRuntime:
     inventory = provision.inventory()
     _verify_inputs(inventory)
+    engine_version=_require_isolated_gateway_mode(deadline)
     machine = platform.machine()
     _verify_tag_provenance(inventory, machine,deadline)
     references = _pinned_references(inventory, machine)
@@ -156,6 +170,7 @@ def provision_runtime(work: Path,deadline:RuntimeDeadline|None=None) -> Provisio
         raise RuntimeProvisionError(exc, _cleanup_image_tags(tags, deadline)) from exc
     return ProvisionedRuntime(images,identities,tags,{
         "pinned_references":references,
+        "docker_engine_version":engine_version,
         "plugin_check":{key:inventory["plugin_check"][key] for key in ("version","url","sha256","license")},
     })
 

@@ -41,6 +41,19 @@ def test_plugin_check_pin_is_exact_and_copied_before_generated_artifact():
     assert "PLUGIN_CHECK_SHA256" in dockerfile
     assert "/var/www/html/wp-content/plugins/plugin-check" in dockerfile
 
+
+def test_shared_runtime_context_prepares_core_and_plugin_check(monkeypatch,tmp_path):
+    monkeypatch.setattr(provision,"download_core",
+        lambda target,**_kwargs:target.write_bytes(b"core"))
+    monkeypatch.setattr(provision,"download_pinned",
+        lambda _item,target,**_kwargs:target.write_bytes(b"plugin-check"))
+    wordpress,database,browser=runtime_provisioning.prepare_build_contexts(
+        tmp_path,provision.inventory(),
+    )
+    assert (wordpress/"wordpress.tar.gz").read_bytes()==b"core"
+    assert (wordpress/"plugin-check.zip").read_bytes()==b"plugin-check"
+    assert (database/"Dockerfile").is_file() and (browser/"Dockerfile").is_file()
+
 def test_build_input_hashes_match_committed_sources():
     for relative, expected in provision.inventory()["build_inputs"].items():
         assert hashlib.sha256((HARNESS / relative).read_bytes()).hexdigest() == expected
@@ -77,6 +90,16 @@ def test_architecture_aliases_normalize_for_host_and_docker_reports():
     assert provision.normalize_arch("amd64") == "amd64"
     assert provision.normalize_arch("aarch64") == "arm64"
     assert provision.normalize_arch("arm64") == "arm64"
+
+
+def test_generated_runtime_requires_docker_engine_28_isolated_gateway_mode(monkeypatch):
+    result={"returncode":0,"stdout":"28.5.1\n","stderr":""}
+    monkeypatch.setattr(runtime_provisioning,"_run",lambda *_args,**_kwargs:result)
+    assert runtime_provisioning._require_isolated_gateway_mode()=="28.5.1"
+    for version in ("27.5.1","not-a-version"):
+        result["stdout"]=version
+        with pytest.raises(RuntimeError,match="Docker Engine 28"):
+            runtime_provisioning._require_isolated_gateway_mode()
 
 def test_capped_transport():
     result=provision.run_capped(["/bin/sh","-c","printf ok"])

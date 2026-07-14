@@ -11,6 +11,7 @@ SERVICE_NETWORKS = {
     "gateway": ["application", "frontend"],
     "browser": ["frontend"],
 }
+ISOLATED_BRIDGE_OPTIONS={"com.docker.network.bridge.gateway_mode_ipv4":"isolated"}
 PRIMARY_NETWORK = {
     "database": "backend", "wordpress": "application", "cli": "backend",
     "gateway": "application", "browser": "frontend",
@@ -101,10 +102,10 @@ def build_compose(images: dict, identities: dict, artifact_image:str, plugin_slu
             "tmpfs": [_tmpfs("/tmp", identities["browser"], 67108864, 4096),
                       _tmpfs("/dev/shm", identities["browser"], 16777216, 1024)]},
     }
-    return {"services": services, "networks": {
-        "backend": {"internal": True}, "application": {"internal": True},
-        "frontend": {"internal": True},
-    }}
+    networks={name:{"driver":"bridge","driver_opts":dict(ISOLATED_BRIDGE_OPTIONS),
+                    "internal":True}
+              for name in ("backend","application","frontend")}
+    return {"services": services, "networks": networks}
 
 
 def _validate_service_schema(name,service):
@@ -165,8 +166,9 @@ def _validate_service_command(name,service,plugin_slug):
 
 
 def validate_compose(spec: dict, artifact_image:str, plugin_slug:str="runtime-plugin") -> bool:
-    networks={"backend":{"internal":True},"application":{"internal":True},
-              "frontend":{"internal":True}}
+    networks={name:{"driver":"bridge","driver_opts":dict(ISOLATED_BRIDGE_OPTIONS),
+                    "internal":True}
+              for name in ("backend","application","frontend")}
     if set(spec)!={"services","networks"} or spec.get("networks")!=networks:
         raise ValueError("unknown or non-internal final Compose topology")
     if set(spec["services"])!=set(SERVICE_NETWORKS):

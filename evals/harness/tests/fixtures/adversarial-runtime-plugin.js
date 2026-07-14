@@ -26,6 +26,7 @@ const wpRuntimeGeneratedDenials = async label => {
     public_dns: await wpRuntimeDenied('https://example.com/generated-' + label),
     database_peer: await wpRuntimeDenied('http://database:3306/generated-' + label),
     host_gateway: await wpRuntimeDenied('http://host.docker.internal/generated-' + label),
+    host_listener: await wpRuntimeDenied(globalThis.__WP_RUNTIME_HOST_LISTENER_URL__ + '/generated-' + label),
     websocket: await wpRuntimeSocketDenied(),
     webrtc: (() => { try { new RTCPeerConnection(); return false; } catch (_) { return true; } })(),
     service_worker: !navigator.serviceWorker || await navigator.serviceWorker.register('/generated-worker.js').then(() => false, () => true),

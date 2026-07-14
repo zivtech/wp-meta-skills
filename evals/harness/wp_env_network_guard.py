@@ -310,8 +310,7 @@ def run_linux_canary(work, result_path=None):
         if cleanup_error is not None and not active_error: raise cleanup_error
 
 def _run_linux_canary(work):
-    archive=work/"wordpress.tar.gz"; provision.download_core(archive)
-    inv=provision.inventory()["images"]; arch=platform.machine()
+    inventory=provision.inventory(); inv=inventory["images"]; arch=platform.machine()
     arch_key=provision.normalize_arch(arch)
     engine_arch=provision.run_capped(["docker","info","--format","{{.Architecture}}"])["stdout"].strip()
     if provision.normalize_arch(engine_arch) != arch_key: raise RuntimeError("Docker engine architecture mismatch")
@@ -326,12 +325,10 @@ def _run_linux_canary(work):
         inspected=json.loads(provision.run_capped(["docker","image","inspect",reference])["stdout"])[0]
         if not inspected["Id"].startswith("sha256:") or not any(value.endswith(provision.platform_digest(inv[key],arch)) for value in inspected.get("RepoDigests",[])): raise RuntimeError(f"pulled child provenance mismatch: {key}")
     prove_fixture_locks(work,inv,arch)
-    wp=Path(__file__).parent/"runtime-images/wordpress"; db=Path(__file__).parent/"runtime-images/database"
-    wpctx=work/"wordpress"; shutil.copytree(wp,wpctx); shutil.copy2(archive,wpctx/archive.name)
-    dbctx=work/"database"; shutil.copytree(db,dbctx)
+    wpctx,dbctx,_browserctx=wp_runtime_provisioning.prepare_build_contexts(work,inventory)
     run_id=__import__("hashlib").sha256(str(work).encode()).hexdigest()[:12]; wp_tag=f"wp-sandbox-wordpress:{run_id}"; db_tag=f"wp-sandbox-database:{run_id}"
     commands=[
-      ["docker","build","--network=none","--pull=false","-t",wp_tag,"--build-arg",f"WORDPRESS_BASE=wordpress@{provision.platform_digest(inv['wordpress'],arch)}","--build-arg",f"CLI_BASE=wordpress@{provision.platform_digest(inv['wordpress_cli'],arch)}","--build-arg",f"WP_CLI_SHA256={provision.inventory()['wp_cli_binary']['sha256']}",str(wpctx)],
+      ["docker","build","--network=none","--pull=false","-t",wp_tag,"--build-arg",f"WORDPRESS_BASE=wordpress@{provision.platform_digest(inv['wordpress'],arch)}","--build-arg",f"CLI_BASE=wordpress@{provision.platform_digest(inv['wordpress_cli'],arch)}","--build-arg",f"WP_CLI_SHA256={inventory['wp_cli_binary']['sha256']}","--build-arg",f"PLUGIN_CHECK_SHA256={inventory['plugin_check']['sha256']}",str(wpctx)],
       ["docker","build","--network=none","--pull=false","-t",db_tag,"--build-arg",f"DATABASE_BASE=mariadb@{provision.platform_digest(inv['database'],arch)}",str(dbctx)]]
     for command in commands:
         result=provision.run_capped(command,timeout=900)
@@ -343,7 +340,7 @@ def _run_linux_canary(work):
     wordpress_config=json.loads(provision.run_capped(["docker","image","inspect",built["wordpress"]])["stdout"])[0]["Config"]
     validate_wordpress_image_config(wordpress_config)
     wp_cli=provision.run_capped(["docker","run","--rm","--entrypoint","sha256sum",built["wordpress"],"/usr/local/bin/wp"])
-    verify_wp_cli_result(wp_cli,provision.inventory()["wp_cli_binary"]["sha256"])
+    verify_wp_cli_result(wp_cli,inventory["wp_cli_binary"]["sha256"])
     def identity(image,user):
         result=provision.run_capped(["docker","run","--rm","--entrypoint","sh",image,"-c",f"id -u {user}; id -g {user}"])
         if result["returncode"]: raise RuntimeError(result["stderr"])

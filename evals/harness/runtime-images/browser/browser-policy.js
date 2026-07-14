@@ -1,13 +1,21 @@
 'use strict';
+const net = require('net');
 const { chromium } = require('playwright');
 
 (async () => {
   const profile = process.argv[2] || 'standard';
   const origin = process.argv[3] || process.env.WP_RUNTIME_ORIGIN || 'http://gateway-frontend:8081';
   const slug = process.argv[4];
+  const hostListener = process.argv[5] || '';
   if (!['standard', 'adversarial-test'].includes(profile)) throw new Error('unreviewed browser profile');
   if (origin !== 'http://gateway-frontend:8081') throw new Error('unreviewed WordPress gateway origin');
   if (!/^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(slug || '')) throw new Error('unreviewed plugin slug');
+  const listenerUrl = hostListener ? new URL(hostListener) : null;
+  if (profile === 'adversarial-test' && (!listenerUrl || listenerUrl.protocol !== 'http:'
+      || net.isIP(listenerUrl.hostname) !== 4 || !listenerUrl.port
+      || listenerUrl.pathname !== '/' || listenerUrl.search || listenerUrl.hash)) {
+    throw new Error('unreviewed controlled host listener');
+  }
   const restCanary = '/wp-runtime-canary/v1/output';
   const allowedPath = (url, method = 'GET') => {
     if (url.origin !== origin) return false;
@@ -25,7 +33,7 @@ const { chromium } = require('playwright');
   const generatedNavigationDenials = new Set();
   const generatedDenialKeys = [
     'loopback', 'rfc1918', 'metadata', 'public_ip', 'public_dns',
-    'database_peer', 'host_gateway', 'websocket', 'webrtc',
+    'database_peer', 'host_gateway', 'host_listener', 'websocket', 'webrtc',
     'service_worker', 'external_navigation', 'download', 'popup',
   ];
   const exactGeneratedDenials = value => Boolean(value)
@@ -34,7 +42,8 @@ const { chromium } = require('playwright');
   let denied = 0;
   const browser = await chromium.launch({headless: true, args: ['--disable-webrtc']});
   const context = await browser.newContext({acceptDownloads: false, serviceWorkers: 'block'});
-  await context.addInitScript(({allowed, pluginSlug}) => {
+  await context.addInitScript(({allowed, pluginSlug, controlledHostListener}) => {
+    globalThis.__WP_RUNTIME_HOST_LISTENER_URL__ = controlledHostListener;
     const OriginalRTC = globalThis.RTCPeerConnection;
     globalThis.RTCPeerConnection = function () { throw new DOMException('WebRTC blocked', 'SecurityError'); };
     globalThis.RTCPeerConnection.prototype = OriginalRTC && OriginalRTC.prototype;
@@ -46,7 +55,7 @@ const { chromium } = require('playwright');
     };
     globalThis.open = (url, ...args) => popupAllowed(url) ? open(url, ...args) : null;
     if (navigator.serviceWorker) navigator.serviceWorker.register = async () => { throw new DOMException('Service worker blocked', 'SecurityError'); };
-  }, {allowed: origin, pluginSlug: slug});
+  }, {allowed: origin, pluginSlug: slug, controlledHostListener: hostListener});
   await context.routeWebSocket('**/*', async (socket) => {
     denied += 1; socket.close({code: 1008, reason: 'websocket blocked'});
   });

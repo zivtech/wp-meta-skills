@@ -19,7 +19,7 @@
     "runtime-images/database/Dockerfile":"5cb0389069587863b53fb72ee1200ba2bfd042ba87902f834c2a8b3a78567de6",
     "runtime-images/database/entrypoint.sh":"b4c411091e27d9272215eebd4cd66b8f797c5ba77dbb84569025c35af39193da",
     "runtime-images/browser/Dockerfile":"34d11c7c91e519e21bcdb9a7764d557b8ce53346cdfb77c78ded514baa75de77",
-    "runtime-images/browser/browser-policy.js":"e807da1bf0638bfa79ccb31a2d8d1720ed3a1373670c87e62b27413e954d9c44",
+    "runtime-images/browser/browser-policy.js":"2ff29a66304e3497c5a5bbc9b5a9568fd9260ba9a1f33764fcaf5a7c802f0ca5",
     "runtime-images/browser/gateway-policy.js":"e12b6ca0a522b36ce7b542cb96c3ba6588823d40531331c92aff66db6c2a4905",
     "runtime-images/browser/package.json":"7f042cf3f2f762348f245ffdc6a643b9cd9b35fa44e90cad9574bd45c4872a9f",
     "runtime-images/browser/package-lock.json":"6a426213612fe1ed9a6914c39cc5106b721d0ca21bbd301517c23ffd8d8dabb1"

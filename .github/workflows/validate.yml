@@ -124,55 +124,88 @@ jobs:
               summary.write("## Step 4 package sandbox evidence\n\n```json\n"+encoded.decode()+"```\n")
           PY
           exit "$pytest_status"
-      - name: Build and prove the exact committed runtime boundary
+      - name: Admit the feasibility runtime disk budget
         run: |
           free_before=$(df --output=avail -B1 / | tail -1)
+          echo "SANDBOX_FREE_BEFORE=$free_before" >> "$GITHUB_ENV"
           test "$free_before" -ge 21474836480
           docker system df
+      - name: Build and prove the exact committed runtime boundary
+        run: |
           started=$SECONDS
+          set +e
           timeout --signal=TERM --kill-after=30s 1800s \
             env PYTHONPATH=evals/harness \
             python -c 'import os,tempfile,wp_env_network_guard as g; result=g.run_linux_canary(tempfile.mkdtemp(prefix="wp-step0-parent-")+"/canary",os.environ["RUNNER_TEMP"]+"/wp-step0-result.json"); assert result["status"] == "pass", result'
+          sandbox_status=$?
+          set -e
           elapsed=$((SECONDS-started))
+          echo "SANDBOX_CANARY_SECONDS=$elapsed" >> "$GITHUB_ENV"
           echo "sandbox_canary_seconds=$elapsed"
-          test "$elapsed" -le 1800
-          free_after=$(df --output=avail -B1 / | tail -1)
-          used_delta=$((free_before-free_after)); test "$used_delta" -lt 0 && used_delta=0
-          echo "sandbox_post_run_disk_delta_bytes=$used_delta"
-          test "$used_delta" -le 12884901888
-          docker system df
-          cat "$RUNNER_TEMP/wp-step0-result.json"
-          { echo '```json'; cat "$RUNNER_TEMP/wp-step0-result.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Remove run-scoped sandbox resources
+          if test "$elapsed" -gt 1800; then sandbox_status=1; fi
+          if test -f "$RUNNER_TEMP/wp-step0-result.json"; then
+            cat "$RUNNER_TEMP/wp-step0-result.json"
+            { echo '```json'; cat "$RUNNER_TEMP/wp-step0-result.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$sandbox_status"
+      - name: Remove and measure run-scoped sandbox resources
         if: always()
         run: |
-          docker ps -aq --filter 'name=wp-step0-' | xargs -r docker rm -f
-          docker ps -aq --filter 'name=wp-package-' | xargs -r docker rm -f
-          docker ps -aq --filter 'name=wp-acquire-proxy-' | xargs -r docker rm -f
-          docker ps -aq --filter 'name=wp-proxy-preflight-' | xargs -r docker rm -f
-          docker ps -aq --filter 'name=wp-proxy-inventory-' | xargs -r docker rm -f
-          docker ps -aq --filter 'name=wp-cleanup-test-' | xargs -r docker rm -f
-          docker ps -aq --filter 'name=wp-fake-' | xargs -r docker rm -f
-          docker ps -aq --filter 'name=wp-proxy-fake-' | xargs -r docker rm -f
-          docker ps -aq --filter 'name=wp-registry-fake-' | xargs -r docker rm -f
-          docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}} {{.Id}}' | awk '$1 ~ /^wpstep0/ {print $2}' | xargs -r docker rm -f
-          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wpstep0/ {print $2}' | xargs -r docker network rm
-          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wp-acquire-(internal|egress)-/ {print $2}' | xargs -r docker network rm
-          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wp-(dns-observe|event-(mutation|alternate)|tunnel-break|fake-(internal|egress))-/ {print $2}' | xargs -r docker network rm
-          docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '$1 ~ /^wp-sandbox-(wordpress|database):/ {print $2}' | sort -u | xargs -r docker image rm -f
-          test -z "$(docker ps -aq --filter 'name=wp-step0-')"
-          test -z "$(docker ps -aq --filter 'name=wp-package-')"
-          test -z "$(docker ps -aq --filter 'name=wp-acquire-proxy-')"
-          test -z "$(docker ps -aq --filter 'name=wp-proxy-preflight-')"
-          test -z "$(docker ps -aq --filter 'name=wp-proxy-inventory-')"
-          test -z "$(docker ps -aq --filter 'name=wp-cleanup-test-')"
-          test -z "$(docker ps -aq --filter 'name=wp-fake-')"
-          test -z "$(docker ps -aq --filter 'name=wp-proxy-fake-')"
-          test -z "$(docker ps -aq --filter 'name=wp-registry-fake-')"
-          test -z "$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wpstep0/')"
-          test -z "$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wp-acquire-(internal|egress)-/')"
-          test -z "$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wp-(dns-observe|event-(mutation|alternate)|tunnel-break|fake-(internal|egress))-/')"
-          test -z "$(docker image ls --format '{{.Repository}}:{{.Tag}}' | awk '$1 ~ /^wp-sandbox-(wordpress|database):/')"
+          set +e
+          set -o pipefail
+          cleanup_status=0
+          docker ps -aq --filter 'name=wp-step0-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-package-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-acquire-proxy-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-proxy-preflight-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-proxy-inventory-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-cleanup-test-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-fake-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-proxy-fake-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-registry-fake-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}} {{.Id}}' | awk '$1 ~ /^wpstep0/ {print $2}' | xargs -r docker rm -f || cleanup_status=1
+          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wpstep0/ {print $2}' | xargs -r docker network rm || cleanup_status=1
+          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wp-acquire-(internal|egress)-/ {print $2}' | xargs -r docker network rm || cleanup_status=1
+          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wp-(dns-observe|event-(mutation|alternate)|tunnel-break|fake-(internal|egress))-/ {print $2}' | xargs -r docker network rm || cleanup_status=1
+          docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '$1 ~ /^wp-sandbox-(wordpress|database):/ {print $2}' | sort -u | xargs -r docker image rm -f || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-step0-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-package-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-acquire-proxy-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-proxy-preflight-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-proxy-inventory-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-cleanup-test-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-fake-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-proxy-fake-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-registry-fake-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wpstep0/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wp-acquire-(internal|egress)-/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wp-(dns-observe|event-(mutation|alternate)|tunnel-break|fake-(internal|egress))-/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker image ls --format '{{.Repository}}:{{.Tag}}' | awk '$1 ~ /^wp-sandbox-(wordpress|database):/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          if [[ ${SANDBOX_FREE_BEFORE:-} =~ ^[0-9]+$ ]] && free_after=$(df --output=avail -B1 / | tail -1); then
+            used_delta=$((SANDBOX_FREE_BEFORE-free_after))
+            if test "$used_delta" -lt 0; then used_delta=0; fi
+            echo "sandbox_post_cleanup_disk_delta_bytes=$used_delta"
+            test "$used_delta" -le 12884901888 || cleanup_status=1
+          else
+            echo "sandbox_post_cleanup_disk_delta_bytes=unavailable"
+            cleanup_status=1
+          fi
+          echo "sandbox_canary_seconds=${SANDBOX_CANARY_SECONDS:-unavailable}"
+          docker system df || cleanup_status=1
+          exit "$cleanup_status"
   generated-runtime-boundary:
     name: No-secrets generated WordPress runtime boundary
     runs-on: ubuntu-latest
@@ -193,35 +226,54 @@ jobs:
       - name: Admit the isolated runtime disk budget
         run: |
           free_before=$(df --output=avail -B1 / | tail -1)
-          test "$free_before" -ge 21474836480
           echo "ISOLATED_FREE_BEFORE=$free_before" >> "$GITHUB_ENV"
+          test "$free_before" -ge 21474836480
           docker system df
       - name: Prove generated PHP and browser isolation with exact pinned images
         run: |
           started=$SECONDS
+          set +e
           timeout --signal=TERM --kill-after=30s 1800s \
             python -m pytest \
               evals/harness/tests/test_wp_staged_runtime.py \
               -m docker_boundary -q
+          runtime_status=$?
+          set -e
           elapsed=$((SECONDS-started))
+          echo "ISOLATED_RUNTIME_SECONDS=$elapsed" >> "$GITHUB_ENV"
           echo "isolated_runtime_seconds=$elapsed"
+          if test "$elapsed" -gt 1800; then runtime_status=1; fi
+          exit "$runtime_status"
       - name: Remove and measure generated-runtime resources
         if: always()
         run: |
-          docker ps -aq --filter 'name=^/wpisolated' | xargs -r docker rm -f
-          docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}} {{.Id}}' | awk '$1 ~ /^wpisolated/ {print $2}' | xargs -r docker rm -f
-          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wpisolated/ {print $2}' | xargs -r docker network rm
-          docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '$1 ~ /^wp-isolated-(wordpress|database|browser|artifact):/ {print $2}' | sort -u | xargs -r docker image rm -f
-          test -z "$(docker ps -aq --filter 'name=^/wpisolated')"
-          test -z "$(docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' | awk '$1 ~ /^wpisolated/')"
-          test -z "$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wpisolated/')"
-          test -z "$(docker image ls --format '{{.Repository}}:{{.Tag}}' | awk '$1 ~ /^wp-isolated-(wordpress|database|browser|artifact):/')"
-          free_after=$(df --output=avail -B1 / | tail -1)
-          used_delta=$((ISOLATED_FREE_BEFORE-free_after))
-          test "$used_delta" -lt 0 && used_delta=0
-          echo "isolated_runtime_post_cleanup_disk_delta_bytes=$used_delta"
-          test "$used_delta" -le 12884901888
-          docker system df
+          set +e
+          set -o pipefail
+          cleanup_status=0
+          docker ps -aq --filter 'name=^/wpisolated' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}} {{.Id}}' | awk '$1 ~ /^wpisolated/ {print $2}' | xargs -r docker rm -f || cleanup_status=1
+          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wpisolated/ {print $2}' | xargs -r docker network rm || cleanup_status=1
+          docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '$1 ~ /^wp-isolated-(wordpress|database|browser|artifact):/ {print $2}' | sort -u | xargs -r docker image rm -f || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=^/wpisolated') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' | awk '$1 ~ /^wpisolated/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wpisolated/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker image ls --format '{{.Repository}}:{{.Tag}}' | awk '$1 ~ /^wp-isolated-(wordpress|database|browser|artifact):/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          if [[ ${ISOLATED_FREE_BEFORE:-} =~ ^[0-9]+$ ]] && free_after=$(df --output=avail -B1 / | tail -1); then
+            used_delta=$((ISOLATED_FREE_BEFORE-free_after))
+            if test "$used_delta" -lt 0; then used_delta=0; fi
+            echo "isolated_runtime_post_cleanup_disk_delta_bytes=$used_delta"
+            test "$used_delta" -le 12884901888 || cleanup_status=1
+          else
+            echo "isolated_runtime_post_cleanup_disk_delta_bytes=unavailable"
+            cleanup_status=1
+          fi
+          echo "isolated_runtime_seconds=${ISOLATED_RUNTIME_SECONDS:-unavailable}"
+          docker system df || cleanup_status=1
+          exit "$cleanup_status"
   validate:
     runs-on: ubuntu-latest
 
