@@ -1,8 +1,10 @@
-import io, os, socket, stat, sys, tarfile, threading
+import dataclasses, io, os, socket, stat, sys, tarfile, threading
 from pathlib import Path
 import pytest
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
 import artifact_staging as staging
+import measure_artifact_staging
+import sandbox_source_proof
 import workspace_lease
 import certify_wordpress_executor_artifact as certifier
 import run_wordpress_runtime_smoke as runtime_smoke
@@ -17,6 +19,78 @@ def test_stage_tree_copies_regular_files_into_fresh_lease(tmp_path):
         assert result.manifest[0].sha256=="135fc7a09da25f03e44f7a2c700efd4a9d0a989af4d4704eabfe9ada71b26590"
     finally: cleanup(result)
 
+def test_staging_measurement_emits_finite_metrics_under_watchdog():
+    packet=measure_artifact_staging.measure(1024*1024,100,10)
+    assert packet["status"]=="pass" and packet["snapshot_entries"]==100
+    assert packet["scan_handoff_entries"]==100
+    assert packet["elapsed_sec"]>=0 and packet["peak_bytes"]>=0
+
+def test_staging_measurement_rejects_values_above_reviewed_limits():
+    with pytest.raises(ValueError,match="bytes"):
+        measure_artifact_staging.measure(staging.MAX_FILE_BYTES+1,1,10)
+    with pytest.raises(ValueError,match="entries"):
+        measure_artifact_staging.measure(1,staging.MAX_ENTRIES+1,10)
+    with pytest.raises(ValueError,match="watchdog"):
+        measure_artifact_staging.measure(1,1,measure_artifact_staging.MAX_WATCHDOG_SEC+1)
+
+def test_held_stage_clone_is_fd_rooted_across_aba_swap(tmp_path):
+    source=tmp_path/"source"; source.mkdir(); (source/"value").write_text("safe")
+    external=tmp_path/"external"; external.mkdir(); (external/"value").write_text("SECRET")
+    staged=staging.stage_tree(source,tmp_path/"input")
+    forged=dataclasses.replace(staged)
+    with pytest.raises(ValueError,match="authentic"):
+        with staging.hold_staged_tree(forged): pass
+    moved=staged.lease.root/"held-artifact"; clone=None
+    try:
+        with staging.hold_staged_tree(staged) as held:
+            staged.root.rename(moved); staged.root.symlink_to(external,target_is_directory=True)
+            clone=staging.stage_held_tree(held,tmp_path/"clone")
+        assert (clone.root/"value").read_text()=="safe"
+        assert clone.role is staging.StageRole.CALLER_INPUT
+        assert clone.lease.purpose is workspace_lease.WorkspacePurpose.ARTIFACT_EXECUTION
+    finally:
+        if staged.root.is_symlink(): staged.root.unlink()
+        if moved.exists(): moved.rename(staged.root)
+        if clone is not None: cleanup(clone)
+        cleanup(staged)
+
+def test_public_staging_apis_cannot_issue_privileged_roles(tmp_path):
+    source=tmp_path/"source"; source.mkdir(); (source/"value").write_text("safe")
+    staged=staging.stage_tree(source,tmp_path/"input")
+    forged=dataclasses.replace(staged,role=staging.StageRole.SANDBOX_OUTPUT)
+    try:
+        with pytest.raises(TypeError): staging.stage_tree(source,tmp_path/"tree",role=staging.StageRole.SANDBOX_OUTPUT)
+        with pytest.raises(TypeError): staging.stage_snapshot([],tmp_path/"snapshot",role=staging.StageRole.SCAN_HANDOFF)
+        with staging.hold_staged_tree(staged) as held:
+            with pytest.raises(TypeError): staging.stage_held_tree(held,tmp_path/"held",role=staging.StageRole.SYNTHESIZED_RUNTIME)
+        assert not staging.has_stage_authority(forged,staging.StageRole.SANDBOX_OUTPUT)
+    finally: cleanup(staged)
+
+def test_snapshot_reuses_shared_proof_budget_without_extra_reproofs(tmp_path,monkeypatch):
+    source=tmp_path/"source"; source.mkdir(); (source/"value").write_text("safe")
+    staged=staging.stage_tree(source,tmp_path/"input"); calls=[]
+    original=sandbox_source_proof.prove_artifact
+    def prove(descriptor,budget,policy="canonical"):
+        calls.append(budget)
+        return original(descriptor,budget,policy)
+    monkeypatch.setattr(sandbox_source_proof,"prove_artifact",prove)
+    try:
+        with staging.hold_staged_tree(staged) as held:
+            assert len(staging.snapshot_held_tree(held))==1
+            assert held.proof_budget.artifact_passes==2
+        assert len(calls)==2 and calls[0] is calls[1]
+        assert held.proof_budget.artifact_passes==3
+    finally: cleanup(staged)
+
+def test_held_snapshot_and_reproof_share_six_pass_ceiling(tmp_path):
+    source=tmp_path/"source"; source.mkdir(); (source/"value").write_text("safe")
+    staged=staging.stage_tree(source,tmp_path/"input")
+    try:
+        with pytest.raises(RuntimeError,match="pass budget"):
+            with staging.hold_staged_tree(staged) as held:
+                for _index in range(5): staging.snapshot_held_tree(held)
+    finally: cleanup(staged)
+
 def test_staged_modes_are_normalized_not_preserved(tmp_path):
     source=tmp_path/"source"; source.mkdir(); regular=source/"regular"; executable=source/"executable"
     regular.write_text("r"); executable.write_text("x"); regular.chmod(0o666); executable.chmod(0o777)
@@ -26,6 +100,19 @@ def test_staged_modes_are_normalized_not_preserved(tmp_path):
         assert stat.S_IMODE((result.root/"executable").stat().st_mode)==0o700
         assert {entry.path:entry.mode_class for entry in result.manifest}=={"executable":"executable","regular":"regular"}
     finally: cleanup(result)
+
+def test_manifest_sha256_is_order_independent_and_binds_every_field():
+    first=staging.ManifestEntry("a.php","regular",3,"1"*64); second=staging.ManifestEntry("bin/run","executable",4,"2"*64)
+    digest=staging.manifest_sha256((second,first))
+    assert digest==staging.manifest_sha256((first,second))
+    assert len(digest)==64
+    for changed in (
+        staging.ManifestEntry("b.php",first.mode_class,first.size,first.sha256),
+        staging.ManifestEntry(first.path,"executable",first.size,first.sha256),
+        staging.ManifestEntry(first.path,first.mode_class,4,first.sha256),
+        staging.ManifestEntry(first.path,first.mode_class,first.size,"3"*64),
+    ):
+        assert staging.manifest_sha256((changed,second))!=digest
 
 def test_execution_closure_ignore_is_one_canonical_object():
     assert certifier.EXECUTION_CLOSURE_IGNORE is staging.EXECUTION_CLOSURE_IGNORE
@@ -162,6 +249,25 @@ def test_stage_rejects_raced_extra_destination_directory(tmp_path,monkeypatch):
     monkeypatch.setattr(staging,"_manifest_from_fd",inject)
     with pytest.raises(ValueError,match="filesystem entry mismatch"): staging.stage_tree(source,tmp_path/"leases")
 
+def test_stage_tree_dual_failure_preserves_primary_and_retained_lease(tmp_path,monkeypatch):
+    source=tmp_path/"source"; source.mkdir(); (source/"plugin.php").write_text("<?php")
+    parent=tmp_path/"leases"; original_cleanup=staging.workspace_lease.cleanup
+    monkeypatch.setattr(staging,"_manifest_from_fd",lambda *_args,**_kwargs:(_ for _ in ()).throw(RuntimeError("manifest failed")))
+    monkeypatch.setattr(staging.workspace_lease,"cleanup",lambda _lease:(_ for _ in ()).throw(workspace_lease.WorkspaceCleanupError("cleanup failed")))
+    with pytest.raises(staging.StagingCleanupError,match="manifest failed.*cleanup") as caught:
+        staging.stage_tree(source,parent)
+    error=caught.value; receipt=error.receipt
+    assert isinstance(error.primary,RuntimeError) and str(error.primary)=="manifest failed"
+    assert receipt.component=="caller_input" and receipt.issuer is staging.StageRole.CALLER_INPUT
+    assert receipt.state=="retained" and receipt.exists and receipt.live and receipt.error
+    assert receipt.recovery_path and Path(receipt.recovery_path).exists()
+    monkeypatch.setattr(staging.workspace_lease,"cleanup",original_cleanup)
+    original_cleanup(receipt.lease)
+    live_before=set(workspace_lease._LIVE_LEASES)
+    with pytest.raises(RuntimeError,match="manifest failed"):
+        staging.stage_tree(source,parent)
+    assert set(workspace_lease._LIVE_LEASES)==live_before and not any(parent.iterdir())
+
 def tar_bytes(entries):
     stream=io.BytesIO()
     with tarfile.open(fileobj=stream,mode="w") as archive:
@@ -279,3 +385,21 @@ def test_import_manifest_is_rebuilt_and_exact_compared(tmp_path,monkeypatch):
     monkeypatch.setattr(staging,"_manifest_from_fd",lambda *_args,**_kwargs:())
     with pytest.raises(ValueError,match="manifest mismatch"):
         staging.import_tar_stream(tar_bytes([("a",b"x","file")]),tmp_path/"mismatch")
+
+def test_import_dual_failure_preserves_primary_and_sandbox_output_receipt(tmp_path,monkeypatch):
+    parent=tmp_path/"leases"; original_cleanup=staging.workspace_lease.cleanup
+    monkeypatch.setattr(staging,"_finalize_archive",lambda *_args,**_kwargs:(_ for _ in ()).throw(RuntimeError("import verification failed")))
+    monkeypatch.setattr(staging.workspace_lease,"cleanup",lambda _lease:(_ for _ in ()).throw(workspace_lease.WorkspaceCleanupError("cleanup failed")))
+    with pytest.raises(staging.StagingCleanupError,match="import verification failed.*cleanup") as caught:
+        staging.import_tar_stream(tar_bytes([("a",b"ok","file")]),parent)
+    error=caught.value; receipt=error.receipt
+    assert isinstance(error.primary,RuntimeError) and str(error.primary)=="import verification failed"
+    assert receipt.component=="sandbox_output" and receipt.issuer is staging.StageRole.SANDBOX_OUTPUT
+    assert receipt.state=="retained" and receipt.exists and receipt.live and receipt.error
+    assert receipt.recovery_path and Path(receipt.recovery_path).exists()
+    monkeypatch.setattr(staging.workspace_lease,"cleanup",original_cleanup)
+    original_cleanup(receipt.lease)
+    live_before=set(workspace_lease._LIVE_LEASES)
+    with pytest.raises(RuntimeError,match="import verification failed"):
+        staging.import_tar_stream(tar_bytes([("a",b"ok","file")]),parent)
+    assert set(workspace_lease._LIVE_LEASES)==live_before and not any(parent.iterdir())

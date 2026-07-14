@@ -20,6 +20,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import artifact_staging
+import artifact_execution
+import artifact_snapshot_scan
+import runtime_artifact_pipeline
 import wp_api_lint
 import wp_security_gate
 
@@ -39,8 +43,6 @@ BANNED_UNSAFE_PATTERNS = (
 
 SECRETISH_RE = re.compile(r"(?i)(api[_-]?key|password|secret|token)\s*[:=]\s*['\"][^'\"]{12,}")
 PHPCS_IGNORE_PATTERNS = ("*.asset.php", "*/node_modules/*", "*/vendor/*")
-
-
 @dataclass(frozen=True)
 class Check:
     id: str
@@ -59,8 +61,6 @@ class CommandResult:
     returncode: int
     stdout: str
     stderr: str
-
-
 def repo_relative(path: Path) -> str:
     try:
         return str(path.resolve().relative_to(ROOT))
@@ -412,54 +412,6 @@ def check_phpcs(path: Path, args: argparse.Namespace, required: bool) -> Check:
     return command_check("phpcs_wpcs", command, ROOT, args.timeout_sec, required)
 
 
-def check_phpunit(path: Path, timeout_sec: int, required: bool) -> Check:
-    has_tests = path.is_dir() and ((path / "phpunit.xml").exists() or (path / "tests").exists())
-    if not has_tests and not required:
-        return skip_check("phpunit", "no phpunit.xml or tests directory found")
-    phpunit = find_executable(path, ("phpunit",))
-    if not phpunit:
-        return block_check("phpunit", "phpunit executable not found", required)
-    return command_check("phpunit", [phpunit], path if path.is_dir() else path.parent, timeout_sec, required)
-
-
-def check_npm_build(path: Path, timeout_sec: int, required: bool) -> Check:
-    package_json = path / "package.json" if path.is_dir() else None
-    if not package_json or not package_json.exists():
-        if required:
-            return block_check("npm_build", "package.json not found")
-        return skip_check("npm_build", "package.json not found")
-    data, error = load_json_file(package_json)
-    if error:
-        return fail_check("npm_build", error, required)
-    scripts = data.get("scripts") if data else {}
-    if not isinstance(scripts, dict) or "build" not in scripts:
-        if required:
-            return block_check("npm_build", "package.json has no build script")
-        return skip_check("npm_build", "package.json has no build script")
-    npm = shutil.which("npm")
-    if not npm:
-        return block_check("npm_build", "npm executable not found", required)
-    command = [npm, "run", "build"]
-    try:
-        result = run_command(command, path, timeout_sec)
-    except FileNotFoundError:
-        return block_check("npm_build", f"command not found: {command[0]}", required, command)
-    except subprocess.TimeoutExpired:
-        return fail_check("npm_build", f"command timed out after {timeout_sec}s", required)
-
-    detail = f"exit {result.returncode}"
-    if result.stdout.strip():
-        detail += f"; stdout: {result.stdout.strip()[:500]}"
-    if result.stderr.strip():
-        detail += f"; stderr: {result.stderr.strip()[:500]}"
-    output = f"{result.stdout}\n{result.stderr}"
-    if result.returncode != 0:
-        return Check("npm_build", "fail", required, detail, command)
-    if "Source directory \"src\" was not found" in output:
-        return Check("npm_build", "fail", required, detail, command)
-    return Check("npm_build", "pass", required, detail, command)
-
-
 def check_plugin_check(path: Path, args: argparse.Namespace, required: bool) -> Check:
     wp = shutil.which("wp")
     wp_env_root = Path(args.wp_env_root).resolve() if args.wp_env_root else None
@@ -550,10 +502,12 @@ def check_wp_env(path: Path, args: argparse.Namespace, required: bool) -> Check:
 
 def structural_checks(
     artifact_type: str,
-    path: Path,
+    path: Path | artifact_snapshot_scan.ArtifactSnapshotView,
     timeout_sec: int = 120,
     extras: dict[str, Any] | None = None,
 ) -> list[Check]:
+    if isinstance(path, artifact_snapshot_scan.ArtifactSnapshotView):
+        return [Check(item.id, item.status, True, item.detail) for item in artifact_snapshot_scan.structural_checks(artifact_type, path)]
     checks = [check_path(path), check_no_unsafe_text(path), check_no_hardcoded_secrets(path)]
     if artifact_type == "plugin":
         checks += [
@@ -580,7 +534,50 @@ def structural_checks(
     return checks
 
 
-def runtime_checks(artifact_type: str, path: Path, args: argparse.Namespace) -> list[Check]:
+def trusted_external_checks(artifact_type: str, path: Path, timeout_sec: int, extras: dict[str, Any]) -> list[Check]:
+    checks = []
+    if artifact_type not in {"plugin", "block", "theme"} or not iter_files(path, PHP_SUFFIXES):
+        return checks
+    api_check, api_report = check_api_existence(path, timeout_sec)
+    checks.append(api_check)
+    if api_report is not None:
+        extras["api_lint"] = api_report
+    security_check, security_report = check_security_gate(path, timeout_sec)
+    checks.append(security_check)
+    if security_report is not None:
+        extras["security_gate"] = security_report
+    return checks
+
+
+def _sandbox_check(staged: artifact_staging.StagedTree, phase: str, timeout_sec: int, receipts=None) -> Check:
+    if phase == "npm-build":
+        build = runtime_artifact_pipeline.build_block(staged, timeout_sec)
+        status, detail, command, output = build.status, build.detail, build.command, build.output
+        staging_receipts = build.staging_cleanup_receipts
+    else:
+        outcome = artifact_execution.run_generated(staged, phase, timeout_sec)
+        status, detail, command, output = outcome.status, outcome.detail, outcome.command, outcome.output
+        staging_receipts = outcome.staging_cleanup_receipts
+    check_id = "npm_build" if phase == "npm-build" else "phpunit"
+    rendered = list(command)
+    translated = [
+        runtime_artifact_pipeline.cleanup_receipt_from_staging("sandbox_output",receipt)
+        for receipt in staging_receipts
+    ]
+    if receipts is not None:
+        receipts.extend(translated)
+    if any(receipt.state != "removed" or receipt.error for receipt in translated):
+        return block_check(check_id, "sandbox output remains retained after import cleanup", True, rendered)
+    if output is not None:
+        receipt = runtime_artifact_pipeline.cleanup_component("sandbox_output", output)
+        if receipts is not None:
+            receipts.append(receipt)
+        if receipt.state != "removed":
+            return block_check(check_id, "sandbox output remains retained after cleanup", True, rendered)
+    return Check(check_id, status, True, detail, rendered)
+
+
+def runtime_checks(artifact_type: str, path: Path, args: argparse.Namespace, staged: artifact_staging.StagedTree | None = None, receipts=None, trusted_handoff: bool = False) -> list[Check]:
     required_tools = set(args.require_tool or [])
     if args.profile == "runtime":
         if artifact_type in {"plugin", "theme"}:
@@ -595,49 +592,175 @@ def runtime_checks(artifact_type: str, path: Path, args: argparse.Namespace) -> 
     if "phpcs" in required_tools or "wpcs" in required_tools:
         checks.append(check_phpcs(path, args, True))
     if "phpunit" in required_tools:
-        checks.append(check_phpunit(path, args.timeout_sec, True))
+        checks.append(_sandbox_check(staged,"phpunit",args.timeout_sec,receipts) if staged else block_check("phpunit","staged capability unavailable"))
     if "npm-build" in required_tools:
-        checks.append(check_npm_build(path, args.timeout_sec, True))
+        checks.append(_sandbox_check(staged,"npm-build",args.timeout_sec,receipts) if staged else block_check("npm_build","staged capability unavailable"))
     if "plugin-check" in required_tools:
-        checks.append(check_plugin_check(path, args, True))
+        checks.append(block_check("plugin_check", "generated runtime execution is forbidden in the trusted scanner handoff") if trusted_handoff else check_plugin_check(path, args, True))
     if "wp-env" in required_tools:
-        checks.append(check_wp_env(path, args, True))
+        checks.append(block_check("wp_env_smoke", "wp-env root is required outside the trusted scanner handoff") if trusted_handoff and not args.wp_env_root else check_wp_env(path, args, True))
     return checks
 
 
 def summarize(checks: list[Check]) -> str:
     required = [check for check in checks if check.required]
-    if any(check.status == "fail" for check in required):
-        return "fail"
     if any(check.status == "blocked" for check in required):
         return "blocked"
+    if any(check.status == "fail" for check in required):
+        return "fail"
     return "pass"
 
 
-def validate_artifact(artifact_type: str, path: Path, args: argparse.Namespace) -> dict[str, Any]:
-    path = path.resolve()
-    extras: dict[str, Any] = {}
-    checks = structural_checks(artifact_type, path, timeout_sec=getattr(args, "timeout_sec", 120), extras=extras)
-    if path.exists():
-        checks.extend(runtime_checks(artifact_type, path, args))
+def _validate_snapshot(artifact_type, view, external_path, args, staged):
+    extras = {}; receipts = []
+    checks = structural_checks(artifact_type, view, timeout_sec=getattr(args, "timeout_sec", 120), extras=extras)
+    checks.extend(trusted_external_checks(artifact_type, external_path, args.timeout_sec, extras))
+    checks.extend(runtime_checks(artifact_type, external_path, args, staged, receipts, trusted_handoff=True))
     status = summarize(checks)
     result = {
-        "artifact_type": artifact_type,
-        "artifact_path": repo_relative(path),
-        "profile": args.profile,
-        "required_tools": sorted(args.require_tool or []),
-        "runtime_roots": {
-            "wp_root": args.wp_root,
-            "wp_env_root": args.wp_env_root,
+        "artifact_type": artifact_type, "artifact_path": repo_relative(external_path),
+        "profile": args.profile, "required_tools": sorted(args.require_tool or []),
+        "runtime_roots": {"wp_root": args.wp_root, "wp_env_root": args.wp_env_root},
+        "status": status, "pass": status == "pass", "checks": [asdict(check) for check in checks],
+        "_artifact_retention_receipts": receipts,
+        "trusted_scanner_handoff": {
+            "status": "used", "generated_execution": False,
+            "threat_boundary": "path-required external scanners are trusted; intentional same-UID scanner/co-tenant substitution is out of scope",
         },
-        "status": status,
-        "pass": status == "pass",
-        "checks": [asdict(check) for check in checks],
     }
-    if "api_lint" in extras:
-        result["api_lint"] = extras["api_lint"]
-    if "security_gate" in extras:
-        result["security_gate"] = extras["security_gate"]
+    if "api_lint" in extras: result["api_lint"] = extras["api_lint"]
+    if "security_gate" in extras: result["security_gate"] = extras["security_gate"]
+    return result
+
+
+def _staged_validation_subpath(held: artifact_staging.HeldStagedTree, subpath: Path | None) -> Path:
+    relative = subpath or Path()
+    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError("staged validation subpath is unsafe")
+    if relative.parts and dict(held.proof.path_kinds).get(relative.as_posix()) != "directory":
+        raise ValueError("staged validation subpath is unavailable")
+    return relative
+
+
+def _scan_failure_result(artifact_type, args, exc):
+    check = block_check("trusted_scanner_handoff", f"trusted scanner handoff raised {type(exc).__name__}")
+    return {
+        "artifact_type": artifact_type, "artifact_path": None, "profile": args.profile,
+        "required_tools": sorted(args.require_tool or []),
+        "runtime_roots": {"wp_root": args.wp_root, "wp_env_root": args.wp_env_root},
+        "status": "blocked", "pass": False, "checks": [asdict(check)],
+        "_artifact_retention_receipts": [],
+        "trusted_scanner_handoff": {
+            "status": "blocked", "generated_execution": False,
+            "threat_boundary": "path-required external scanners are trusted; intentional same-UID scanner/co-tenant substitution is out of scope",
+        },
+    }
+
+
+def _run_staged_scan(artifact_type, staged, args, subpath):
+    manifest = staged.manifest; scan_stage = None
+    receipt = runtime_artifact_pipeline.CleanupReceipt("scan_handoff", "not_created", False, False, None, None)
+    try:
+        with artifact_staging.hold_staged_tree(staged) as held:
+            manifest = held.proof.manifest
+            relative = _staged_validation_subpath(held, subpath)
+            snapshot = artifact_staging.snapshot_held_tree(held)
+            view = artifact_snapshot_scan.from_snapshot(snapshot, relative)
+            scan_stage = artifact_staging._stage_scan_handoff_snapshot(snapshot)
+            try:
+                with artifact_staging.hold_staged_tree(scan_stage):
+                    result = _validate_snapshot(artifact_type, view, scan_stage.root / relative, args, staged)
+            finally:
+                receipt = runtime_artifact_pipeline.cleanup_component("scan_handoff", scan_stage)
+    except Exception as exc:
+        result = _scan_failure_result(artifact_type, args, exc)
+    return result, manifest, receipt
+
+
+def validate_staged_artifact(artifact_type: str, staged: artifact_staging.StagedTree, args: argparse.Namespace, *, source_path: Path | None = None, subpath: Path | None = None, _defer_retention: bool = False) -> dict[str, Any]:
+    claimed = source_path.expanduser().absolute() if source_path is not None else None
+    attested = Path(staged.source_path) if staged.source_attested and staged.source_path else None
+    result, manifest, scan_receipt = _run_staged_scan(artifact_type, staged, args, subpath)
+    source = attested or staged.root
+    result["scan_handoff"] = {
+        "state": scan_receipt.state, "retained": scan_receipt.exists or scan_receipt.live,
+        "resource_path": scan_receipt.resource_path,
+        "recovery_path": scan_receipt.recovery_path, "error": scan_receipt.error,
+        "generated_execution": False,
+    }
+    if scan_receipt.state != "removed":
+        result["status"] = "blocked"; result["pass"] = False
+        result["checks"].append(asdict(block_check("scan_handoff_cleanup", "trusted scanner handoff remains retained")))
+    requested = set(args.require_tool or []) & {"npm-build", "phpunit"}
+    generated_requested = bool(requested) or (args.profile == "runtime" and artifact_type == "block")
+    phase_ids = {"npm_build", "phpunit"}
+    phase_checks = [Check(**check) for check in result["checks"] if check["id"] in phase_ids]
+    generated_status = summarize(phase_checks) if phase_checks else "blocked" if generated_requested else "not_requested"
+    result.update(
+        {
+            "artifact_path": repo_relative(source),
+            "source_path": str(attested) if attested is not None else None,
+            "source_attested": attested is not None,
+            "claimed_source_path": str(claimed) if claimed is not None else None,
+            "execution_copy": str(staged.root),
+            "execution_retained": True,
+            "manifest_sha256": artifact_staging.manifest_sha256(manifest),
+            "sandbox_posture": {
+                "generated_execution": generated_status,
+                "host_fallback": False,
+                "static_scan_root": "fd_snapshot_and_trusted_scan_handoff",
+            },
+        }
+    )
+    receipts = result.pop("_artifact_retention_receipts", [])
+    if _defer_retention:
+        result["_artifact_retention_receipts"] = receipts
+    else:
+        receipts.append(runtime_artifact_pipeline.observe_component("input_copy", staged))
+        result["artifact_retention"] = runtime_artifact_pipeline.retention_summary(receipts)
+    return result
+
+
+def _staging_failure(artifact_type: str, source: Path, args: argparse.Namespace, detail: str, receipts=()) -> dict[str, Any]:
+    return runtime_artifact_pipeline.staging_failure_result(
+        artifact_type=artifact_type,artifact_path=repo_relative(source),source_path=str(source),
+        profile=args.profile,required_tools=sorted(args.require_tool or []),
+        runtime_roots={"wp_root":args.wp_root,"wp_env_root":args.wp_env_root},
+        detail=detail,receipts=receipts,
+    )
+
+
+def validate_artifact(artifact_type: str, path: Path, args: argparse.Namespace) -> dict[str, Any]:
+    source = path.expanduser().resolve()
+    retain = bool(getattr(args, "debug_retain", False))
+    try:
+        staged = artifact_staging.stage_tree(source)
+    except artifact_staging.StagingCleanupError as exc:
+        detail = f"staging failed: {type(exc.primary).__name__}: {exc.primary}"
+        receipt=runtime_artifact_pipeline.cleanup_receipt_from_staging("input_copy",exc.receipt)
+        return _staging_failure(artifact_type,source,args,detail,[receipt])
+    except (OSError, ValueError, RuntimeError) as exc:
+        detail = f"staging failed: {type(exc).__name__}: {exc}"
+        return _staging_failure(artifact_type, source, args, detail)
+    result = None
+    cleanup_error = None
+    try:
+        result = validate_staged_artifact(artifact_type, staged, args, source_path=source, _defer_retention=True)
+    finally:
+        receipt = (
+            runtime_artifact_pipeline.observe_component("input_copy", staged)
+            if retain
+            else runtime_artifact_pipeline.cleanup_component("input_copy", staged)
+        )
+    receipts = result.pop("_artifact_retention_receipts", [])
+    receipts.append(receipt)
+    result["artifact_retention"] = runtime_artifact_pipeline.retention_summary(receipts)
+    cleanup_error = receipt.error if receipt.state != "removed" and not retain else None
+    if cleanup_error:
+        result["status"] = "blocked"
+        result["pass"] = False
+        result["checks"].append(asdict(block_check("artifact_cleanup", cleanup_error)))
+    result["execution_retained"] = result["artifact_retention"]["retained"]
     return result
 
 
@@ -656,6 +779,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wp-env-root", help="Directory containing the .wp-env.json/package.json to use as cwd for wp-env checks.")
     parser.add_argument("--plugin-check-require", help="Optional Plugin Check cli.php path for runtime checks.")
     parser.add_argument("--timeout-sec", type=int, default=120)
+    parser.add_argument("--debug-retain", action="store_true", help="Retain the staged execution copy for explicit debugging.")
     return parser
 
 

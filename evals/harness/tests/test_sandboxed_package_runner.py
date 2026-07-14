@@ -1,11 +1,17 @@
-import dataclasses, inspect, io, ipaddress, json, os, platform, re, select, shutil, signal, socket, stat, subprocess, sys, threading, time
+import dataclasses, inspect, io, ipaddress, json, os, platform, re, select, shutil, signal, socket, stat, subprocess, sys, tarfile, threading, time
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 TESTS=Path(__file__).resolve().parent; HARNESS=TESTS.parent; sys.path.insert(0,str(TESTS)); sys.path.insert(0,str(HARNESS))
 import artifact_staging, live_fixture_support, materialize_wordpress_executor_packet as materializer, runtime_image_provision, sandbox_native_poll as native_poll, sandboxed_package_runner as runner, step4_evidence, workspace_lease
 def staged(tmp_path):
     source=tmp_path/"source"; source.mkdir(); (source/"input.txt").write_text("safe")
     return artifact_staging.stage_tree(source,tmp_path/"leases")
+def sandbox_output(tmp_path):
+    source=tmp_path/"output-source"; source.mkdir(); (source/"plugin.php").write_text("<?php")
+    stream=io.BytesIO()
+    with tarfile.open(fileobj=stream,mode="w") as archive: archive.add(source,arcname=".")
+    stream.seek(0); return artifact_staging.import_tar_stream(stream,tmp_path/"outputs",dependency_policy="strict")
 def request(tree,**changes):
     item=runtime_image_provision.inventory()["images"]["node"]
     image=f"node@{runtime_image_provision.platform_digest(item,platform.machine())}"
@@ -19,6 +25,100 @@ def test_request_and_result_are_frozen(tmp_path):
         with pytest.raises(dataclasses.FrozenInstanceError): request(tree).timeout=1
         assert runner.SandboxResult("blocked",None,"","",None,"x","n").status=="blocked"
     finally: workspace_lease.cleanup(tree.lease)
+
+def test_staging_cleanup_receipt_survives_boundary_to_blocked_result(tmp_path,monkeypatch):
+    tree=staged(tmp_path); monkeypatch.setattr(runner.platform,"system",lambda:"Linux")
+    receipt=artifact_staging.StagingCleanupReceipt(
+        "sandbox_output",artifact_staging.StageRole.SANDBOX_OUTPUT,tree.lease,tree.root,
+        "retained",True,True,str(tree.root),"WorkspaceCleanupError: cleanup did not complete normally",
+    )
+    low=artifact_staging.StagingCleanupError(RuntimeError("import failed"),receipt)
+    boundary=runner.SandboxBoundaryError("StagingCleanupError: import failed",{},{},[],(receipt,))
+    monkeypatch.setattr(runner,"_run_live",lambda *_args,**_kwargs:(_ for _ in ()).throw(boundary))
+    try:
+        result=runner.run_sandbox(request(tree))
+        assert runner._staging_cleanup_receipts(low)==(receipt,)
+        assert result.status=="blocked" and result.staging_cleanup_receipts==(receipt,)
+    finally: workspace_lease.cleanup(tree.lease)
+
+@pytest.mark.parametrize("branch",["identity_tainted","daemon_identity","cleanup_exception","cleanup_nonzero"])
+def test_cleanup_package_result_preserves_successful_output_cleanup_failure(tmp_path,monkeypatch,branch):
+    output=sandbox_output(tmp_path); original_cleanup=workspace_lease.cleanup
+    result=runner.SandboxResult("pass",0,"","",output,runner.sandbox_evidence.encode("pass"),"package")
+    ledger=runner.ResourceLedger(); ledger.record("container","package","created")
+    if branch=="identity_tainted": ledger.identity_tainted=True
+    elif branch=="daemon_identity":
+        monkeypatch.setattr(runner.daemon_control,"run",lambda *_args,**_kwargs:(_ for _ in ()).throw(runner.sandbox_none_network.DaemonIdentityError("identity failed")))
+    elif branch=="cleanup_exception":
+        monkeypatch.setattr(runner.daemon_control,"run",lambda *_args,**_kwargs:(_ for _ in ()).throw(RuntimeError("cleanup failed")))
+        monkeypatch.setattr(runner,"_retry_container_cleanup",lambda *_args,**_kwargs:False)
+    else:
+        monkeypatch.setattr(runner.daemon_control,"run",lambda *_args,**_kwargs:{"returncode":1})
+        monkeypatch.setattr(runner,"_retry_container_cleanup",lambda *_args,**_kwargs:False)
+    monkeypatch.setattr(artifact_staging.workspace_lease,"cleanup",lambda _lease:(_ for _ in ()).throw(workspace_lease.WorkspaceCleanupError("output cleanup failed")))
+    try:
+        blocked=runner._cleanup_package_result(result,"package",ledger,time.monotonic())
+        receipt=blocked.staging_cleanup_receipts[0]
+        assert blocked.status=="blocked" and blocked.output is None
+        assert receipt.issuer is artifact_staging.StageRole.SANDBOX_OUTPUT
+        assert receipt.state=="retained" and receipt.exists and receipt.live and receipt.error
+        assert receipt.recovery_path==str(output.root) and "sandbox output cleanup retained" in blocked.detail
+    finally:
+        monkeypatch.setattr(artifact_staging.workspace_lease,"cleanup",original_cleanup)
+        original_cleanup(output.lease)
+
+def test_cleanup_package_result_successful_output_cleanup_has_no_false_receipt(tmp_path):
+    output=sandbox_output(tmp_path); ledger=runner.ResourceLedger(); ledger.record("container","package","created"); ledger.identity_tainted=True
+    result=runner.SandboxResult("pass",0,"","",output,runner.sandbox_evidence.encode("pass"),"package")
+    blocked=runner._cleanup_package_result(result,"package",ledger,time.monotonic())
+    assert blocked.status=="blocked" and blocked.output is None and blocked.staging_cleanup_receipts==()
+    assert output.lease.lease_id not in workspace_lease._LIVE_LEASES
+
+def test_run_live_preserves_post_import_primary_and_output_cleanup_failure(tmp_path,monkeypatch):
+    output=sandbox_output(tmp_path); original_cleanup=workspace_lease.cleanup
+    monkeypatch.setattr(runner.sandbox_none_network,"admit",lambda *_args:("daemon","network","amd64"))
+    monkeypatch.setattr(runner,"_validate_image",lambda *_args:None); monkeypatch.setattr(runner.active_daemon,"activate",lambda _ledger:"token"); monkeypatch.setattr(runner.active_daemon,"reset",lambda _token:None)
+    for name in ("_assert_local_image","_prepare","_assert_package_process","_live_input_identity","_reprove_artifact"):
+        monkeypatch.setattr(runner,name,lambda *_args:None)
+    monkeypatch.setattr(runner,"_create_started_container",lambda *_args:1.0); monkeypatch.setattr(runner,"_inspect_boundary",lambda *_args:"package")
+    monkeypatch.setattr(runner,"_execute",lambda *_args:{"returncode":0,"stdout":"","stderr":""}); monkeypatch.setattr(runner,"_import_output",lambda *_args:output)
+    monkeypatch.setattr(runner.sandbox_evidence,"encode",lambda *_args,**_kwargs:(_ for _ in ()).throw(RuntimeError("post-import primary")))
+    monkeypatch.setattr(artifact_staging.workspace_lease,"cleanup",lambda _lease:(_ for _ in ()).throw(workspace_lease.WorkspaceCleanupError("output cleanup failed")))
+    try:
+        with pytest.raises(runner.SandboxBoundaryError,match="post-import primary") as caught:
+            runner._run_live(SimpleNamespace(image="node@sha256:"+"a"*64,timeout=5),"package",SimpleNamespace(),None,runner.ResourceLedger())
+        receipt=caught.value.staging_cleanup_receipts[0]
+        assert isinstance(caught.value.__cause__,RuntimeError) and str(caught.value.__cause__)=="post-import primary"
+        assert receipt.state=="retained" and receipt.issuer is artifact_staging.StageRole.SANDBOX_OUTPUT
+        assert receipt.recovery_path==str(output.root) and receipt.error
+    finally:
+        monkeypatch.setattr(artifact_staging.workspace_lease,"cleanup",original_cleanup)
+        original_cleanup(output.lease)
+
+@pytest.mark.parametrize("cleanup_fails",[False,True])
+def test_import_output_identity_cleanup_preserves_only_meaningful_receipt(tmp_path,monkeypatch,cleanup_fails):
+    output=sandbox_output(tmp_path); original_cleanup=workspace_lease.cleanup
+    monkeypatch.setattr(runner.active_daemon,"monitor",lambda _deadline:None)
+    monkeypatch.setattr(runner.process_transport,"import_output",lambda *_args,**_kwargs:output)
+    def call(operation,_deadline,cleanup):
+        item=operation(); cleanup(item)
+        raise runner.sandbox_none_network.DaemonIdentityError("identity failed")
+    monkeypatch.setattr(runner.active_daemon,"call",call)
+    if cleanup_fails:
+        monkeypatch.setattr(artifact_staging.workspace_lease,"cleanup",lambda _lease:(_ for _ in ()).throw(workspace_lease.WorkspaceCleanupError("output cleanup failed")))
+    try:
+        expected=artifact_staging.StagingCleanupError if cleanup_fails else runner.sandbox_none_network.DaemonIdentityError
+        with pytest.raises(expected) as caught:
+            runner._import_output("package",SimpleNamespace(timeout=5),False)
+        if cleanup_fails:
+            receipt=caught.value.receipt
+            assert isinstance(caught.value.primary,runner.sandbox_none_network.DaemonIdentityError)
+            assert receipt.state=="retained" and receipt.recovery_path==str(output.root) and receipt.error
+        else:
+            assert output.lease.lease_id not in workspace_lease._LIVE_LEASES
+    finally:
+        monkeypatch.setattr(artifact_staging.workspace_lease,"cleanup",original_cleanup)
+        if output.lease.lease_id in workspace_lease._LIVE_LEASES: original_cleanup(output.lease)
 
 def test_create_policy_has_one_readonly_bind_and_bounded_mounts(tmp_path):
     tree=staged(tmp_path)

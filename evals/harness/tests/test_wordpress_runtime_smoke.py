@@ -1,9 +1,11 @@
 """Tests for the disposable WordPress runtime smoke harness."""
 
 import json
+import io
 import re
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,33 @@ import certify_wordpress_executor_artifact as certifier
 import run_wordpress_runtime_smoke as smoke
 
 HARNESS_ROOT = Path(__file__).resolve().parents[1]
+
+
+def patch_artifact_validators(monkeypatch, validator):
+    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", validator)
+
+    def validate_staged(artifact_type, staged, args, *, source_path=None, subpath=None):
+        path = source_path or (staged.root / subpath if subpath else staged.root)
+        return validator(artifact_type, path, args)
+
+    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_staged_artifact", validate_staged)
+
+
+def patch_successful_block_build(monkeypatch, tmp_path, source):
+    output = import_sandbox_output(source,tmp_path/"sandbox-output")
+    outcome = smoke.runtime_artifact_pipeline.artifact_execution.ExecutionOutcome(
+        "pass", "sandbox passed", ("npm", "run", "build"), output
+    )
+    monkeypatch.setattr(smoke.runtime_artifact_pipeline.artifact_execution, "run_generated", lambda *_args: outcome)
+    return output
+
+
+def import_sandbox_output(source, parent):
+    stream=io.BytesIO()
+    with tarfile.open(fileobj=stream,mode="w") as archive:
+        archive.add(source,arcname=".")
+    stream.seek(0)
+    return smoke.artifact_staging.import_tar_stream(stream,parent,dependency_policy="strict")
 
 
 def write_interactive_block_artifact(source: Path, *, view_script_module: str = "file:./view.js") -> Path:
@@ -424,7 +453,7 @@ def test_runtime_smoke_passes_narrow_gate_and_records_full_profile(tmp_path, mon
         return {"status": "pass", "pass": True, "checks": [], "runtime_roots": {"wp_env_root": args.wp_env_root}}
 
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
-    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", fake_validate_artifact)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
 
     result = smoke.run_smoke(timeout_sec=5, workdir=tmp_path / "fixture", keep_artifacts=True)
 
@@ -550,27 +579,27 @@ def test_mutation_during_staging_blocks_before_wp_env(tmp_path, monkeypatch):
     source = tmp_path / "source"; source.mkdir()
     plugin = source / "plugin.php"; plugin.write_text("before", encoding="utf-8")
     expected = smoke.digest_regular_tree(source)
-    original_copy = smoke.copy_plugin_artifact
+    original_stage = smoke.artifact_staging.stage_tree
     which_called = False
 
-    def mutating_copy(path, root):
-        destination = original_copy(path, root)
+    def stage_then_mutate(path):
+        staged = original_stage(path)
         plugin.write_text("after", encoding="utf-8")
-        (destination / "plugin.php").write_text("after", encoding="utf-8")
-        return destination
+        return staged
 
-    def forbidden_which(_name):
+    def observe_which(_name):
         nonlocal which_called
         which_called = True
-        raise AssertionError("wp-env discovery must not run after staged digest mismatch")
+        return None
 
-    monkeypatch.setattr(smoke, "copy_plugin_artifact", mutating_copy)
-    monkeypatch.setattr(smoke.shutil, "which", forbidden_which)
+    monkeypatch.setattr(smoke.artifact_staging, "stage_tree", stage_then_mutate)
+    monkeypatch.setattr(smoke.shutil, "which", observe_which)
     result = smoke.run_smoke(timeout_sec=5, workdir=tmp_path / "runtime", artifact_path=source,
                              expected_artifact_digest=expected)
     assert result["status"] == "blocked"
-    assert result["input_artifact_digest"] != expected
-    assert which_called is False
+    assert result["input_artifact_digest"] == expected
+    assert plugin.read_text() == "after"
+    assert which_called is True
 
 
 def test_staging_symlink_swap_never_copies_external_or_starts_wp_env(tmp_path, monkeypatch):
@@ -633,14 +662,13 @@ def test_staging_root_swap_at_open_never_copies_external_or_starts_wp_env(tmp_pa
     assert not any(path.name == "secret.php" for path in (tmp_path / "runtime").rglob("*"))
 
 
-def test_phpunit_smoke_blocks_when_artifact_composer_install_fails():
+def test_phpunit_smoke_blocks_when_sandbox_gate_blocks():
     ok_command = smoke.CommandRun(["ok"], "/tmp", 0, "ok", "", 0.01)
-    failed_composer = smoke.CommandRun(["composer", "install"], "/tmp", 1, "", "failed", 0.01)
 
     status = smoke.status_from_gates(
         npx="/usr/bin/npx",
         provision_full_profile=False,
-        provisioning={"artifact_composer_install": failed_composer},
+        provisioning={},
         start=ok_command,
         activation=ok_command,
         narrow_gate={"status": "pass"},
@@ -655,7 +683,7 @@ def test_phpunit_smoke_blocks_when_artifact_composer_install_fails():
         block_deprecation_post=None,
         block_build_gate=None,
         block_build_smoke=False,
-        phpunit_gate={"status": "pass"},
+        phpunit_gate={"status": "blocked"},
         phpunit_smoke=True,
         mcp_adapter_gate=None,
         mcp_adapter_smoke=False,
@@ -666,6 +694,235 @@ def test_phpunit_smoke_blocks_when_artifact_composer_install_fails():
     )
 
     assert status == "blocked"
+
+
+def test_required_blocked_gate_dominates_fail_regardless_order():
+    ok=smoke.CommandRun(["ok"],"/tmp",0,"ok","",0.01)
+    common=dict(
+        npx="/usr/bin/npx",provision_full_profile=False,provisioning={},start=ok,activation=ok,
+        narrow_gate={"status":"pass"},full_profile=None,ability_smoke=None,block_smoke=None,
+        editor_smoke=None,interactivity_static_gate=None,interactivity_smoke=False,
+        block_deprecation_static_gate=None,block_deprecation_smoke=False,block_deprecation_post=None,
+        block_build_smoke=True,phpunit_smoke=True,mcp_adapter_gate=None,mcp_adapter_smoke=False,
+        ai_client_gate=None,ai_client_smoke=False,stop=ok,strict_full_profile=False,
+    )
+    first=smoke.status_from_gates(**common,block_build_gate={"status":"fail"},phpunit_gate={"status":"blocked"})
+    second=smoke.status_from_gates(**common,block_build_gate={"status":"blocked"},phpunit_gate={"status":"fail"})
+    assert first=="blocked" and second=="blocked"
+
+
+@pytest.mark.parametrize("metadata",[None,"{malformed"])
+def test_runtime_preparation_metadata_failure_cleans_sandbox_output(tmp_path,monkeypatch,metadata):
+    source=tmp_path/"source"; source.mkdir(); (source/"package.json").write_text('{"scripts":{"build":"echo ok"}}')
+    if metadata is not None: (source/"block.json").write_text(metadata)
+    output=patch_successful_block_build(monkeypatch,tmp_path,source)
+    patch_artifact_validators(monkeypatch,lambda *_args,**_kwargs:{"status":"pass","pass":True,"checks":[]})
+    result=smoke.run_smoke(
+        timeout_sec=5,workdir=tmp_path/"runtime",artifact_path=source,
+        artifact_kind="block",block_build_smoke=True,
+    )
+    receipt=result["artifact_retention"]["components"]["sandbox_output"]
+    assert result["status"]=="blocked" and receipt["state"]=="removed"
+    assert not output.lease.root.exists()
+    assert next(check for check in result["checks"] if check["id"]=="artifact_preparation")["status"]=="blocked"
+
+
+def test_runtime_preparation_synthesis_exception_cleans_sandbox_output(tmp_path,monkeypatch):
+    source=tmp_path/"source"; source.mkdir()
+    (source/"block.json").write_text('{"name":"acme/card","title":"Card","category":"widgets"}')
+    output=patch_successful_block_build(monkeypatch,tmp_path,source)
+    patch_artifact_validators(monkeypatch,lambda *_args,**_kwargs:{"status":"pass","pass":True,"checks":[]})
+    monkeypatch.setattr(smoke.runtime_artifact_pipeline,"synthesize_block_runtime",lambda *_args:(_ for _ in ()).throw(RuntimeError("synthesis exploded")))
+    result=smoke.run_smoke(
+        timeout_sec=5,workdir=tmp_path/"runtime",artifact_path=source,
+        artifact_kind="block",block_build_smoke=True,
+    )
+    assert result["status"]=="blocked"
+    assert result["artifact_retention"]["components"]["sandbox_output"]["state"]=="removed"
+    assert not output.lease.root.exists() and "synthesis exploded" in result["checks"][0]["detail"]
+
+
+def test_runtime_retains_typed_sandbox_import_cleanup_evidence_end_to_end(tmp_path, monkeypatch):
+    source=tmp_path/"source"; source.mkdir()
+    (source/"block.json").write_text('{"name":"acme/card","title":"Card","category":"widgets"}')
+    retained=import_sandbox_output(source,tmp_path/"retained-output")
+    error="WorkspaceCleanupError: cleanup did not complete normally"
+    receipt=smoke.artifact_staging.StagingCleanupReceipt(
+        "sandbox_output",smoke.artifact_staging.StageRole.SANDBOX_OUTPUT,retained.lease,retained.root,
+        "retained",True,True,str(retained.root),error,
+    )
+    sandbox=smoke.runtime_artifact_pipeline.artifact_execution.sandboxed_package_runner.SandboxResult(
+        "blocked",None,"","",None,"import blocked","container",staging_cleanup_receipts=(receipt,)
+    )
+    execution=smoke.runtime_artifact_pipeline.artifact_execution
+    monkeypatch.setattr(execution,"_profile",lambda *_args:"approved")
+    monkeypatch.setattr(execution,"_image",lambda _kind:"node@sha256:"+"a"*64)
+    monkeypatch.setattr(execution.sandboxed_package_runner,"run_sandbox",lambda _request:sandbox)
+    monkeypatch.setattr(smoke.shutil,"which",lambda _name:None)
+    try:
+        result=smoke.run_smoke(
+            timeout_sec=5,workdir=tmp_path/"runtime",artifact_path=source,
+            artifact_kind="block",block_build_smoke=True,
+        )
+        component=result["artifact_retention"]["components"]["sandbox_output"]
+        assert result["status"]=="blocked" and component["state"]=="retained"
+        assert component["recovery_path"]==str(retained.root) and component["error"]==error
+        assert component["exists"] is True and component["live"] is True
+        assert [item["resource_path"] for item in component["resources"]]==[str(retained.root)]
+    finally:
+        smoke.runtime_artifact_pipeline.workspace_lease.cleanup(retained.lease)
+
+
+def test_runtime_preparation_preserves_post_stage_and_sandbox_cleanup_receipts(tmp_path, monkeypatch):
+    source = tmp_path / "source"; source.mkdir()
+    (source / "block.json").write_text('{"name":"acme/card","title":"Card","category":"widgets"}')
+    staged = smoke.artifact_staging.stage_tree(source, tmp_path / "input")
+    output = patch_successful_block_build(monkeypatch, tmp_path, source)
+    patch_artifact_validators(monkeypatch, lambda *_args, **_kwargs: {"status": "pass", "pass": True, "checks": []})
+    monkeypatch.setattr(smoke.runtime_artifact_pipeline, "SynthesizedRuntime", lambda *_args: (_ for _ in ()).throw(RuntimeError("constructor failed")))
+    try:
+        with pytest.raises(smoke.runtime_artifact_pipeline.RuntimePreparationError, match="constructor failed") as caught:
+            smoke._prepare_generated_runtime(staged, "block", source, True, 5, tmp_path / "runtime")
+        receipts = {receipt.component: receipt for receipt in caught.value.receipts}
+        assert set(receipts) == {"synthesized_runtime", "sandbox_output"}
+        assert all(receipt.state == "removed" for receipt in receipts.values())
+        assert not output.root.exists()
+    finally:
+        smoke.runtime_artifact_pipeline.workspace_lease.cleanup(staged.lease)
+
+
+def test_runtime_preparation_preserves_primary_and_cleanup_failure(tmp_path,monkeypatch):
+    source=tmp_path/"source"; source.mkdir()
+    (source/"block.json").write_text('{"name":"acme/card","title":"Card","category":"widgets"}')
+    output=patch_successful_block_build(monkeypatch,tmp_path,source)
+    patch_artifact_validators(monkeypatch,lambda *_args,**_kwargs:{"status":"pass","pass":True,"checks":[]})
+    original=smoke.runtime_artifact_pipeline.workspace_lease.cleanup
+    def cleanup(lease):
+        if lease is output.lease: raise smoke.WorkspaceCleanupError("cleanup exploded")
+        return original(lease)
+    monkeypatch.setattr(smoke.runtime_artifact_pipeline.workspace_lease,"cleanup",cleanup)
+    monkeypatch.setattr(smoke.runtime_artifact_pipeline,"synthesize_block_runtime",lambda *_args:(_ for _ in ()).throw(RuntimeError("synthesis exploded")))
+    result=smoke.run_smoke(timeout_sec=5,workdir=tmp_path/"runtime",artifact_path=source,artifact_kind="block",block_build_smoke=True)
+    checks={check["id"]:check["detail"] for check in result["checks"]}
+    assert result["status"]=="blocked" and "synthesis exploded" in checks["artifact_preparation"]
+    assert "cleanup" in checks["sandbox_output_cleanup"]
+    assert result["artifact_retention"]["components"]["sandbox_output"]["recovery_path"]==str(output.root)
+    monkeypatch.setattr(smoke.runtime_artifact_pipeline.workspace_lease,"cleanup",original)
+    original(output.lease)
+
+
+def test_runtime_input_exception_surfaces_cleanup_failure_and_retained_copy(tmp_path,monkeypatch):
+    source=tmp_path/"source"; source.mkdir(); (source/"plugin.php").write_text("<?php")
+    original=smoke.runtime_artifact_pipeline.workspace_lease.cleanup
+    @smoke.stage_runtime_input
+    def explode(**_kwargs): raise RuntimeError("wrapped exploded")
+    monkeypatch.setattr(smoke.runtime_artifact_pipeline.workspace_lease,"cleanup",lambda _lease:(_ for _ in ()).throw(smoke.WorkspaceCleanupError("cleanup exploded")))
+    with pytest.raises(smoke.runtime_artifact_pipeline.RuntimeInputCleanupError,match="wrapped exploded.*cleanup") as caught:
+        explode(artifact_path=source)
+    receipt=caught.value.receipt
+    assert receipt.state=="retained" and receipt.recovery_path and Path(receipt.recovery_path).exists()
+    monkeypatch.setattr(smoke.runtime_artifact_pipeline.workspace_lease,"cleanup",original)
+    original(next(lease for lease in smoke.runtime_artifact_pipeline.workspace_lease._LIVE_LEASES.values() if lease.root==Path(receipt.resource_path).parent))
+
+
+def test_pre_body_verification_failure_propagates_after_cleaning_owned_input(tmp_path, monkeypatch):
+    source = tmp_path / "source"; source.mkdir(); (source / "plugin.php").write_text("<?php")
+    created = []
+    body_called = False
+    original_stage = smoke.artifact_staging.stage_tree
+
+    def capture_stage(*args, **kwargs):
+        staged = original_stage(*args, **kwargs)
+        created.append(staged)
+        return staged
+
+    @smoke.stage_runtime_input
+    def body(**_kwargs):
+        nonlocal body_called
+        body_called = True
+
+    monkeypatch.setattr(smoke.artifact_staging, "stage_tree", capture_stage)
+    monkeypatch.setattr(smoke.artifact_staging, "verify_staged_tree", lambda _staged: (_ for _ in ()).throw(RuntimeError("initial verification failed")))
+    with pytest.raises(RuntimeError, match="initial verification failed"):
+        body(artifact_path=source)
+    assert body_called is False and created
+    assert not created[0].root.exists()
+    assert created[0].lease.lease_id not in smoke.runtime_artifact_pipeline.workspace_lease._LIVE_LEASES
+
+
+def test_pre_body_staging_error_propagates_without_leaking_a_lease(tmp_path):
+    source = tmp_path / "source"; source.mkdir()
+    (source / "outside.php").symlink_to(tmp_path / "outside.php")
+    live_before = set(smoke.runtime_artifact_pipeline.workspace_lease._LIVE_LEASES)
+
+    @smoke.stage_runtime_input
+    def body(**_kwargs):
+        raise AssertionError("body must not run after pre-body staging failure")
+
+    with pytest.raises(ValueError, match="link|special"):
+        body(artifact_path=source)
+    assert set(smoke.runtime_artifact_pipeline.workspace_lease._LIVE_LEASES) == live_before
+
+
+def test_pre_body_internal_staging_dual_failure_translates_retained_input_receipt(tmp_path, monkeypatch):
+    source = tmp_path / "source"; source.mkdir(); (source / "plugin.php").write_text("<?php")
+    original_cleanup = smoke.runtime_artifact_pipeline.workspace_lease.cleanup
+    monkeypatch.setattr(smoke.artifact_staging, "_manifest_from_fd", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("staging verification failed")))
+    monkeypatch.setattr(smoke.runtime_artifact_pipeline.workspace_lease, "cleanup", lambda _lease: (_ for _ in ()).throw(smoke.WorkspaceCleanupError("cleanup failed")))
+    retained = None
+
+    @smoke.stage_runtime_input
+    def body(**_kwargs):
+        raise AssertionError("body must not run after pre-body staging failure")
+
+    try:
+        with pytest.raises(smoke.runtime_artifact_pipeline.RuntimeInputCleanupError, match="staging verification failed.*cleanup") as caught:
+            body(artifact_path=source)
+        error = caught.value; receipt = error.receipt
+        assert isinstance(error.primary, RuntimeError) and str(error.primary) == "staging verification failed"
+        assert receipt.component == "input_copy" and receipt.state == "retained"
+        assert receipt.exists and receipt.live and receipt.error
+        assert receipt.recovery_path and Path(receipt.recovery_path).exists()
+        retained = next(
+            lease for lease in smoke.runtime_artifact_pipeline.workspace_lease._LIVE_LEASES.values()
+            if lease.root / "artifact" == Path(receipt.resource_path)
+        )
+    finally:
+        monkeypatch.setattr(smoke.runtime_artifact_pipeline.workspace_lease, "cleanup", original_cleanup)
+        if retained is not None and retained.lease_id in smoke.runtime_artifact_pipeline.workspace_lease._LIVE_LEASES:
+            original_cleanup(retained)
+
+
+def test_pre_body_verification_and_cleanup_failure_preserve_both_and_retained_input(tmp_path, monkeypatch):
+    source = tmp_path / "source"; source.mkdir(); (source / "plugin.php").write_text("<?php")
+    created = []
+    original_stage = smoke.artifact_staging.stage_tree
+    original_cleanup = smoke.runtime_artifact_pipeline.workspace_lease.cleanup
+
+    def capture_stage(*args, **kwargs):
+        staged = original_stage(*args, **kwargs)
+        created.append(staged)
+        return staged
+
+    @smoke.stage_runtime_input
+    def body(**_kwargs):
+        raise AssertionError("body must not run after pre-body failure")
+
+    monkeypatch.setattr(smoke.artifact_staging, "stage_tree", capture_stage)
+    monkeypatch.setattr(smoke.artifact_staging, "verify_staged_tree", lambda _staged: (_ for _ in ()).throw(RuntimeError("initial verification failed")))
+    monkeypatch.setattr(smoke.runtime_artifact_pipeline.workspace_lease, "cleanup", lambda _lease: (_ for _ in ()).throw(smoke.WorkspaceCleanupError("cleanup failed")))
+    try:
+        with pytest.raises(smoke.runtime_artifact_pipeline.RuntimeInputCleanupError, match="initial verification failed.*cleanup") as caught:
+            body(artifact_path=source)
+        receipt = caught.value.receipt
+        assert isinstance(caught.value.primary, RuntimeError)
+        assert receipt.state == "retained" and receipt.error
+        assert receipt.recovery_path == str(created[0].root) and created[0].root.exists()
+        assert created[0].lease.lease_id in smoke.runtime_artifact_pipeline.workspace_lease._LIVE_LEASES
+    finally:
+        monkeypatch.setattr(smoke.runtime_artifact_pipeline.workspace_lease, "cleanup", original_cleanup)
+        if created and created[0].lease.lease_id in smoke.runtime_artifact_pipeline.workspace_lease._LIVE_LEASES:
+            original_cleanup(created[0].lease)
 
 
 def test_runtime_smoke_can_provision_full_profile(tmp_path, monkeypatch):
@@ -685,7 +942,7 @@ def test_runtime_smoke_can_provision_full_profile(tmp_path, monkeypatch):
         return {"status": "pass", "pass": True, "checks": checks, "profile": args.profile}
 
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
-    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", fake_validate_artifact)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
 
     result = smoke.run_smoke(
         timeout_sec=5,
@@ -721,7 +978,7 @@ def test_runtime_smoke_uses_existing_artifact_and_records_ability_smoke(tmp_path
         return {"status": "pass", "pass": True, "checks": [], "profile": args.profile}
 
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
-    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", fake_validate_artifact)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
 
     result = smoke.run_smoke(
         timeout_sec=5,
@@ -735,9 +992,87 @@ def test_runtime_smoke_uses_existing_artifact_and_records_ability_smoke(tmp_path
     assert result["source_artifact_path"] == str(source.resolve())
     assert result["ability_smoke_status"] == "pass"
     assert result["artifact_path"].endswith("acme-generated")
-    assert "not proof of executor-generated artifacts" not in result["negative_space"]
+    assert "not proof of executor-generated artifacts" in result["negative_space"]
     assert any(command[0][-2] == "eval" for command in commands)
     assert {path.name for path in validated_paths} == {"acme-generated"}
+
+
+def test_runtime_smoke_accepts_caller_held_stage_without_restaging(tmp_path, monkeypatch):
+    source = tmp_path / "generated" / "acme-held"
+    source.mkdir(parents=True)
+    (source / "acme-held.php").write_text("<?php\n/** Plugin Name: Acme Held */\n", encoding="utf-8")
+    staged = smoke.artifact_staging.stage_tree(source)
+    claimed = tmp_path / "claimed" / "different-plugin"
+    manifest_digest = smoke.artifact_staging.manifest_sha256(staged.manifest)
+
+    def forbidden_stage(_source):
+        raise AssertionError("caller-held staged capability must not be restaged")
+
+    def fake_run_command(command, cwd, _timeout):
+        return smoke.CommandRun(command, str(cwd), 0, "ok", "", 0.01)
+
+    def fake_validate_artifact(_artifact_type, _path, args):
+        return {"status": "pass", "pass": True, "checks": [], "profile": args.profile}
+
+    monkeypatch.setattr(smoke.artifact_staging, "stage_tree", forbidden_stage)
+    monkeypatch.setattr(smoke.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(smoke, "run_command", fake_run_command)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
+    try:
+        result = smoke.run_smoke(
+            timeout_sec=5,
+            workdir=tmp_path / "fixture",
+            staged_artifact=staged,
+            artifact_source_path=claimed,
+        )
+
+        assert result["status"] == "pass"
+        assert result["source_artifact_path"] == str(source.resolve())
+        assert result["source_artifact_attested"] is True
+        assert result["claimed_source_artifact_path"] == str(claimed.absolute())
+        assert result["artifact_execution_copy"] == str(staged.root)
+        assert result["artifact_execution_retained"] is True
+        assert result["artifact_manifest_sha256"] == manifest_digest
+        assert result["sandbox_posture"]["input_capability"] == "caller_held"
+        assert result["sandbox_posture"]["host_fallback"] is False
+        assert "not proof of executor-generated artifacts" in result["negative_space"]
+        assert staged.lease.lease_id not in json.dumps(result)
+        smoke.artifact_staging.verify_staged_tree(staged)
+    finally:
+        smoke.cleanup_workspace(staged.lease)
+
+
+def test_boolean_executor_provenance_cannot_erase_negative_space(tmp_path, monkeypatch):
+    source = tmp_path / "generated" / "acme-untrusted"
+    source.mkdir(parents=True)
+    (source / "acme-untrusted.php").write_text("<?php\n/** Plugin Name: Untrusted */\n", encoding="utf-8")
+    monkeypatch.setattr(smoke.shutil, "which", lambda _name: None)
+
+    with pytest.raises(TypeError, match="executor_provenance"):
+        smoke.run_smoke(timeout_sec=5, workdir=tmp_path / "rejected", artifact_path=source, executor_provenance=True)
+    result = smoke.run_smoke(timeout_sec=5, workdir=tmp_path / "fixture", artifact_path=source)
+    assert "not proof of executor-generated artifacts" in result["negative_space"]
+
+
+def test_cli_evidence_strings_do_not_issue_executor_provenance(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "generated" / "acme-cli"
+    source.mkdir(parents=True)
+    (source / "acme-cli.php").write_text("<?php\n/** Plugin Name: CLI */\n", encoding="utf-8")
+    digest = smoke.digest_regular_tree(source)
+    captured = {}
+
+    def fake_run_smoke(**kwargs):
+        captured.update(kwargs)
+        return {"status": "blocked", "pass": False, "negative_space": list(smoke.BASE_NEGATIVE_SPACE), "input_artifact_digest": digest}
+
+    monkeypatch.setattr(smoke, "run_smoke", fake_run_smoke)
+    code = smoke.main([
+        "--artifact-path", str(source), "--evidence-id", "caller-string",
+        "--expected-artifact-digest", digest,
+    ])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2 and "executor_provenance" not in captured
+    assert "not proof of executor-generated artifacts" in payload["negative_space"]
 
 
 def test_runtime_smoke_can_verify_block_registration(tmp_path, monkeypatch):
@@ -755,7 +1090,7 @@ def test_runtime_smoke_can_verify_block_registration(tmp_path, monkeypatch):
         return {"status": "pass", "pass": True, "checks": [], "profile": args.profile}
 
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
-    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", fake_validate_artifact)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
 
     result = smoke.run_smoke(
         timeout_sec=5,
@@ -788,7 +1123,7 @@ def test_runtime_smoke_can_verify_editor_block_registry(tmp_path, monkeypatch):
         return {"status": "pass", "pass": True, "checks": [], "profile": args.profile}
 
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
-    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", fake_validate_artifact)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
 
     result = smoke.run_smoke(
         timeout_sec=5,
@@ -825,7 +1160,7 @@ def test_runtime_smoke_can_request_editor_insert_render_smoke(tmp_path, monkeypa
         return {"status": "pass", "pass": True, "checks": [], "profile": args.profile}
 
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
-    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", fake_validate_artifact)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
 
     result = smoke.run_smoke(
         timeout_sec=5,
@@ -885,7 +1220,7 @@ def test_runtime_smoke_wraps_generated_block_artifact_for_editor_insert_render(t
         return {"status": "pass", "pass": True, "checks": [], "profile": args.profile}
 
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
-    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", fake_validate_artifact)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
 
     result = smoke.run_smoke(
         timeout_sec=5,
@@ -907,9 +1242,11 @@ def test_runtime_smoke_wraps_generated_block_artifact_for_editor_insert_render(t
     assert result["editor_smoke_status"] == "pass"
     assert "--insert-render-smoke" in editor_command
     assert editor_command[editor_command.index("--block-name") + 1] == "acme/runtime-card"
-    assert "not proof of executor-generated artifacts" not in result["negative_space"]
+    assert "not proof of executor-generated artifacts" in result["negative_space"]
     assert "not editor or browser smoke proof" not in result["negative_space"]
-    assert ("block", source.resolve(), ["wp-env"]) in validate_calls
+    block_calls = [call for call in validate_calls if call[0] == "block" and call[2] == ["wp-env"]]
+    assert len(block_calls) == 1
+    assert block_calls[0][1].name == "artifact" and block_calls[0][1] != source.resolve()
 
 
 def test_runtime_smoke_runs_generated_block_build_gate_on_disposable_copy(tmp_path, monkeypatch):
@@ -943,6 +1280,13 @@ def test_runtime_smoke_runs_generated_block_build_gate_on_disposable_copy(tmp_pa
     )
     (block_dir / "index.js").write_text("window.wp.blocks.registerBlockType( 'acme/runtime-card', {} );\n", encoding="utf-8")
     (block_dir / "render.php").write_text("<?php echo esc_html__( 'Runtime block smoke', 'acme-runtime-card' );\n", encoding="utf-8")
+    built = tmp_path / "sandbox-built"
+    shutil.copytree(source, built)
+    built_block = built / "blocks" / "runtime-card" / "build"
+    built_block.mkdir()
+    shutil.copy2(block_dir / "block.json", built_block / "block.json")
+    (built_block / "marker.js").write_text("fresh sandbox output\n", encoding="utf-8")
+    output = import_sandbox_output(built,tmp_path/"sandbox-output")
     commands = []
     validate_calls = []
 
@@ -959,7 +1303,11 @@ def test_runtime_smoke_runs_generated_block_build_gate_on_disposable_copy(tmp_pa
         return {"status": "pass", "pass": True, "checks": [], "profile": args.profile}
 
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
-    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", fake_validate_artifact)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
+    outcome = smoke.runtime_artifact_pipeline.artifact_execution.ExecutionOutcome(
+        "pass", "sandbox passed", ("npm", "run", "build"), output
+    )
+    monkeypatch.setattr(smoke.runtime_artifact_pipeline.artifact_execution, "run_generated", lambda *_args: outcome)
 
     result = smoke.run_smoke(
         timeout_sec=5,
@@ -971,16 +1319,16 @@ def test_runtime_smoke_runs_generated_block_build_gate_on_disposable_copy(tmp_pa
         editor_insert_render_smoke=True,
     )
 
-    copied_artifact = Path(result["runtime_root"]) / "acme-runtime-card" / "generated"
-    npm_install = next(command for command, cwd in commands if command[:3] == ["/usr/bin/npm", "install", "--no-audit"])
-
-    assert npm_install == ["/usr/bin/npm", "install", "--no-audit", "--no-fund"]
+    copied_artifact = Path(result["wrapped_block_artifact"]["copied_artifact_dir"])
+    assert not any(command[:2] == ["/usr/bin/npm", "install"] for command, _cwd in commands)
     assert result["status"] == "pass"
     assert result["block_build_smoke_requested"] is True
     assert result["block_build_smoke_status"] == "pass"
     assert result["wrapped_block_artifact"]["copied_artifact_dir"] == str(copied_artifact)
+    assert (copied_artifact / "blocks" / "runtime-card" / "build" / "marker.js").read_text() == "fresh sandbox output\n"
     assert "not full block validation proof" not in result["negative_space"]
-    assert ("block", copied_artifact.resolve(), ["npm-build"]) in validate_calls
+    assert any(call[0] == "block" and call[2] == [] for call in validate_calls)
+    assert result["artifact_retention"]["components"]["sandbox_output"]["state"] == "removed"
 
 
 def test_block_interactivity_surface_gate_requires_exact_surfaces(tmp_path):
@@ -1018,6 +1366,7 @@ def test_block_interactivity_surface_gate_fails_missing_view_module(tmp_path):
 
 def test_runtime_smoke_can_request_interactivity_smoke(tmp_path, monkeypatch):
     source = write_interactive_block_artifact(tmp_path / "generated-block")
+    patch_successful_block_build(monkeypatch, tmp_path, source)
     commands = []
 
     monkeypatch.setattr(smoke.shutil, "which", lambda name: f"/usr/bin/{name}")
@@ -1032,7 +1381,7 @@ def test_runtime_smoke_can_request_interactivity_smoke(tmp_path, monkeypatch):
         return {"status": "pass", "pass": True, "checks": [], "profile": args.profile}
 
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
-    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", fake_validate_artifact)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
 
     result = smoke.run_smoke(
         timeout_sec=5,
@@ -1087,6 +1436,7 @@ def test_block_deprecation_surface_gate_fails_missing_legacy_fixture(tmp_path):
 
 def test_runtime_smoke_can_request_block_deprecation_smoke(tmp_path, monkeypatch):
     source = write_deprecated_block_artifact(tmp_path / "generated-block")
+    patch_successful_block_build(monkeypatch, tmp_path, source)
     commands = []
 
     monkeypatch.setattr(smoke.shutil, "which", lambda name: f"/usr/bin/{name}")
@@ -1103,7 +1453,7 @@ def test_runtime_smoke_can_request_block_deprecation_smoke(tmp_path, monkeypatch
         return {"status": "pass", "pass": True, "checks": [], "profile": args.profile}
 
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
-    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", fake_validate_artifact)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
 
     result = smoke.run_smoke(
         timeout_sec=5,
@@ -1160,7 +1510,7 @@ def test_runtime_smoke_runs_generated_plugin_phpunit_gate_on_disposable_copy(tmp
         return {"status": "pass", "pass": True, "checks": checks, "profile": args.profile}
 
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
-    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", fake_validate_artifact)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
 
     result = smoke.run_smoke(
         timeout_sec=5,
@@ -1170,15 +1520,12 @@ def test_runtime_smoke_runs_generated_plugin_phpunit_gate_on_disposable_copy(tmp
         phpunit_smoke=True,
     )
 
-    copied_artifact = Path(result["runtime_root"]) / "acme-generated"
-    composer_install = next(command for command, cwd in commands if command[:2] == ["/usr/bin/composer", "install"])
-
-    assert composer_install == ["/usr/bin/composer", "install", "--no-interaction", "--no-progress", "--quiet"]
+    assert not any(command[:2] == ["/usr/bin/composer", "install"] for command, _cwd in commands)
     assert result["status"] == "pass"
     assert result["phpunit_smoke_requested"] is True
     assert result["phpunit_smoke_status"] == "pass"
     assert "not PHPUnit proof" not in result["negative_space"]
-    assert ("plugin", copied_artifact.resolve(), ["phpunit"]) in validate_calls
+    assert ("plugin", source.resolve(), ["phpunit"]) in validate_calls
 
 
 def test_parse_wp_env_site_url_from_stderr():
@@ -1363,7 +1710,7 @@ def test_runtime_smoke_can_verify_mcp_adapter_smoke(tmp_path, monkeypatch):
 
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
     monkeypatch.setattr(smoke, "run_command_with_input", fake_run_command_with_input)
-    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", fake_validate_artifact)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
 
     result = smoke.run_smoke(
         timeout_sec=5,
@@ -1483,7 +1830,7 @@ def test_runtime_smoke_can_verify_ai_client_smoke(tmp_path, monkeypatch):
         return {"status": "pass", "pass": True, "checks": checks, "profile": args.profile}
 
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
-    monkeypatch.setattr(smoke.validate_wordpress_artifact, "validate_artifact", fake_validate_artifact)
+    patch_artifact_validators(monkeypatch, fake_validate_artifact)
 
     result = smoke.run_smoke(
         timeout_sec=5,

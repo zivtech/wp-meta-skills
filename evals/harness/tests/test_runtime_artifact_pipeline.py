@@ -1,0 +1,248 @@
+"""Security contracts for Step 5 runtime artifact capability flow."""
+import dataclasses
+import io
+import tarfile
+from pathlib import Path
+
+import pytest
+
+import artifact_execution
+import artifact_staging
+import runtime_artifact_pipeline as pipeline
+import workspace_lease
+
+
+def write_block(root: Path, marker: str) -> Path:
+    block = root / "blocks" / "card"
+    build = block / "build"
+    build.mkdir(parents=True)
+    (block / "block.json").write_text(
+        '{"apiVersion":3,"name":"acme/card","title":"Card","category":"widgets","textdomain":"acme-card"}'
+    )
+    (build / "block.json").write_text((block / "block.json").read_text())
+    (build / "marker.js").write_text(marker)
+    return root
+
+
+def import_sandbox_output(source: Path, parent: Path):
+    stream=io.BytesIO()
+    with tarfile.open(fileobj=stream,mode="w") as archive:
+        archive.add(source,arcname=".")
+    stream.seek(0)
+    return artifact_staging.import_tar_stream(stream,parent,dependency_policy="strict")
+
+
+def test_pass_without_authentic_sandbox_output_blocks(tmp_path, monkeypatch):
+    source = write_block(tmp_path / "source", "stale")
+    staged = artifact_staging.stage_tree(source, tmp_path / "input")
+    outcome = artifact_execution.ExecutionOutcome("pass", "passed", ("npm", "run", "build"), None)
+    monkeypatch.setattr(pipeline.artifact_execution, "run_generated", lambda *_args: outcome)
+    try:
+        result = pipeline.build_block(staged, 5)
+        assert result.status == "blocked"
+        assert result.output is None
+    finally:
+        workspace_lease.cleanup(staged.lease)
+
+
+def test_forged_privileged_role_is_rejected_downstream(tmp_path):
+    source=write_block(tmp_path/"source","stale")
+    staged=artifact_staging.stage_tree(source,tmp_path/"input")
+    forged=dataclasses.replace(staged,role=artifact_staging.StageRole.SANDBOX_OUTPUT)
+    try: assert pipeline._authentic_role(forged,artifact_staging.StageRole.SANDBOX_OUTPUT) is False
+    finally: workspace_lease.cleanup(staged.lease)
+
+
+def test_typed_staging_receipt_survives_execution_outcome_and_build_result(tmp_path, monkeypatch):
+    source=write_block(tmp_path/"source","fresh")
+    staged=artifact_staging.stage_tree(source,tmp_path/"input")
+    receipt=artifact_staging.StagingCleanupReceipt(
+        "sandbox_output",artifact_staging.StageRole.SANDBOX_OUTPUT,staged.lease,staged.root,
+        "retained",True,True,str(staged.root),"WorkspaceCleanupError: cleanup did not complete normally",
+    )
+    result=pipeline.artifact_execution.sandboxed_package_runner.SandboxResult(
+        "blocked",None,"","",None,"import blocked","container",staging_cleanup_receipts=(receipt,)
+    )
+    monkeypatch.setattr(pipeline.artifact_execution,"_profile",lambda *_args:"approved")
+    monkeypatch.setattr(pipeline.artifact_execution,"_image",lambda _kind:"node@sha256:"+"a"*64)
+    monkeypatch.setattr(pipeline.artifact_execution.sandboxed_package_runner,"run_sandbox",lambda _request:result)
+    try:
+        outcome=pipeline.artifact_execution.run_generated(staged,"npm-build",5)
+        build=pipeline.build_block(staged,5)
+        assert outcome.staging_cleanup_receipts==(receipt,)
+        assert build.status=="blocked" and build.staging_cleanup_receipts==(receipt,)
+    finally: workspace_lease.cleanup(staged.lease)
+
+
+def test_synthesized_runtime_uses_exact_sandbox_output(tmp_path, monkeypatch):
+    source = write_block(tmp_path / "source", "stale")
+    built = write_block(tmp_path / "built", "fresh")
+    staged = artifact_staging.stage_tree(source, tmp_path / "input")
+    output = import_sandbox_output(built, tmp_path / "output")
+    outcome = artifact_execution.ExecutionOutcome("pass", "passed", ("npm", "run", "build"), output)
+    monkeypatch.setattr(pipeline.artifact_execution, "run_generated", lambda *_args: outcome)
+    synthesized = None
+    try:
+        build = pipeline.build_block(staged, 5)
+        synthesized = pipeline.synthesize_block_runtime(build.output, tmp_path / "runtime")
+        marker = synthesized.staged.root / "acme-card" / "generated" / "blocks" / "card" / "build" / "marker.js"
+        assert marker.read_text() == "fresh"
+        assert synthesized.staged.role is artifact_staging.StageRole.SYNTHESIZED_RUNTIME
+        assert synthesized.source_role is artifact_staging.StageRole.SANDBOX_OUTPUT
+    finally:
+        if synthesized is not None: workspace_lease.cleanup(synthesized.staged.lease)
+        workspace_lease.cleanup(output.lease)
+        workspace_lease.cleanup(staged.lease)
+
+
+@pytest.mark.parametrize("artifact_kind", ["block", "plugin"])
+def test_held_exit_drift_prevents_synthesized_lease_creation(tmp_path, monkeypatch, artifact_kind):
+    source = tmp_path / "source"
+    if artifact_kind == "block":
+        write_block(source, "fresh")
+        changed = Path("blocks/card/build/marker.js")
+    else:
+        source.mkdir()
+        (source / "plugin.php").write_text("<?php")
+        changed = Path("plugin.php")
+    staged = artifact_staging.stage_tree(source, tmp_path / "input")
+    live_before = set(workspace_lease._LIVE_LEASES)
+    original_snapshot = artifact_staging.snapshot_held_tree
+
+    def snapshot_then_drift(held):
+        snapshot = original_snapshot(held)
+        (staged.root / changed).write_text("drift")
+        return snapshot
+
+    monkeypatch.setattr(artifact_staging, "snapshot_held_tree", snapshot_then_drift)
+    runtime_parent = tmp_path / "runtime"
+    try:
+        with pytest.raises(ValueError, match="held staged tree changed"):
+            if artifact_kind == "block":
+                pipeline.synthesize_block_runtime(staged, runtime_parent)
+            else:
+                pipeline.synthesize_plugin_runtime(staged, "plugin", runtime_parent)
+        assert set(workspace_lease._LIVE_LEASES) == live_before
+        assert not runtime_parent.exists() or not any(runtime_parent.iterdir())
+    finally:
+        workspace_lease.cleanup(staged.lease)
+
+
+def test_post_stage_constructor_failure_cleans_synthesized_lease(tmp_path, monkeypatch):
+    source = tmp_path / "source"; source.mkdir(); (source / "plugin.php").write_text("<?php")
+    staged = artifact_staging.stage_tree(source, tmp_path / "input")
+    created = []
+    original_stage = artifact_staging._stage_synthesized_snapshot
+
+    def capture_stage(*args, **kwargs):
+        synthesized = original_stage(*args, **kwargs)
+        created.append(synthesized)
+        return synthesized
+
+    monkeypatch.setattr(artifact_staging, "_stage_synthesized_snapshot", capture_stage)
+    monkeypatch.setattr(pipeline, "SynthesizedRuntime", lambda *_args: (_ for _ in ()).throw(RuntimeError("constructor failed")))
+    try:
+        with pytest.raises(pipeline.RuntimePreparationError, match="constructor failed") as caught:
+            pipeline.synthesize_plugin_runtime(staged, "plugin", tmp_path / "runtime")
+        receipt = caught.value.receipts[0]
+        assert receipt.component == "synthesized_runtime" and receipt.state == "removed"
+        assert not created[0].root.exists()
+        assert created[0].lease.lease_id not in workspace_lease._LIVE_LEASES
+    finally:
+        workspace_lease.cleanup(staged.lease)
+
+
+def test_internal_synthesized_stage_dual_failure_preserves_primary_and_receipt(tmp_path, monkeypatch):
+    source = tmp_path / "source"; source.mkdir(); (source / "plugin.php").write_text("<?php")
+    staged = artifact_staging.stage_tree(source, tmp_path / "input")
+    original_cleanup = pipeline.workspace_lease.cleanup
+    monkeypatch.setattr(artifact_staging, "_manifest_from_fd", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("synth verification failed")))
+    monkeypatch.setattr(pipeline.workspace_lease, "cleanup", lambda _lease: (_ for _ in ()).throw(workspace_lease.WorkspaceCleanupError("cleanup failed")))
+    retained = None
+    try:
+        with pytest.raises(pipeline.RuntimePreparationError, match="synth verification failed") as caught:
+            pipeline.synthesize_plugin_runtime(staged, "plugin", tmp_path / "runtime")
+        error = caught.value; receipt = error.receipts[0]
+        assert isinstance(error.primary, RuntimeError) and str(error.primary) == "synth verification failed"
+        assert receipt.component == "synthesized_runtime" and receipt.state == "retained"
+        assert receipt.exists and receipt.live and receipt.error
+        assert receipt.recovery_path and Path(receipt.recovery_path).exists()
+        retained = next(
+            lease for lease in workspace_lease._LIVE_LEASES.values()
+            if lease.root / "artifact" == Path(receipt.resource_path)
+        )
+    finally:
+        monkeypatch.setattr(pipeline.workspace_lease, "cleanup", original_cleanup)
+        if retained is not None and retained.lease_id in workspace_lease._LIVE_LEASES:
+            original_cleanup(retained)
+        original_cleanup(staged.lease)
+
+
+def test_post_stage_constructor_and_cleanup_failure_preserve_retained_evidence(tmp_path, monkeypatch):
+    source = tmp_path / "source"; source.mkdir(); (source / "plugin.php").write_text("<?php")
+    staged = artifact_staging.stage_tree(source, tmp_path / "input")
+    created = []
+    original_stage = artifact_staging._stage_synthesized_snapshot
+    original_cleanup = pipeline.workspace_lease.cleanup
+
+    def capture_stage(*args, **kwargs):
+        synthesized = original_stage(*args, **kwargs)
+        created.append(synthesized)
+        return synthesized
+
+    monkeypatch.setattr(artifact_staging, "_stage_synthesized_snapshot", capture_stage)
+    monkeypatch.setattr(pipeline, "SynthesizedRuntime", lambda *_args: (_ for _ in ()).throw(RuntimeError("constructor failed")))
+    monkeypatch.setattr(pipeline.workspace_lease, "cleanup", lambda _lease: (_ for _ in ()).throw(workspace_lease.WorkspaceCleanupError("cleanup failed")))
+    try:
+        with pytest.raises(pipeline.RuntimePreparationError, match="constructor failed") as caught:
+            pipeline.synthesize_plugin_runtime(staged, "plugin", tmp_path / "runtime")
+        receipt = caught.value.receipts[0]
+        assert receipt.state == "retained" and receipt.error
+        assert receipt.recovery_path == str(created[0].root) and created[0].root.exists()
+        assert created[0].lease.lease_id in workspace_lease._LIVE_LEASES
+    finally:
+        monkeypatch.setattr(pipeline.workspace_lease, "cleanup", original_cleanup)
+        for owned in created:
+            if owned.lease.lease_id in workspace_lease._LIVE_LEASES:
+                original_cleanup(owned.lease)
+        original_cleanup(staged.lease)
+
+
+def test_cleanup_receipt_distinguishes_before_and_after_removal(tmp_path, monkeypatch):
+    first_source = tmp_path / "first"; first_source.mkdir(); (first_source / "a").write_text("a")
+    second_source = tmp_path / "second"; second_source.mkdir(); (second_source / "b").write_text("b")
+    first = artifact_staging.stage_tree(first_source, tmp_path / "leases-a")
+    second = artifact_staging.stage_tree(second_source, tmp_path / "leases-b")
+    original = workspace_lease.cleanup
+    try:
+        monkeypatch.setattr(pipeline.workspace_lease, "cleanup", lambda _lease: (_ for _ in ()).throw(workspace_lease.WorkspaceCleanupError("before")))
+        retained = pipeline.cleanup_component("sandbox_output", first)
+        assert retained.state == "retained" and retained.exists and retained.live
+        def after(lease):
+            original(lease)
+            raise workspace_lease.WorkspaceCleanupError("after")
+        monkeypatch.setattr(pipeline.workspace_lease, "cleanup", after)
+        removed = pipeline.cleanup_component("sandbox_output", second)
+        assert removed.state == "removed" and not removed.exists and not removed.live
+    finally:
+        monkeypatch.setattr(pipeline.workspace_lease, "cleanup", original)
+        if first.lease.lease_id in workspace_lease._LIVE_LEASES: original(first.lease)
+        if second.lease.lease_id in workspace_lease._LIVE_LEASES: original(second.lease)
+
+
+def test_retention_summary_preserves_retained_then_removed_same_component(tmp_path):
+    first_source=tmp_path/"first"; first_source.mkdir(); (first_source/"a").write_text("a")
+    second_source=tmp_path/"second"; second_source.mkdir(); (second_source/"b").write_text("b")
+    first=artifact_staging.stage_tree(first_source,tmp_path/"leases-a")
+    second=artifact_staging.stage_tree(second_source,tmp_path/"leases-b")
+    try:
+        retained=pipeline.observe_component("sandbox_output",first)
+        removed=pipeline.cleanup_component("sandbox_output",second)
+        summary=pipeline.retention_summary([retained,removed])
+        component=summary["components"]["sandbox_output"]
+        assert summary["retained"] is True and component["state"]=="retained"
+        assert component["recovery_path"]==str(first.root)
+        assert [item["state"] for item in component["resources"]]==["retained","removed"]
+        assert len(summary["resources"])==2
+    finally:
+        if first.lease.lease_id in workspace_lease._LIVE_LEASES: workspace_lease.cleanup(first.lease)

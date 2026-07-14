@@ -191,7 +191,10 @@ def _tar_process(name,request,exclude_dependencies,consumer,label,deadline=None,
     threads=tuple(item for item in (thread,health_thread) if item is not None)
     cleanup=_cleanup_transport(process,threads,(process.stdout,process.stderr),final_deadline,original is not None,stop=health_stop,watchdog=watchdog)
     if (original is not None or cleanup) and hasattr(output,"lease"):
-        _attempt(cleanup,"output lease cleanup",lambda:workspace_lease.cleanup(output.lease))
+        receipt=artifact_staging.cleanup_staged_tree(output)
+        if receipt.error or receipt.state!="removed":
+            primary=original or RuntimeError(f"{label} transport cleanup failed")
+            original=artifact_staging.StagingCleanupError(primary,receipt)
     _finish(original,cleanup)
     return output
 

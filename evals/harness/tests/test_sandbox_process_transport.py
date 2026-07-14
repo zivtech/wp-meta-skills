@@ -1,12 +1,17 @@
 import errno
+import io
 import os
 import subprocess
+import tarfile
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import artifact_staging
 import sandbox_process_transport as transport
+import workspace_lease
 
 
 def request(timeout=10):
@@ -17,6 +22,40 @@ def assert_reaped(process):
     assert process.poll() is not None
     with pytest.raises(ProcessLookupError): os.killpg(process.pid,0)
     assert process.stdout.closed and process.stderr.closed
+
+
+def sandbox_output(tmp_path):
+    source=tmp_path/"source"; source.mkdir(); (source/"plugin.php").write_text("<?php")
+    stream=io.BytesIO()
+    with tarfile.open(fileobj=stream,mode="w") as archive: archive.add(source,arcname=".")
+    stream.seek(0)
+    return artifact_staging.import_tar_stream(stream,tmp_path/"output",dependency_policy="strict")
+
+
+@pytest.mark.parametrize("cleanup_fails",[False,True])
+def test_post_import_transport_failure_preserves_only_meaningful_cleanup_receipt(tmp_path,monkeypatch,cleanup_fails):
+    output=sandbox_output(tmp_path); original_cleanup=workspace_lease.cleanup
+    monkeypatch.setattr(transport,"tar_command",lambda *_args:["/bin/sh","-c","exit 1"])
+    if cleanup_fails:
+        monkeypatch.setattr(artifact_staging.workspace_lease,"cleanup",lambda _lease:(_ for _ in ()).throw(workspace_lease.WorkspaceCleanupError("cleanup failed")))
+    try:
+        with pytest.raises(Exception) as caught:
+            transport._tar_process("container",request(),False,lambda _stream:output,"output archive")
+        current=caught.value; staging_error=None; seen=set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current,artifact_staging.StagingCleanupError): staging_error=current; break
+            current=current.__cause__ or current.__context__
+        if cleanup_fails:
+            receipt=staging_error.receipt
+            assert receipt.issuer is artifact_staging.StageRole.SANDBOX_OUTPUT
+            assert receipt.state=="retained" and receipt.exists and receipt.live and receipt.error
+            assert receipt.recovery_path==str(output.root)
+        else:
+            assert staging_error is None and output.lease.lease_id not in workspace_lease._LIVE_LEASES
+    finally:
+        monkeypatch.setattr(artifact_staging.workspace_lease,"cleanup",original_cleanup)
+        if output.lease.lease_id in workspace_lease._LIVE_LEASES: original_cleanup(output.lease)
 
 
 def test_hung_capped_process_reserves_cleanup_inside_absolute_deadline(monkeypatch):

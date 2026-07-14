@@ -26,6 +26,7 @@ class SandboxResult:
     status: str; returncode: int | None; stdout: str; stderr: str
     output: artifact_staging.StagedTree | None; detail: str; container_name: str
     runtime_identity: dict[str, object] | None = None
+    staging_cleanup_receipts: tuple[artifact_staging.StagingCleanupReceipt, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -74,5 +75,6 @@ class DetachedIdentity:
 
 
 class SandboxBoundaryError(RuntimeError):
-    def __init__(self, message, timings, metrics, resources):
+    def __init__(self, message, timings, metrics, resources, staging_cleanup_receipts=()):
         super().__init__(message); self.timings = dict(timings); self.metrics = dict(metrics); self.resources = list(resources)
+        self.staging_cleanup_receipts=tuple(staging_cleanup_receipts)
