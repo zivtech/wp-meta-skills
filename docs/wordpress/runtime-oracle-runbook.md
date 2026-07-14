@@ -624,3 +624,89 @@ the reviewed `nr_inodes`. Each distinct byte and inode profile is exhausted
 once, must contain the overflow, is cleaned, and must accept a new write
 afterward. Sanitized observed totals and recovery results are persisted in the
 Step 0 result.
+
+# Plan 009 generated-code runtime boundary
+
+Generated plugin runtime certification has one entry point:
+`wp_env_network_guard.run_staged_runtime()`. The input must be a factory-issued
+`SYNTHESIZED_RUNTIME` stage with its Plan 008 evidence ID and artifact digest.
+There is no host `wp-env`, host PHP, host Playwright, or ordinary-network
+fallback. Missing Docker, an unverified pin, topology drift, inspection drift,
+or incomplete cleanup produces `blocked` evidence.
+
+The boundary has two phases. Trusted provisioning downloads only the committed
+WordPress core and Plugin Check artifacts, verifies every recorded hash and OCI
+platform digest, builds the repository-owned WordPress, database, and browser
+images, and stops before the generated artifact exists in a container. The
+generated phase exports the already-held staged bytes into a sealed local image
+and creates a normalized, inspected Compose topology with five services:
+database, WordPress, CLI, gateway, and browser.
+
+Three internal networks enforce the peer allowlist. WordPress and CLI can reach
+the database only on `wp_db`; WordPress can reach the gateway only on
+`wordpress_gateway`; the browser can reach only the gateway on `browser_wp`.
+Apache listens on the `wordpress-application` alias and unprivileged port 8080,
+so generated PHP cannot turn loopback into an application escape. No service
+receives host ports, external DNS, `host.docker.internal`, the Docker socket,
+proxy variables, or an external network. The browser policy permits the exact
+gateway origin and rejects loopback, RFC1918, link-local/metadata, public IP,
+public DNS, database-peer, host-gateway, WebSocket, WebRTC, service-worker,
+popup, download, and external-navigation attempts from both frontend and editor
+generated JavaScript.
+
+Every final service is non-root, drops all capabilities, uses
+`no-new-privileges` and Docker's default seccomp profile, has a read-only root,
+and has no bind or volume mount. Mutable paths are explicitly sized tmpfs
+profiles with byte and inode ceilings. Each service has a 512 MiB memory and
+memory-swap ceiling, 0.5 CPU, 128 PIDs, `nofile=1024`, `nproc=256`, and a 16 MiB
+shared-memory ceiling. Daemon logging is `none`; every attached stream is
+incrementally bounded and secret-scrubbed. Named generated-code canaries prove
+ordinary database storage exhaustion and recovery, tmpfs byte/inode limits,
+file/process/CPU limits, PHP and browser OOM handling, PHP/HTTP/browser output
+ceilings, and deterministic service recovery. Evidence is accepted only after
+exact image, identity, network, mount, tmpfs, resource, seccomp, and cleanup
+inspection.
+
+Run the hermetic producer/consumer and topology contracts without Docker:
+
+```bash
+python3 -m pytest \
+  evals/harness/tests/test_isolated_runtime_contract.py \
+  evals/harness/tests/test_wp_staged_runtime.py \
+  -m 'not docker_boundary' -q
+```
+
+Run the exact pinned Linux runtime separately, once:
+
+```bash
+python3 -m pytest \
+  evals/harness/tests/test_wp_staged_runtime.py \
+  -m docker_boundary -q
+```
+
+The second command is a required no-secrets GitHub-hosted Linux gate. A local
+macOS run reports blocked by design. A diagnostic run that substitutes an
+available MariaDB image can help debug the harness, but it is not acceptance
+evidence for the committed MariaDB 11.8.5 digest.
+
+If a timed-out run reports retained resources, use the exact recovery commands
+from its cleanup receipt. For a runner-level emergency cleanup, constrain the
+operation to Plan 009 ownership markers:
+
+```bash
+docker ps -aq --filter label=com.docker.compose.project | \
+  xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}} {{.Id}}' | \
+  awk '$1 ~ /^wpisolated/ {print $2}' | xargs -r docker rm -f
+docker network ls --format '{{.Name}} {{.ID}}' | \
+  awk '$1 ~ /^wpisolated/ {print $2}' | xargs -r docker network rm
+docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | \
+  awk '$1 ~ /^wp-isolated-(wordpress|database|browser|artifact):/ {print $2}' | \
+  sort -u | xargs -r docker image rm -f
+```
+
+This boundary proves the tested isolation and resource controls for the exact
+generated artifact and image set. It does not prove that generated application
+behavior is benign, that untested WordPress integrations are correct, or that
+a static/WPCS/Plugin Check pass is release readiness. Ordinary repository-owned
+fixtures may still use their legacy feasibility path, but that path is not
+evidence for generated-artifact runtime certification.

@@ -393,6 +393,24 @@ def check_php_lint(path: Path, timeout_sec: int, required: bool) -> Check:
 
 
 def check_phpcs(path: Path, args: argparse.Namespace, required: bool) -> Check:
+    if "wpcs" in set(args.require_tool or []):
+        root = Path(args.wp_env_root).resolve() if args.wp_env_root else None
+        toolchain, reason = wp_security_gate.resolve_toolchain(root)
+        if toolchain is None:
+            return block_check("phpcs_wpcs", reason or "pinned WPCS toolchain unavailable", required)
+        prefix = [toolchain.php, str(toolchain.phpcs), "--runtime-set",
+                  "installed_paths", toolchain.installed_paths]
+        standards = command_check("phpcs_wpcs", [*prefix, "-i"], toolchain.root,
+                                  args.timeout_sec, required)
+        if standards.status != "pass":
+            return standards
+        if "WordPress" not in standards.detail:
+            return block_check("phpcs_wpcs", "pinned WordPress standard was not discovered",
+                               required, [*prefix, "-i"])
+        command = [*prefix, "--standard=WordPress", "--extensions=php",
+                   f"--ignore={','.join(PHPCS_IGNORE_PATTERNS)}", str(path)]
+        return command_check("phpcs_wpcs", command, toolchain.root,
+                             args.timeout_sec, required)
     extra_roots = [Path(root).resolve() for root in (args.wp_env_root, args.wp_root) if root]
     phpcs = find_executable(path, ("phpcs",), extra_roots)
     if not phpcs:

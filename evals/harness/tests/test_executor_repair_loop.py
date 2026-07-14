@@ -15,6 +15,7 @@ HARNESS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HARNESS))
 
 import run_executor_repair_loop as loop  # noqa: E402
+import isolated_runtime_contract  # noqa: E402
 
 
 def _stub_generate(record):
@@ -177,6 +178,70 @@ def test_contradictory_enclosing_pass_cannot_hide_blocked_or_failed_checks():
     checks = [{"id": "ok", "status": "pass"}, {"id": "blocked", "status": "blocked"},
               {"id": "failed", "status": "fail"}]
     assert loop._nonpassing_check_ids(checks) == ["blocked", "failed"]
+
+
+def test_repair_runtime_contract_rejects_legacy_profile_without_isolated_oracles():
+    data = {
+        "schema_version": 1, "run_id": "run", "evidence_id": "evidence",
+        "artifact_kind": "plugin", "input_artifact_digest": "a" * 64,
+        "runtime_pre_command_manifest_digest": "b" * 64,
+        "post_command_manifest_digest": "b" * 64,
+        "status": "pass", "pass": True,
+        "full_plugin_runtime_profile": {"status": "pass", "checks": [
+            {"id": "plugin_check", "status": "pass"},
+            {"id": "wp_env_smoke", "status": "pass"},
+        ]},
+        "checks": [],
+    }
+    errors = isolated_runtime_contract.persisted_runtime_errors(
+        data, run_id="run", evidence_id="evidence",
+        artifact_kind="plugin", input_digest="a" * 64,
+    )
+    assert errors == [
+        "wp_cli_activation did not pass", "plugin_check did not pass",
+        "container_browser did not pass",
+        "runtime_identity did not pass",
+        "full plugin runtime profile did not pass",
+    ]
+
+
+def test_repair_runtime_command_uses_exact_isolated_contract_only(tmp_path):
+    command = loop._isolated_runtime_command(
+        tmp_path / "plugin", tmp_path / "results", "run", "evidence", "a" * 64, 300
+    )
+    assert "--provision-full-profile" in command and "--strict-full-profile" in command
+    assert command[command.index("--evidence-id") + 1] == "evidence"
+    assert command[command.index("--expected-artifact-digest") + 1] == "a" * 64
+    assert command[command.index("--results-root") + 1] == str(tmp_path / "results")
+
+
+def test_repair_runtime_verdict_requires_exact_isolated_checks():
+    data = {
+        "schema_version": 1, "run_id": "run", "evidence_id": "evidence",
+        "artifact_kind": "plugin", "input_artifact_digest": "a" * 64,
+        "runtime_pre_command_manifest_digest": "b" * 64,
+        "post_command_manifest_digest": "b" * 64, "status": "pass", "pass": True,
+        "checks": [
+            {"id": "wp_cli_activation", "status": "pass"},
+            {"id": "plugin_check", "status": "pass"},
+            {"id": "container_browser", "status": "pass"},
+            {"id": "runtime_identity", "status": "pass"},
+        ],
+        "provision_full_profile": True, "strict_full_profile": True,
+        "full_plugin_runtime_profile": {"status": "pass", "pass": True, "checks": [
+            {"id": "phpcs_wpcs", "status": "pass"},
+            {"id": "plugin_check", "status": "pass"},
+            {"id": "wp_env_smoke", "status": "pass"},
+        ]},
+    }
+    verdict = loop._isolated_runtime_verdict(
+        data, run_id="run", evidence_id="evidence", expected_digest="a" * 64
+    )
+    assert verdict["passed"] is True
+    data["post_command_manifest_digest"] = "c" * 64
+    assert loop._isolated_runtime_verdict(
+        data, run_id="run", evidence_id="evidence", expected_digest="a" * 64
+    )["failing_gates"] == ["runtime_result"]
 
 
 # --- new-this-sweep coverage: warning-inclusive feedback + cross-market providers ---

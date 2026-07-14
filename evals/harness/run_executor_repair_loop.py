@@ -36,6 +36,7 @@ RESULTS = ROOT / "evals" / "results"
 sys.path.insert(0, str(HARNESS))
 
 import invoke  # noqa: E402  (reuse single-shot generation + provider routing)
+import isolated_runtime_contract  # noqa: E402
 from artifact_staging import digest_regular_tree  # noqa: E402
 from workspace_lease import WorkspacePurpose, create_named  # noqa: E402
 
@@ -246,6 +247,38 @@ def _stage_failure(gate: str, detail: str, checks: list[dict[str, Any]] | None =
         subordinate.append({"id": identifier, "status": str(check.get("status"))})
     return {"passed": False, "failing_gates": [gate], "failures": diagnostics,
             "gate_vector": {gate: {"status": "fail", "checks": subordinate}}}
+
+
+def _isolated_runtime_command(
+    artifact: Path, result_root: Path, run_id: str, evidence_id: str,
+    expected_digest: str, timeout: int,
+) -> list[str]:
+    return [
+        sys.executable, str(HARNESS / "run_wordpress_runtime_smoke.py"),
+        "--artifact-path", str(artifact), "--artifact-kind", "plugin",
+        "--write", "--run-id", run_id, "--results-root", str(result_root),
+        "--evidence-id", evidence_id, "--expected-artifact-digest", expected_digest,
+        "--timeout-sec", str(timeout), "--provision-full-profile", "--strict-full-profile",
+    ]
+
+
+def _isolated_runtime_verdict(
+    data: dict[str, Any], *, run_id: str, evidence_id: str, expected_digest: str,
+) -> dict[str, Any]:
+    checks = _checks_with_status({"checks": data.get("checks") or []})
+    errors = isolated_runtime_contract.persisted_runtime_errors(
+        data, run_id=run_id, evidence_id=evidence_id,
+        artifact_kind="plugin", input_digest=expected_digest,
+    )
+    if errors:
+        return _stage_failure("runtime_result", "; ".join(errors), checks)
+    failing = _nonpassing_check_ids(checks)
+    return {
+        "passed": bool(checks) and not failing,
+        "failing_gates": failing,
+        "failures": _failure_text(checks) if failing else "",
+        "gate_vector": {check["id"]: check["status"] for check in checks},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -511,19 +544,16 @@ def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout
         if executor != "plugin":
             return _stage_failure("runtime_profile", "Plan 008 runtime profile supports plugin artifacts only")
 
-        # Stage B: provisioned runtime gate (WPCS + Plugin Check + wp-env activation).
+        # Stage B: exact isolated WordPress activation and container-browser gate.
         runtime_artifact = candidates[0]
         expected_digest = digest_regular_tree(runtime_artifact)
         run_id = f"{run_dir.name}-iter{iteration}"
         runtime_root = res / "runtime"
         runtime_root.mkdir(exist_ok=False)
         runtime_proc = subprocess.run(
-            [sys.executable, str(HARNESS / "run_wordpress_runtime_smoke.py"),
-             "--artifact-path", str(runtime_artifact), "--artifact-kind", "plugin",
-             "--provision-full-profile", "--strict-full-profile",
-             "--write", "--run-id", run_id, "--results-root", str(runtime_root),
-             "--evidence-id", evidence_id, "--expected-artifact-digest", expected_digest,
-             "--timeout-sec", str(timeout)],
+            _isolated_runtime_command(
+                runtime_artifact, runtime_root, run_id, evidence_id, expected_digest, timeout
+            ),
             capture_output=True, text=True, timeout=timeout + 120, check=False,
         )
         rj = runtime_root / run_id / "runtime-smoke.json"
@@ -535,32 +565,9 @@ def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout
             return _stage_failure("runtime_command", f"return code {runtime_proc.returncode}", checks)
         if data is None:
             return _stage_failure("runtime_result", "exact runtime result missing or malformed")
-        if not (
-            data.get("schema_version") == 1 and data.get("run_id") == run_id
-            and data.get("evidence_id") == evidence_id and data.get("artifact_kind") == "plugin"
-            and data.get("input_artifact_digest") == expected_digest
-        ):
-            return _stage_failure("runtime_result", "runtime identity or artifact digest mismatch")
-        if data.get("status") != "pass":
-            return _stage_failure("runtime_status", f"top-level status {data.get('status')}", _checks_with_status(data))
-        if (data.get("full_plugin_runtime_profile") or {}).get("status") != "pass":
-            return _stage_failure("runtime_profile", "required full profile did not pass", _checks_with_status(data.get("full_plugin_runtime_profile") or {}))
-        # Use only the runtime profile's check array (the one containing plugin_check / wp_env_smoke).
-        runtime_checks: list[dict[str, Any]] = []
-        for node in _walk_objects(data):
-            checks = node.get("checks") if isinstance(node, dict) else None
-            if isinstance(checks, list) and any(
-                isinstance(c, dict) and c.get("id") in ("plugin_check", "wp_env_smoke") for c in checks
-            ):
-                runtime_checks = _checks_with_status({"checks": checks})
-                break
-        if not runtime_checks:
-            runtime_checks = _checks_with_status(data)
-        failing = _nonpassing_check_ids(runtime_checks)
-        passed = bool(runtime_checks) and not failing
-        return {"passed": passed, "failing_gates": failing,
-                "failures": _failure_text(runtime_checks),
-                "gate_vector": {c["id"]: c["status"] for c in runtime_checks}}
+        return _isolated_runtime_verdict(
+            data, run_id=run_id, evidence_id=evidence_id, expected_digest=expected_digest
+        )
 
     return certify
 

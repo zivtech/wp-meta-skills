@@ -36,7 +36,13 @@ jobs:
       - name: Install test dependency without cache credentials
         run: python -m pip install --no-cache-dir pytest==8.4.2
       - name: Verify committed locks, inventory, and topology policy
-        run: python -m pytest evals/harness/tests/test_runtime_image_provision.py evals/harness/tests/test_wp_env_network_guard.py -q
+        run: |
+          python -m pytest \
+            evals/harness/tests/test_runtime_image_provision.py \
+            evals/harness/tests/test_wp_env_network_guard.py \
+            evals/harness/tests/test_isolated_runtime_contract.py \
+            evals/harness/tests/test_wp_staged_runtime.py \
+            -m 'not docker_boundary' -q
       - name: Trusted-provision exact package and proxy images
         run: |
           PYTHONPATH=evals/harness python - <<'PY'
@@ -135,6 +141,15 @@ jobs:
           docker system df
           cat "$RUNNER_TEMP/wp-step0-result.json"
           { echo '```json'; cat "$RUNNER_TEMP/wp-step0-result.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Prove generated PHP and browser isolation with exact pinned images
+        run: |
+          started=$SECONDS
+          python -m pytest \
+            evals/harness/tests/test_wp_staged_runtime.py \
+            -m docker_boundary -q
+          elapsed=$((SECONDS-started))
+          echo "isolated_runtime_seconds=$elapsed"
+          test "$elapsed" -le 1800
       - name: Remove run-scoped sandbox resources
         if: always()
         run: |
@@ -148,10 +163,13 @@ jobs:
           docker ps -aq --filter 'name=wp-proxy-fake-' | xargs -r docker rm -f
           docker ps -aq --filter 'name=wp-registry-fake-' | xargs -r docker rm -f
           docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}} {{.Id}}' | awk '$1 ~ /^wpstep0/ {print $2}' | xargs -r docker rm -f
+          docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}} {{.Id}}' | awk '$1 ~ /^wpisolated/ {print $2}' | xargs -r docker rm -f
           docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wpstep0/ {print $2}' | xargs -r docker network rm
+          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wpisolated/ {print $2}' | xargs -r docker network rm
           docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wp-acquire-(internal|egress)-/ {print $2}' | xargs -r docker network rm
           docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wp-(dns-observe|event-(mutation|alternate)|tunnel-break|fake-(internal|egress))-/ {print $2}' | xargs -r docker network rm
           docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '$1 ~ /^wp-sandbox-(wordpress|database):/ {print $2}' | sort -u | xargs -r docker image rm -f
+          docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '$1 ~ /^wp-isolated-(wordpress|database|browser|artifact):/ {print $2}' | sort -u | xargs -r docker image rm -f
           test -z "$(docker ps -aq --filter 'name=wp-step0-')"
           test -z "$(docker ps -aq --filter 'name=wp-package-')"
           test -z "$(docker ps -aq --filter 'name=wp-acquire-proxy-')"
@@ -162,9 +180,12 @@ jobs:
           test -z "$(docker ps -aq --filter 'name=wp-proxy-fake-')"
           test -z "$(docker ps -aq --filter 'name=wp-registry-fake-')"
           test -z "$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wpstep0/')"
+          test -z "$(docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' | awk '$1 ~ /^wpisolated/')"
+          test -z "$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wpisolated/')"
           test -z "$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wp-acquire-(internal|egress)-/')"
           test -z "$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wp-(dns-observe|event-(mutation|alternate)|tunnel-break|fake-(internal|egress))-/')"
           test -z "$(docker image ls --format '{{.Repository}}:{{.Tag}}' | awk '$1 ~ /^wp-sandbox-(wordpress|database):/')"
+          test -z "$(docker image ls --format '{{.Repository}}:{{.Tag}}' | awk '$1 ~ /^wp-isolated-(wordpress|database|browser|artifact):/')"
   validate:
     runs-on: ubuntu-latest
 
@@ -189,7 +210,7 @@ jobs:
           key: composer-${{ hashFiles('evals/harness/php-tools/composer.lock') }}
 
       - name: Install pinned PHP analysis toolchain
-        run: composer install --no-interaction --no-progress --working-dir evals/harness/php-tools
+        run: composer install --no-interaction --no-progress --no-scripts --no-plugins --prefer-dist --working-dir evals/harness/php-tools
 
       - name: Verify manifest
         run: ./install.sh --verify
@@ -218,6 +239,8 @@ jobs:
             evals/harness/tests/test_workspace_lease.py \
             evals/harness/tests/test_runtime_image_provision.py \
             evals/harness/tests/test_wp_env_network_guard.py \
+            evals/harness/tests/test_isolated_runtime_contract.py \
+            evals/harness/tests/test_wp_staged_runtime.py \
             evals/harness/tests/test_executor_repair_loop.py \
             evals/harness/tests/test_wordpress_runtime_smoke.py \
             evals/harness/tests/test_wordpress_artifact_oracle.py \
@@ -234,4 +257,4 @@ jobs:
             evals/harness/tests/test_wordpress_candidate_pilot_generation.py \
             evals/harness/tests/test_wp_api_lint.py \
             evals/harness/tests/test_wp_security_gate.py \
-            -q
+            -m 'not docker_boundary' -q

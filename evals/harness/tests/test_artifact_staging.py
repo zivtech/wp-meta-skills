@@ -403,3 +403,14 @@ def test_import_dual_failure_preserves_primary_and_sandbox_output_receipt(tmp_pa
     with pytest.raises(RuntimeError,match="import verification failed"):
         staging.import_tar_stream(tar_bytes([("a",b"ok","file")]),parent)
     assert set(workspace_lease._LIVE_LEASES)==live_before and not any(parent.iterdir())
+
+
+def test_held_tree_accepts_one_caller_owned_absolute_proof_deadline(tmp_path):
+    source=tmp_path/"source"; source.mkdir(); (source/"plugin.php").write_text("<?php")
+    staged=staging.stage_tree(source,tmp_path/"leases")
+    proof_deadline=sandbox_source_proof.time.monotonic()+60
+    try:
+        with staging.hold_staged_tree(staged,proof_deadline=proof_deadline) as held:
+            assert held.proof_budget.deadline==proof_deadline
+    finally:
+        staging.cleanup_staged_tree(staged)

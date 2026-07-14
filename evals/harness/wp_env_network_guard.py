@@ -3,9 +3,15 @@ from __future__ import annotations
 import json, os, platform, shutil, tempfile
 import re
 from pathlib import Path
+import artifact_staging
 import runtime_image_provision as provision
 import materialize_wordpress_executor_packet as materializer
+import wp_runtime_lifecycle
+import wp_runtime_provisioning
+import wp_runtime_export
 import workspace_lease
+from wp_runtime_types import RuntimeRequest, RuntimeResult
+from wp_runtime_evidence import RuntimeDeadline, failure_evidence
 COPY_INPUT_COMMAND="cp -R /input/. /work/"
 PREPARE_WORK_ENV="mkdir -p /work/home /work/.npm-cache /work/.composer; export HOME=/work/home npm_config_cache=/work/.npm-cache COMPOSER_HOME=/work/.composer"
 TRUSTED_RUNNER_LIMITS={
@@ -20,6 +26,94 @@ BLOCK_BUILD_COMMANDS={
 PHPUNIT_COMMAND="php vendor/bin/phpunit"
 TEMP_TMPFS="/tmp:size=67108864,nr_inodes=4096,mode=0700,noexec,nosuid,nodev"
 FIXTURE_PHASE_ORDER=("create","start","install","disconnect","execute")
+RUNTIME_EVIDENCE_ID=re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+RUNTIME_DIGEST=re.compile(r"[0-9a-f]{64}")
+RUNTIME_SLUG=re.compile(r"[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?")
+
+def _blocked_runtime(request,reason):
+    return RuntimeResult("blocked",request.evidence_id,request.input_artifact_digest,None,reason=reason)
+
+def _validate_runtime_request(request):
+    if not isinstance(request,RuntimeRequest): raise TypeError("runtime request must be a RuntimeRequest")
+    if not artifact_staging.has_stage_authority(request.staged,artifact_staging.StageRole.SYNTHESIZED_RUNTIME): raise ValueError("runtime requires a factory-authentic SYNTHESIZED_RUNTIME stage")
+    if not RUNTIME_EVIDENCE_ID.fullmatch(request.evidence_id): raise ValueError("runtime evidence ID is missing or invalid")
+    if not RUNTIME_DIGEST.fullmatch(request.input_artifact_digest) or not RUNTIME_DIGEST.fullmatch(request.expected_input_artifact_digest): raise ValueError("runtime input artifact digest is invalid")
+    if request.input_artifact_digest != request.expected_input_artifact_digest: raise ValueError("runtime input artifact digest mismatch")
+    if not RUNTIME_SLUG.fullmatch(request.plugin_slug): raise ValueError("runtime plugin slug is unsafe")
+    if request.timeout_sec<30 or request.timeout_sec>1800: raise ValueError("runtime timeout is outside the reviewed range")
+    unsupported=set(request.requested_oracles)-{"activation","browser"}
+    if unsupported: raise ValueError(f"runtime oracle is not pinned and provisioned: {sorted(unsupported)}")
+    prefix=request.plugin_slug+"/"
+    if not request.staged.manifest or any(not item.path.startswith(prefix) for item in request.staged.manifest): raise ValueError("synthesized runtime is not rooted at the declared plugin slug")
+    return request.staged.manifest
+
+def _runtime_project(work):
+    return "wpisolated"+__import__("hashlib").sha256(str(work).encode()).hexdigest()[:12]
+
+def _execute_staged_runtime(request,lease,held,deadline):
+    runtime=None; export=None; lifecycle=None
+    image_cleanup={"component":"runtime_images","state":"not_created","error":None}
+    export_cleanup={"component":"runtime_export","state":"not_created","error":None}
+    try:
+        runtime=wp_runtime_provisioning.provision_runtime(lease.root,deadline)
+        project=_runtime_project(lease.root)
+        export=wp_runtime_export.materialize_export(
+            held,lease.root,request.plugin_slug,runtime,deadline,project,
+        )
+        seal=wp_runtime_export.seal_export(export,runtime,deadline)
+        lifecycle=wp_runtime_lifecycle.execute_runtime(
+            lease.root,project,runtime,export.image,request.plugin_slug,
+            deadline,request.requested_oracles,export.digest,
+        )
+        lifecycle.setdefault("inspection",{})["artifact_seal"]=seal
+    except Exception as exc:
+        if isinstance(exc,wp_runtime_export.RuntimeExportCleanupError):
+            export_cleanup=exc.cleanup
+        if isinstance(exc,wp_runtime_provisioning.RuntimeProvisionError):
+            image_cleanup=exc.cleanup
+        lifecycle={"status":"blocked","primary":failure_evidence(exc),"reason":failure_evidence(exc)["detail"],
+                   "checks":(),"inspection":{},"cleanup":{"component":"compose","state":"not_created"}}
+    finally:
+        if runtime is not None:
+            compose_removed=lifecycle and lifecycle.get("cleanup",{}).get("state") in {"removed","not_created"}
+            try:
+                if not compose_removed: raise RuntimeError("compose resources remain; images retained for recovery")
+                if export is not None: export_cleanup=wp_runtime_export.release_export(export,runtime,deadline)
+                if export_cleanup.get("state")=="retained": raise RuntimeError("runtime export remains sealed")
+                image_cleanup=wp_runtime_provisioning.cleanup_images(runtime,deadline)
+            except Exception as exc: image_cleanup={"component":"runtime_images","state":"retained","error":type(exc).__name__}
+    return lifecycle,image_cleanup,export_cleanup
+
+def run_staged_runtime(request:RuntimeRequest)->RuntimeResult:
+    """Execute a synthesized artifact only in the inspected internal runtime."""
+    _validate_runtime_request(request)
+    deadline=RuntimeDeadline.start(request.timeout_sec)
+    if platform.system()!="Linux": return _blocked_runtime(request,"isolated generated runtime requires Linux")
+    if shutil.which("docker") is None: return _blocked_runtime(request,"Docker is unavailable; host fallback is forbidden")
+    lease=workspace_lease.create_ephemeral(request.result_parent,workspace_lease.WorkspacePurpose.ARTIFACT_EXECUTION)
+    workspace_cleanup={"component":"runtime_workspace","state":"removed","error":None}
+    export_cleanup={"component":"runtime_export","state":"not_created","error":None}
+    lifecycle={"status":"blocked","reason":"runtime did not start","checks":(),"inspection":{},"cleanup":{}}
+    image_cleanup={"component":"runtime_images","state":"not_created","error":None}
+    post_digest=None
+    try:
+        with artifact_staging.hold_staged_tree(request.staged,proof_deadline=deadline.end) as held:
+            lifecycle,image_cleanup,export_cleanup=_execute_staged_runtime(request,lease,held,deadline)
+            post_digest=artifact_staging.manifest_sha256(held.proof.manifest)
+    finally:
+        compose_state=lifecycle.get("cleanup",{}).get("state")
+        if compose_state in {"removed","not_created"}:
+            try: workspace_lease.cleanup(lease)
+            except Exception as exc: workspace_cleanup={"component":"runtime_workspace","state":"retained","error":type(exc).__name__,"recovery":str(lease.root)}
+        else:
+            export_cleanup={"component":"runtime_export","state":"retained","error":"compose resources remain","recovery":str(lease.root/"runtime-artifact")}
+            workspace_cleanup={"component":"runtime_workspace","state":"retained","error":"compose resources remain","recovery":str(lease.root)}
+    cleanup={"compose":lifecycle.get("cleanup",{}),"images":image_cleanup,"export":export_cleanup,"workspace":workspace_cleanup}
+    status=lifecycle["status"]
+    compose_cleanup=lifecycle.get("cleanup",{})
+    if any(item.get("state")=="retained" for item in (compose_cleanup,image_cleanup,export_cleanup,workspace_cleanup)): status="blocked"
+    return RuntimeResult(status,request.evidence_id,request.input_artifact_digest,post_digest,
+        tuple(lifecycle.get("checks",())),lifecycle.get("inspection",{}),cleanup,lifecycle.get("reason"))
 
 def executable_work_tmpfs(size, inodes):
     return f"/work:size={size},nr_inodes={inodes},mode=0700,exec,nosuid,nodev"

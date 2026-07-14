@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import certify_wordpress_executor_artifact as certifier
@@ -599,7 +600,7 @@ def test_mutation_during_staging_blocks_before_wp_env(tmp_path, monkeypatch):
     assert result["status"] == "blocked"
     assert result["input_artifact_digest"] == expected
     assert plugin.read_text() == "after"
-    assert which_called is True
+    assert which_called is False
 
 
 def test_staging_symlink_swap_never_copies_external_or_starts_wp_env(tmp_path, monkeypatch):
@@ -782,7 +783,10 @@ def test_runtime_preparation_preserves_post_stage_and_sandbox_cleanup_receipts(t
     monkeypatch.setattr(smoke.runtime_artifact_pipeline, "SynthesizedRuntime", lambda *_args: (_ for _ in ()).throw(RuntimeError("constructor failed")))
     try:
         with pytest.raises(smoke.runtime_artifact_pipeline.RuntimePreparationError, match="constructor failed") as caught:
-            smoke._prepare_generated_runtime(staged, "block", source, True, 5, tmp_path / "runtime")
+            smoke._prepare_generated_runtime(
+                staged, "block", source, True, False, False, 5,
+                tmp_path / "runtime", tmp_path / "trusted-wpcs",
+            )
         receipts = {receipt.component: receipt for receipt in caught.value.receipts}
         assert set(receipts) == {"synthesized_runtime", "sandbox_output"}
         assert all(receipt.state == "removed" for receipt in receipts.values())
@@ -929,6 +933,10 @@ def test_runtime_smoke_can_provision_full_profile(tmp_path, monkeypatch):
     commands = []
 
     monkeypatch.setattr(smoke.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(smoke.wp_security_gate, "resolve_toolchain", lambda _root: (
+        SimpleNamespace(php="/usr/bin/php", phpcs=tmp_path / "vendor/bin/phpcs",
+                        installed_paths="/pinned/wpcs"), None,
+    ))
 
     def fake_run_command(command, cwd, _timeout):
         commands.append((command, cwd))
@@ -952,10 +960,10 @@ def test_runtime_smoke_can_provision_full_profile(tmp_path, monkeypatch):
     )
 
     assert result["status"] == "pass"
-    assert sorted(result["provisioning"]) == ["composer_install", "plugin_check_install"]
+    assert sorted(result["provisioning"]) == ["phpcs_wpcs_toolchain", "plugin_check_install"]
     assert "not WPCS proof" not in result["negative_space"]
-    assert "acme-runtime-smoke" in (Path(result["runtime_root"]) / "composer.json").read_text(encoding="utf-8")
-    assert commands[0][0][:2] == ["/usr/bin/composer", "install"]
+    assert not (Path(result["runtime_root"]) / "composer.json").exists()
+    assert commands[0][0][:2] == ["/usr/bin/php", str(tmp_path / "vendor/bin/phpcs")]
     assert commands[2][0][-3:] == ["plugin", "activate", "acme-runtime-smoke"]
     assert commands[3][0][-4:] == ["plugin", "install", "plugin-check", "--activate"]
 
@@ -988,13 +996,11 @@ def test_runtime_smoke_uses_existing_artifact_and_records_ability_smoke(tmp_path
         ability_name="acme/get-status",
     )
 
-    assert result["status"] == "pass"
-    assert result["source_artifact_path"] == str(source.resolve())
-    assert result["ability_smoke_status"] == "pass"
-    assert result["artifact_path"].endswith("acme-generated")
-    assert "not proof of executor-generated artifacts" in result["negative_space"]
-    assert any(command[0][-2] == "eval" for command in commands)
-    assert {path.name for path in validated_paths} == {"acme-generated"}
+    assert result["status"] == "blocked"
+    assert result["ability_smoke_status"] == "blocked"
+    assert result["sandbox_posture"]["host_fallback"] is False
+    assert "ability-oracle" in result["reason"]
+    assert commands == [] and validated_paths == []
 
 
 def test_runtime_smoke_accepts_caller_held_stage_without_restaging(tmp_path, monkeypatch):
@@ -1026,7 +1032,7 @@ def test_runtime_smoke_accepts_caller_held_stage_without_restaging(tmp_path, mon
             artifact_source_path=claimed,
         )
 
-        assert result["status"] == "pass"
+        assert result["status"] == "blocked"
         assert result["source_artifact_path"] == str(source.resolve())
         assert result["source_artifact_attested"] is True
         assert result["claimed_source_artifact_path"] == str(claimed.absolute())
@@ -1230,23 +1236,10 @@ def test_runtime_smoke_wraps_generated_block_artifact_for_editor_insert_render(t
         keep_artifacts=True,
         editor_insert_render_smoke=True,
     )
-    editor_command = next(command for command, _cwd in commands if any("run_wordpress_editor_smoke.js" in part for part in command))
-
-    assert result["status"] == "pass"
-    assert result["artifact_kind"] == "block"
-    assert result["source_artifact_path"] == str(source.resolve())
-    assert result["block_name"] == "acme/runtime-card"
-    assert result["wrapped_block_artifact"]["block_name"] == "acme/runtime-card"
-    assert result["wrapped_block_artifact"]["textdomain"] == "acme-runtime-card"
-    assert result["artifact_path"].endswith("acme-runtime-card")
-    assert result["editor_smoke_status"] == "pass"
-    assert "--insert-render-smoke" in editor_command
-    assert editor_command[editor_command.index("--block-name") + 1] == "acme/runtime-card"
-    assert "not proof of executor-generated artifacts" in result["negative_space"]
-    assert "not editor or browser smoke proof" not in result["negative_space"]
-    block_calls = [call for call in validate_calls if call[0] == "block" and call[2] == ["wp-env"]]
-    assert len(block_calls) == 1
-    assert block_calls[0][1].name == "artifact" and block_calls[0][1] != source.resolve()
+    assert result["status"] == "blocked"
+    assert result["editor_smoke_status"] == "blocked"
+    assert "legacy-editor-oracle" in result["reason"]
+    assert commands == [] and validate_calls == []
 
 
 def test_runtime_smoke_runs_generated_block_build_gate_on_disposable_copy(tmp_path, monkeypatch):
@@ -1319,14 +1312,11 @@ def test_runtime_smoke_runs_generated_block_build_gate_on_disposable_copy(tmp_pa
         editor_insert_render_smoke=True,
     )
 
-    copied_artifact = Path(result["wrapped_block_artifact"]["copied_artifact_dir"])
     assert not any(command[:2] == ["/usr/bin/npm", "install"] for command, _cwd in commands)
-    assert result["status"] == "pass"
-    assert result["block_build_smoke_requested"] is True
-    assert result["block_build_smoke_status"] == "pass"
-    assert result["wrapped_block_artifact"]["copied_artifact_dir"] == str(copied_artifact)
-    assert (copied_artifact / "blocks" / "runtime-card" / "build" / "marker.js").read_text() == "fresh sandbox output\n"
-    assert "not full block validation proof" not in result["negative_space"]
+    assert result["status"] == "blocked"
+    assert result["block_build_smoke_status"] == "blocked"
+    assert result["editor_smoke_status"] == "blocked"
+    assert "legacy-editor-oracle" in result["reason"]
     assert any(call[0] == "block" and call[2] == [] for call in validate_calls)
     assert result["artifact_retention"]["components"]["sandbox_output"]["state"] == "removed"
 
@@ -1393,15 +1383,11 @@ def test_runtime_smoke_can_request_interactivity_smoke(tmp_path, monkeypatch):
         editor_insert_render_smoke=True,
         interactivity_smoke=True,
     )
-    editor_command = next(command for command, _cwd in commands if any("run_wordpress_editor_smoke.js" in part for part in command))
-
-    assert result["status"] == "pass"
-    assert result["interactivity_smoke_requested"] is True
-    assert result["interactivity_smoke_status"] == "pass"
-    assert result["interactivity_static_gate"]["status"] == "pass"
-    assert "--interactivity-smoke" in editor_command
-    assert "not block deprecation or Interactivity API proof" not in result["negative_space"]
-    assert "not block deprecation proof" in result["negative_space"]
+    assert result["status"] == "blocked"
+    assert result["interactivity_smoke_status"] == "blocked"
+    assert result["editor_smoke_status"] == "blocked"
+    assert "legacy-editor-oracle" in result["reason"]
+    assert commands == []
 
 
 def test_block_deprecation_surface_gate_requires_fixture_and_migration(tmp_path):
@@ -1464,17 +1450,11 @@ def test_runtime_smoke_can_request_block_deprecation_smoke(tmp_path, monkeypatch
         block_build_smoke=True,
         block_deprecation_smoke=True,
     )
-    editor_command = next(command for command, _cwd in commands if any("run_wordpress_editor_smoke.js" in part for part in command))
-
-    assert result["status"] == "pass"
-    assert result["block_deprecation_smoke_requested"] is True
-    assert result["block_deprecation_smoke_status"] == "pass"
-    assert result["block_deprecation_static_gate"]["status"] == "pass"
-    assert "--deprecation-smoke" in editor_command
-    assert editor_command[editor_command.index("--post-id") + 1] == "123"
-    assert "--expected-migrated-text" in editor_command
-    assert "not block deprecation proof" not in result["negative_space"]
-    assert "not Interactivity API proof" in result["negative_space"]
+    assert result["status"] == "blocked"
+    assert result["block_deprecation_smoke_status"] == "blocked"
+    assert result["editor_smoke_status"] == "blocked"
+    assert "legacy-editor-oracle" in result["reason"]
+    assert commands == []
 
 
 def test_runtime_smoke_runs_generated_plugin_phpunit_gate_on_disposable_copy(tmp_path, monkeypatch):
@@ -1521,11 +1501,10 @@ def test_runtime_smoke_runs_generated_plugin_phpunit_gate_on_disposable_copy(tmp
     )
 
     assert not any(command[:2] == ["/usr/bin/composer", "install"] for command, _cwd in commands)
-    assert result["status"] == "pass"
-    assert result["phpunit_smoke_requested"] is True
-    assert result["phpunit_smoke_status"] == "pass"
-    assert "not PHPUnit proof" not in result["negative_space"]
-    assert ("plugin", source.resolve(), ["phpunit"]) in validate_calls
+    assert result["status"] == "blocked"
+    assert result["phpunit_smoke_status"] == "blocked"
+    assert result["sandbox_posture"]["host_fallback"] is False
+    assert validate_calls == []
 
 
 def test_parse_wp_env_site_url_from_stderr():
@@ -1723,11 +1702,10 @@ def test_runtime_smoke_can_verify_mcp_adapter_smoke(tmp_path, monkeypatch):
         mcp_adapter_expected_output="Runtime MCP smoke",
     )
 
-    assert result["status"] == "pass"
-    assert result["mcp_adapter_smoke_status"] == "pass"
-    assert "not MCP Adapter runtime proof" not in result["negative_space"]
-    assert any(smoke.MCP_ADAPTER_PLUGIN_ZIP in command for command, _cwd in commands)
-    assert len(input_commands) == 3
+    assert result["status"] == "blocked"
+    assert result["mcp_adapter_smoke_status"] == "blocked"
+    assert "mcp-adapter" in result["reason"]
+    assert commands == [] and input_commands == []
 
 
 def test_ai_client_provider_static_gate_requires_provider_helper(tmp_path):
@@ -1847,11 +1825,10 @@ def test_runtime_smoke_can_verify_ai_client_smoke(tmp_path, monkeypatch):
 
     ai_client_commands = [command for command, _cwd in commands if any("wp_ai_client_prompt" in part for part in command)]
 
-    assert result["status"] == "pass"
-    assert result["ai_client_smoke_status"] == "pass"
-    assert "not AI Client provider-call proof" not in result["negative_space"]
-    assert ai_client_commands
-    assert any(command.index("--user=admin") < command.index("eval") for command in ai_client_commands)
+    assert result["status"] == "blocked"
+    assert result["ai_client_smoke_status"] == "blocked"
+    assert "ai-client" in result["reason"]
+    assert ai_client_commands == []
 
 
 def test_runtime_smoke_blocks_when_wp_env_start_fails(tmp_path, monkeypatch):

@@ -34,7 +34,11 @@ from typing import Any
 
 import validate_wordpress_artifact
 import artifact_staging
+import isolated_runtime_contract
 import runtime_artifact_pipeline
+import wp_env_network_guard
+import wp_security_gate
+from wp_runtime_types import RuntimeRequest, RuntimeResult
 from certify_wordpress_executor_artifact import EVIDENCE_SCHEMA_VERSION
 from artifact_staging import EXECUTION_CLOSURE_IGNORE, digest_regular_tree, snapshot_regular_tree_with_kind
 from workspace_lease import (WorkspaceCleanupError, WorkspacePurpose, cleanup as cleanup_workspace,
@@ -46,11 +50,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RESULTS_ROOT = ROOT / "evals" / "results" / "wordpress-skill-candidate-eval"
 DEFAULT_RUN_ID = "wp-env-runtime-smoke"
 MCP_ADAPTER_PLUGIN_ZIP = "https://github.com/WordPress/mcp-adapter/releases/latest/download/mcp-adapter.zip"
-WPCS_REQUIRE_DEV = {
-    "dealerdirect/phpcodesniffer-composer-installer": "^1.0",
-    "phpcompatibility/phpcompatibility-wp": "^2.1",
-    "wp-coding-standards/wpcs": "^3.1",
-}
+PHP_TOOLS_ROOT = ROOT / "evals" / "harness" / "php-tools"
 
 
 def create_wp_env_temp_root() -> Path:
@@ -107,6 +107,14 @@ def _runtime_sandbox_posture(result, owned, active):
     }
 
 
+def _merge_evidence(base, overlay):
+    merged = dict(base) if isinstance(base, dict) else {}
+    for key, value in overlay.items():
+        prior = merged.get(key)
+        merged[key] = _merge_evidence(prior, value) if isinstance(value, dict) else value
+    return merged
+
+
 def _attach_runtime_input_evidence(result, owned, active, manifest, input_receipt):
     receipts = result.pop("_artifact_retention_receipts", [])
     if input_receipt is not None:
@@ -118,12 +126,22 @@ def _attach_runtime_input_evidence(result, owned, active, manifest, input_receip
     result["artifact_manifest_sha256"] = (
         artifact_staging.manifest_sha256(manifest) if manifest is not None else None
     )
-    result["sandbox_posture"] = _runtime_sandbox_posture(result, owned, active)
-    cleanup_blocked = owned is not None and input_receipt is not None and input_receipt.state != "removed"
+    result["sandbox_posture"] = _merge_evidence(
+        result.get("sandbox_posture"), _runtime_sandbox_posture(result, owned, active)
+    )
+    cleanup_failures = [
+        receipt for receipt in receipts
+        if receipt.state not in {"removed", "not_created"}
+        or receipt.error or receipt.exists or receipt.live
+    ]
+    cleanup_blocked = bool(cleanup_failures)
     if cleanup_blocked:
         result["status"] = "blocked"
         result["pass"] = False
-        result["artifact_execution_cleanup_error"] = input_receipt.error or "input copy remains retained"
+        failed = cleanup_failures[0]
+        result["artifact_execution_cleanup_error"] = (
+            failed.error or f"{failed.component} remains {failed.state}"
+        )
     return result
 
 
@@ -132,9 +150,20 @@ def stage_runtime_input(function):
     @functools.wraps(function)
     def wrapped(*args, **kwargs):
         owned, active, manifest = _prepare_runtime_input(kwargs)
+        evidence_id = kwargs.pop("evidence_id", None)
         primary = None; result = None
         try:
-            result = function(*args, **kwargs)
+            if active is not None and function.__name__ == "run_smoke":
+                if "executor_provenance" in kwargs:
+                    raise TypeError("run_smoke() got an unexpected keyword argument 'executor_provenance'")
+                result = _run_isolated_smoke_input(active, evidence_id, kwargs)
+                result.update({
+                    "source_artifact_path":active.source_path if active.source_attested else None,
+                    "source_artifact_attested":active.source_attested,
+                    "claimed_source_artifact_path":str(kwargs["artifact_source_path"]) if kwargs.get("artifact_source_path") else None,
+                })
+            else:
+                result = function(*args, **kwargs)
             if active is not None and artifact_staging.verify_staged_tree(active) != manifest:
                 raise RuntimeError("runtime smoke mutated the held staged artifact")
         except Exception as exc:
@@ -188,6 +217,9 @@ class PreparedRuntimeArtifact:
     effective_block: artifact_staging.StagedTree | None
     sandbox_output: artifact_staging.StagedTree | None
     block_build_gate: dict[str, Any] | None
+    phpunit_gate: dict[str, Any] | None
+    wpcs_gate: dict[str, Any] | None
+    trusted_provisioning: dict[str, Any]
     wrapped: WrappedBlockArtifact | None
     preparation_receipts: tuple[runtime_artifact_pipeline.CleanupReceipt, ...] = ()
 
@@ -826,21 +858,6 @@ Temporary wp-env wrapper for the generated `{metadata["name"]}` block artifact.
         block_name=str(metadata["name"]),
         textdomain=textdomain,
     )
-
-
-def write_wpcs_composer_file(root: Path, plugin_slug: str) -> None:
-    composer_json = {
-        "require-dev": WPCS_REQUIRE_DEV,
-        "config": {
-            "allow-plugins": {
-                "dealerdirect/phpcodesniffer-composer-installer": True,
-            },
-        },
-        "scripts": {
-            "phpcs": f"phpcs --standard=WordPress --extensions=php {plugin_slug}",
-        },
-    }
-    (root / "composer.json").write_text(json.dumps(composer_json, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def truncate_output(value: str, limit: int = 16000) -> str:
@@ -1669,29 +1686,93 @@ def _merged_receipts(*groups):
     return merged
 
 
-def _prepare_generated_runtime(staged, artifact_kind, source_path, build_requested, timeout_sec, parent):
-    effective=staged; output=None; synthesized=None; build_gate=None; preparation_receipts=[]
+def _prepare_phpunit(staged, artifact_kind, requested, timeout_sec):
+    if not requested:
+        return None, []
+    if artifact_kind != "plugin":
+        raise ValueError("artifact-local PHPUnit is supported only for plugin artifacts")
+    gate=validate_wordpress_artifact.validate_staged_artifact(
+        "plugin",staged,
+        oracle_args(profile="static",require_tool=["phpunit"],
+                    timeout_sec=timeout_sec,wp_env_root=None),
+        _defer_retention=True,
+    )
+    return gate,gate.pop("_artifact_retention_receipts", [])
+
+
+def _prepare_block_build(staged, artifact_kind, requested, timeout_sec):
+    if artifact_kind != "block" or not requested:
+        return staged,None,None,[]
+    build=runtime_artifact_pipeline.build_block(staged,timeout_sec)
+    output=build.output; output_gate=None
+    receipts=[
+        runtime_artifact_pipeline.cleanup_receipt_from_staging("sandbox_output",receipt)
+        for receipt in build.staging_cleanup_receipts
+    ]
+    if output is not None:
+        output_gate=validate_wordpress_artifact.validate_staged_artifact(
+            "block",output,oracle_args(
+                profile="static",require_tool=[],timeout_sec=timeout_sec,wp_env_root=None,
+            ),
+        )
+    return output or staged,output,_generated_build_gate(build,output_gate),receipts
+
+
+def _synthesize_runtime(staged, effective, artifact_kind, source_path, parent):
+    if artifact_kind == "block":
+        synthesized=runtime_artifact_pipeline.synthesize_block_runtime(effective,parent)
+        return synthesized,_wrapped_runtime(synthesized,effective)
+    claimed=source_path.name if source_path is not None else "generated-plugin"
+    return runtime_artifact_pipeline.synthesize_plugin_runtime(staged,claimed,parent),None
+
+
+def _prepare_wpcs(synthesized, requested, timeout_sec, _temp_root):
+    if not requested:
+        return None,{},[]
+    toolchain, reason = wp_security_gate.resolve_toolchain(PHP_TOOLS_ROOT)
+    provisioning = {"phpcs_wpcs_toolchain": {
+        "status": "pass" if toolchain else "blocked",
+        "root": str(PHP_TOOLS_ROOT),
+        "lockfile": str(PHP_TOOLS_ROOT / "composer.lock"),
+        "network": "not attempted during artifact validation",
+        "detail": reason,
+    }}
+    if toolchain is None:
+        gate={"status":"blocked","pass":False,"checks":[{
+            "id":"phpcs_wpcs","status":"blocked","required":True,
+            "detail": reason or "pinned WPCS toolchain is unavailable",
+        }]}
+        return gate,provisioning,[]
+    gate=validate_wordpress_artifact.validate_staged_artifact(
+        "plugin",synthesized.staged,
+        oracle_args(profile="static",require_tool=["wpcs"],
+                    timeout_sec=timeout_sec,wp_env_root=PHP_TOOLS_ROOT),
+        subpath=Path(synthesized.plugin_slug),_defer_retention=True,
+    )
+    return gate,provisioning,gate.pop("_artifact_retention_receipts", [])
+
+
+def _prepare_generated_runtime(
+    staged, artifact_kind, source_path, build_requested, phpunit_requested,
+    full_profile_requested, timeout_sec, parent, temp_root,
+):
+    output=None; synthesized=None; preparation_receipts=[]
     try:
-        if artifact_kind == "block" and build_requested:
-            build=runtime_artifact_pipeline.build_block(staged,timeout_sec); output=build.output; output_gate=None
-            preparation_receipts.extend(
-                runtime_artifact_pipeline.cleanup_receipt_from_staging("sandbox_output",receipt)
-                for receipt in build.staging_cleanup_receipts
-            )
-            if output is not None:
-                output_gate=validate_wordpress_artifact.validate_staged_artifact(
-                    "block",output,oracle_args(profile="static",require_tool=[],timeout_sec=timeout_sec,wp_env_root=None)
-                )
-                effective=output
-            build_gate=_generated_build_gate(build,output_gate)
-        if artifact_kind == "block":
-            synthesized=runtime_artifact_pipeline.synthesize_block_runtime(effective,parent)
-            wrapped=_wrapped_runtime(synthesized,effective)
-        else:
-            claimed=source_path.name if source_path is not None else "generated-plugin"
-            synthesized=runtime_artifact_pipeline.synthesize_plugin_runtime(staged,claimed,parent); wrapped=None
+        phpunit_gate,receipts=_prepare_phpunit(
+            staged,artifact_kind,phpunit_requested,timeout_sec,
+        ); preparation_receipts.extend(receipts)
+        effective,output,build_gate,receipts=_prepare_block_build(
+            staged,artifact_kind,build_requested,timeout_sec,
+        ); preparation_receipts.extend(receipts)
+        synthesized,wrapped=_synthesize_runtime(
+            staged,effective,artifact_kind,source_path,parent,
+        )
+        wpcs_gate,provisioning,receipts=_prepare_wpcs(
+            synthesized,full_profile_requested,timeout_sec,temp_root,
+        ); preparation_receipts.extend(receipts)
         return PreparedRuntimeArtifact(
-            synthesized,effective if artifact_kind=="block" else None,output,build_gate,wrapped,
+            synthesized,effective if artifact_kind=="block" else None,output,build_gate,phpunit_gate,
+            wpcs_gate,provisioning,wrapped,
             tuple(preparation_receipts),
         )
     except runtime_artifact_pipeline.RuntimePreparationError as exc:
@@ -1715,7 +1796,8 @@ def _preparation_failure_result(error, artifact_kind, temp_root, build_requested
         "status":"blocked","pass":False,"artifact_kind":artifact_kind,
         "runtime_root":str(temp_root),"fixture_root":str(temp_root),"fixture_retained":retained,
         "block_build_smoke_requested":build_requested,"block_build_smoke_status":"blocked" if build_requested else "not_run",
-        "phpunit_smoke_requested":phpunit_requested,"phpunit_smoke_status":"not_run",
+        "phpunit_smoke_requested":phpunit_requested,
+        "phpunit_smoke_status":"blocked" if phpunit_requested else "not_run",
         "checks":checks,"negative_space":list(BASE_NEGATIVE_SPACE),
         "_artifact_retention_receipts":list(error.receipts),
     }
@@ -1746,6 +1828,101 @@ def _release_prepared_runtime(prepared, hold_context, retain_synthesized):
     if prepared.sandbox_output is not None:
         receipts.append(runtime_artifact_pipeline.cleanup_component("sandbox_output", prepared.sandbox_output))
     return _merged_receipts(receipts)
+
+
+def _generated_runtime_unsupported(kwargs):
+    fields={
+        "ability_name":"ability-oracle",
+        "editor_smoke":"legacy-editor-oracle",
+        "editor_insert_render_smoke":"legacy-editor-oracle",
+        "interactivity_smoke":"legacy-editor-oracle",
+        "block_deprecation_smoke":"legacy-editor-oracle",
+        "mcp_adapter_smoke":"mcp-adapter",
+        "ai_client_smoke":"ai-client",
+    }
+    return sorted({label for field,label in fields.items() if kwargs.get(field)})
+
+
+def _blocked_isolated_result(detail,digest,receipts=(),requested=None):
+    requested=requested or {}
+    result={
+        "status":"blocked","pass":False,"reason":detail,"checks":[],
+        "artifact_kind":requested.get("artifact_kind","plugin"),
+        "input_artifact_digest":digest,"negative_space":[*BASE_NEGATIVE_SPACE,"isolated runtime not executed"],
+        "sandbox_posture":{"host_fallback":False,"generated_execution":"blocked"},
+        "block_build_smoke_requested":bool(requested.get("block_build_smoke")),
+        "phpunit_smoke_requested":bool(requested.get("phpunit_smoke")),
+        "_artifact_retention_receipts":list(receipts),
+    }
+    fields={"ability_name":"ability_smoke_status","editor_smoke":"editor_smoke_status",
+        "editor_insert_render_smoke":"editor_smoke_status","interactivity_smoke":"interactivity_smoke_status",
+        "block_deprecation_smoke":"block_deprecation_smoke_status","block_build_smoke":"block_build_smoke_status",
+        "phpunit_smoke":"phpunit_smoke_status","mcp_adapter_smoke":"mcp_adapter_smoke_status",
+        "ai_client_smoke":"ai_client_smoke_status"}
+    for field,status in fields.items():
+        if requested.get(field): result[status]="blocked"
+    if requested.get("block_deprecation_smoke"): result["editor_smoke_status"]="blocked"
+    return result
+
+
+def _isolated_result_payload(runtime,request,prepared,artifact_kind,kwargs,receipts):
+    expected_manifest=artifact_staging.manifest_sha256(prepared.synthesized.staged.manifest)
+    result=isolated_runtime_contract.adapt_runtime_result(
+        runtime,request,artifact_kind=artifact_kind,expected_manifest_digest=expected_manifest,
+        block_build_requested=bool(kwargs.get("block_build_smoke")),
+        block_build_gate=prepared.block_build_gate,
+        phpunit_requested=bool(kwargs.get("phpunit_smoke")),
+        phpunit_gate=prepared.phpunit_gate,
+        full_profile_requested=bool(
+            kwargs.get("provision_full_profile") or kwargs.get("strict_full_profile")
+        ),
+        wpcs_gate=prepared.wpcs_gate,
+        trusted_provisioning=prepared.trusted_provisioning,
+    )
+    result["_artifact_retention_receipts"]=list(receipts)
+    return result
+
+
+def _run_isolated_smoke_input(staged,evidence_id,kwargs):
+    digest=artifact_staging.digest_manifest_tree(staged.manifest)
+    expected=kwargs.get("expected_artifact_digest")
+    artifact_kind=kwargs.get("artifact_kind","plugin")
+    lease=create_ephemeral(kwargs.get("workdir"),WorkspacePurpose.RUNTIME); prepared=None; terminal=None
+    try:
+        prepared=_prepare_generated_runtime(
+            staged,artifact_kind,kwargs.get("artifact_source_path"),
+            kwargs.get("block_build_smoke",False),kwargs.get("phpunit_smoke",False),
+            kwargs.get("provision_full_profile",False) or kwargs.get("strict_full_profile",False),
+            kwargs["timeout_sec"],lease.root.parent,lease.root/"trusted-wpcs",
+        )
+        unsupported=_generated_runtime_unsupported(kwargs)
+        if unsupported: raise ValueError("unpinned optional runtime support is blocked: "+", ".join(unsupported))
+        if expected != digest: raise ValueError("generated runtime requires the exact Plan 008 artifact digest")
+        if not evidence_id: raise ValueError("generated runtime requires the Plan 008 evidence ID")
+        build_status=(prepared.block_build_gate or {}).get("status")
+        if kwargs.get("block_build_smoke") and build_status != "pass":
+            terminal=isolated_runtime_contract.stopped_build_result(
+                artifact_kind=artifact_kind,digest=digest,gate=prepared.block_build_gate or {},
+                receipts=[],phpunit_requested=bool(kwargs.get("phpunit_smoke")),
+            )
+            runtime=request=None
+        else:
+            request=RuntimeRequest(prepared.synthesized.staged,prepared.synthesized.plugin_slug,evidence_id,
+                digest,expected,kwargs["timeout_sec"],lease.root.parent)
+            runtime=wp_env_network_guard.run_staged_runtime(request)
+            if not isinstance(runtime,RuntimeResult): raise TypeError("isolated runtime returned an invalid result")
+    except runtime_artifact_pipeline.RuntimePreparationError as exc:
+        cleanup_workspace(lease,repository_root=ROOT)
+        return _preparation_failure_result(exc,artifact_kind,lease.root,
+            kwargs.get("block_build_smoke",False),kwargs.get("phpunit_smoke",False),False)
+    except (TypeError,ValueError,RuntimeError,OSError) as exc:
+        runtime=None; detail=f"{type(exc).__name__}: {exc}"
+    receipts=_release_prepared_runtime(prepared,None,False)
+    if terminal is not None: terminal["_artifact_retention_receipts"]=list(receipts)
+    try: cleanup_workspace(lease,repository_root=ROOT)
+    except WorkspaceCleanupError as exc: return _blocked_isolated_result(f"runtime workspace cleanup: {exc}",digest,receipts,kwargs)
+    if terminal is not None: return terminal
+    return _isolated_result_payload(runtime,request,prepared,artifact_kind,kwargs,receipts) if runtime else _blocked_isolated_result(detail,digest,receipts,kwargs)
 
 
 def _required_status(value: str) -> str:
@@ -1858,7 +2035,8 @@ def run_smoke(
         if staged_artifact is not None:
             stage_parent = lease.caller_parent or temp_root.parent
             prepared_artifact = _prepare_generated_runtime(
-                staged_artifact, artifact_kind, artifact_source_path, block_build_smoke, timeout_sec, stage_parent
+                staged_artifact, artifact_kind, artifact_source_path, block_build_smoke,
+                phpunit_smoke, timeout_sec, stage_parent
             )
             prepared_hold_context = artifact_staging.hold_staged_tree(prepared_artifact.synthesized.staged)
             prepared_hold = prepared_hold_context.__enter__()
@@ -2005,16 +2183,17 @@ def run_smoke(
             )
 
         if provision_full_profile:
-            composer = shutil.which("composer")
-            if composer:
-                write_wpcs_composer_file(temp_root, plugin_dir.name)
-                provisioning["composer_install"] = run_command(
-                    [composer, "install", "--no-interaction", "--no-progress", "--quiet"],
-                    temp_root,
-                    timeout_sec,
+            toolchain, reason = wp_security_gate.resolve_toolchain(PHP_TOOLS_ROOT)
+            if toolchain:
+                provisioning["phpcs_wpcs_toolchain"] = run_command(
+                    [toolchain.php, str(toolchain.phpcs), "--runtime-set", "installed_paths",
+                     toolchain.installed_paths, "-i"],
+                    PHP_TOOLS_ROOT, timeout_sec,
                 )
             else:
-                provisioning["composer_install"] = missing_command("composer", temp_root)
+                provisioning["phpcs_wpcs_toolchain"] = missing_command(
+                    reason or "pinned WPCS toolchain", PHP_TOOLS_ROOT,
+                )
 
         build_ready = not block_build_smoke or gate_status(block_build_gate) == "pass"
         if npx and build_ready:
@@ -2590,6 +2769,7 @@ def main(argv: list[str] | None = None) -> int:
         artifact_path=Path(args.artifact_path) if args.artifact_path else None,
         artifact_kind=args.artifact_kind,
         expected_artifact_digest=expected_artifact_digest,
+        evidence_id=args.evidence_id,
         keep_artifacts=args.keep_artifacts,
         keep_running=args.keep_running,
         provision_full_profile=args.provision_full_profile,

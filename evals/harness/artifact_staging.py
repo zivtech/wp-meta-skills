@@ -70,6 +70,20 @@ class BoundedArchiveReader:
         if self.total>self.limit: raise ValueError("archive stream exceeds transport bound")
         return data
 
+class _BoundedArchiveWriter:
+    def __init__(self,stream:BinaryIO): self.stream=stream; self.total=0
+    def write(self,data:bytes):
+        self.total+=len(data)
+        if self.total>MAX_ARCHIVE_STREAM_BYTES: raise ValueError("archive stream exceeds transport bound")
+        return self.stream.write(data)
+
+class _ProofFileReader:
+    def __init__(self,fd:int,budget): self.fd=fd; self.budget=budget; self.digest=hashlib.sha256(); self.total=0
+    def read(self,size:int=-1):
+        data=os.read(self.fd,65536 if size<0 else min(size,65536))
+        if data: self.budget.check(); self.budget.charge("artifact",byte_count=len(data)); self.digest.update(data); self.total+=len(data)
+        return data
+
 def manifest_sha256(manifest)->str:
     items=tuple(manifest)
     if any(not isinstance(item,ManifestEntry) for item in items): raise TypeError("manifest contains an invalid entry")
@@ -358,18 +372,18 @@ def _proof_from_fd(root_fd:int,budget):
     import sandbox_source_proof
     return sandbox_source_proof.prove_artifact(root_fd,budget)
 
-def _new_proof_budget():
+def _new_proof_budget(deadline:float|None=None):
     import sandbox_source_proof
-    return sandbox_source_proof.ProofBudget()
+    return sandbox_source_proof.ProofBudget(deadline=deadline)
 
 def _root_matches_proof(root_fd:int,proof)->bool:
     info=os.fstat(root_fd); identity=proof.root
     return (info.st_dev,info.st_ino,stat.S_IMODE(info.st_mode),info.st_uid,info.st_gid)==(identity.device,identity.inode,identity.mode,identity.uid,identity.gid)
 
 @contextmanager
-def hold_staged_tree(staged:StagedTree):
+def hold_staged_tree(staged:StagedTree,*,proof_deadline:float|None=None):
     _require_authentic_staged(staged)
-    lease_fd=_verified_lease_fd(staged.lease); root_fd=None; budget=_new_proof_budget()
+    lease_fd=_verified_lease_fd(staged.lease); root_fd=None; budget=_new_proof_budget(proof_deadline)
     try:
         root_fd=os.open("artifact",os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=lease_fd)
         proof=_proof_from_fd(root_fd,budget)
@@ -399,6 +413,50 @@ def snapshot_held_tree(held:HeldStagedTree):
     same_graph=tuple(sorted(state.kinds.items()))==held.proof.path_kinds
     if not same_manifest or not same_graph or state.total[0]!=held.proof.total_bytes or len(state.kinds)!=held.proof.entries: raise ValueError("held staged tree changed during snapshot")
     return state.results
+
+def _open_held_member(root_fd:int,path:str,directory:bool)->int:
+    fd=os.dup(root_fd)
+    try:
+        parts=PurePosixPath(path).parts
+        for index,part in enumerate(parts):
+            final=index==len(parts)-1
+            flags=os.O_RDONLY|os.O_NOFOLLOW
+            if directory or not final: flags|=os.O_DIRECTORY
+            child=os.open(part,flags,dir_fd=fd); os.close(fd); fd=child
+        return fd
+    except Exception: os.close(fd); raise
+
+def _tar_info(path:str,kind:str,size:int=0)->tarfile.TarInfo:
+    item=tarfile.TarInfo(path); item.uid=0; item.gid=0; item.uname=""; item.gname=""; item.mtime=0
+    item.mode=0o555 if kind=="directory" else 0o444; item.size=size
+    if kind=="directory": item.type=tarfile.DIRTYPE
+    return item
+
+def write_held_tar(held:HeldStagedTree,stream:BinaryIO)->tuple[ManifestEntry,...]:
+    """Stream a deterministic tar from a held capability with bounded memory."""
+    _require_held(held); held.proof_budget.begin("artifact"); expected={item.path:item for item in held.proof.manifest}
+    observed=[]; bounded=_BoundedArchiveWriter(stream)
+    with tarfile.open(fileobj=bounded,mode="w|") as archive:
+        for path,kind in held.proof.path_kinds:
+            held.proof_budget.check(); held.proof_budget.charge("artifact",entries=1)
+            member=_open_held_member(held.root_fd,path,kind=="directory")
+            try:
+                before=os.fstat(member)
+                if kind=="directory":
+                    if not stat.S_ISDIR(before.st_mode): raise ValueError("held artifact path kind drift")
+                    archive.addfile(_tar_info(path,kind)); continue
+                wanted=expected.get(path)
+                if wanted is None or not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_size!=wanted.size:
+                    raise ValueError("held artifact file identity drift")
+                reader=_ProofFileReader(member,held.proof_budget); archive.addfile(_tar_info(path,kind,wanted.size),reader)
+                after=os.fstat(member)
+                if (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns):
+                    raise ValueError("held artifact changed while streaming")
+                actual=ManifestEntry(path,wanted.mode_class,reader.total,reader.digest.hexdigest()); observed.append(actual)
+            finally: os.close(member)
+    result=tuple(sorted(observed,key=lambda item:item.path))
+    if result!=held.proof.manifest: raise ValueError("held artifact tar manifest drift")
+    return result
 
 def stage_held_tree(held:HeldStagedTree,parent:Path|None=None)->StagedTree:
     return _stage_snapshot(snapshot_held_tree(held),parent,StageRole.CALLER_INPUT,None,False)

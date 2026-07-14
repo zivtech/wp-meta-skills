@@ -3,6 +3,9 @@ from pathlib import Path
 import pytest
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
 import runtime_image_provision as provision
+import wp_runtime_provisioning as runtime_provisioning
+import wp_runtime_evidence
+from wp_runtime_evidence import scrub_tail
 
 def capture_processes(monkeypatch):
     processes=[]; real_popen=provision.subprocess.Popen
@@ -25,6 +28,18 @@ def test_inventory_is_digest_pinned_and_complete():
 def test_core_pin_is_exact():
     core=provision.inventory()["wordpress_core"]
     assert core == {"version":"7.0.1","url":"https://wordpress.org/wordpress-7.0.1.tar.gz","sha256":"dc10592da9b580c7525632850e0cced371b13081853ac29afe93b5d5bb00db98"}
+
+
+def test_plugin_check_pin_is_exact_and_copied_before_generated_artifact():
+    item=provision.inventory()["plugin_check"]
+    assert item=={
+        "version":"2.0.0","url":"https://downloads.wordpress.org/plugin/plugin-check.2.0.0.zip",
+        "sha256":"d744ee1f93866527aedf7d0a73df40bd87018f02cd5465fa39230bf4c2b3a3fa",
+        "license":"GPL-2.0-or-later",
+    }
+    dockerfile=(HARNESS/"runtime-images/wordpress/Dockerfile").read_text(encoding="utf-8")
+    assert "PLUGIN_CHECK_SHA256" in dockerfile
+    assert "/var/www/html/wp-content/plugins/plugin-check" in dockerfile
 
 def test_build_input_hashes_match_committed_sources():
     for relative, expected in provision.inventory()["build_inputs"].items():
@@ -156,3 +171,50 @@ def test_fixture_locks_are_exact_and_composer_is_dist_only():
             assert package["dist"]["url"].startswith("https://")
             assert package["dist"]["reference"]
             assert package.get("type") != "composer-plugin"
+
+
+def test_runtime_image_cleanup_proves_every_tag_absent(monkeypatch):
+    commands=[]
+    def run(command,**_kwargs):
+        commands.append(command)
+        if command[1:3]==["image","inspect"]:
+            return {"returncode":1,"stdout":"","stderr":"Error: No such image"}
+        return {"returncode":0,"stdout":"","stderr":""}
+    monkeypatch.setattr(runtime_provisioning.provision,"run_capped",run)
+    result=runtime_provisioning._cleanup_image_tags(("one:tag","two:tag"))
+    assert result["state"]=="removed" and result["remaining"]==[]
+    assert [command[-1] for command in commands if command[1:3]==["image","inspect"]]==["one:tag","two:tag"]
+
+
+def test_runtime_image_cleanup_retains_unknown_or_present_tags(monkeypatch):
+    def run(command,**_kwargs):
+        if command[-1]=="unknown:tag": raise RuntimeError("daemon unavailable")
+        if command[1:3]==["image","inspect"]:
+            return {"returncode":0,"stdout":"sha256:present","stderr":""}
+        return {"returncode":1,"stdout":"","stderr":"remove failed"}
+    monkeypatch.setattr(runtime_provisioning.provision,"run_capped",run)
+    result=runtime_provisioning._cleanup_image_tags(("present:tag","unknown:tag"))
+    assert result["state"]=="retained"
+    assert result["remaining"]==["present:tag","unknown:tag"]
+    assert result["recovery"]==[
+        "docker image rm -f present:tag","docker image rm -f unknown:tag",
+    ]
+
+
+def test_runtime_diagnostics_scrub_quoted_and_unquoted_credentials():
+    value='{"token":"secret-value","password": "another"} api_key=third'
+    scrubbed=scrub_tail(value)
+    assert "secret-value" not in scrubbed and "another" not in scrubbed and "third" not in scrubbed
+    assert scrubbed.count("[REDACTED]")==3
+
+
+def test_runtime_cleanup_uses_a_separate_bounded_deadline(monkeypatch):
+    now=[100.0]
+    monkeypatch.setattr(wp_runtime_evidence.time,"monotonic",lambda:now[0])
+    deadline=wp_runtime_evidence.RuntimeDeadline.start(30)
+    now[0]=131.0
+    with pytest.raises(TimeoutError): deadline.remaining(1)
+    deadline.begin_cleanup()
+    assert deadline.remaining(500,cleanup=True)==180.0
+    now[0]=312.0
+    with pytest.raises(TimeoutError): deadline.remaining(1,cleanup=True)

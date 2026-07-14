@@ -47,6 +47,10 @@ python3 scripts/validate-eval-suite-integrity.py \
 python3 -m pytest \
   evals/harness/tests/test_invoke_claude_command.py \
   evals/harness/tests/test_workspace_lease.py \
+  evals/harness/tests/test_runtime_image_provision.py \
+  evals/harness/tests/test_wp_env_network_guard.py \
+  evals/harness/tests/test_isolated_runtime_contract.py \
+  evals/harness/tests/test_wp_staged_runtime.py \
   evals/harness/tests/test_executor_repair_loop.py \
   evals/harness/tests/test_wordpress_runtime_smoke.py \
   evals/harness/tests/test_wordpress_artifact_oracle.py \
@@ -63,7 +67,7 @@ python3 -m pytest \
   evals/harness/tests/test_wordpress_candidate_pilot_generation.py \
   evals/harness/tests/test_wp_api_lint.py \
   evals/harness/tests/test_wp_security_gate.py \
-  -q
+  -m 'not docker_boundary' -q
 ```
 
 ## Reuse And Provenance
@@ -74,7 +78,7 @@ adapted section, and rationale in the reuse ledger before it lands.
 
 When in doubt, keep the production skill text clean-room and cite the upstream
 project as a comparator rather than importing its wording.
-# Sandbox inventory updates
+## Sandbox inventory updates
 
 Plan 009 runtime inputs are reviewed in `evals/harness/container-images.json`.
 An update must record the immutable OCI index digest, linux/amd64 and
@@ -87,3 +91,26 @@ results, and generated lock synthesis are not acceptable substitutes. The job
 requires at least 20 GiB free, permits at most a conservative 12 GiB post-run
 delta (leaving an 8 GiB reserve), and has a hard 30-minute timeout. A budget
 failure blocks the checkpoint.
+
+The generated-code runtime uses the same inventory but has a separate required
+Linux gate:
+
+```bash
+python3 -m pytest \
+  evals/harness/tests/test_wp_staged_runtime.py \
+  -m docker_boundary -q
+```
+
+That gate never receives Actions secrets. It builds from the recorded platform
+digests and committed build-input hashes, then proves generated PHP and browser
+JavaScript inside the repository-owned isolated topology. Do not substitute a
+host `wp-env`, host browser, Docker Desktop result, mutable image tag, or cached
+local image for this gate.
+
+The acquisition proxy allowlist is limited to the reviewed npm and Composer
+registry endpoints represented by the committed locks. The final generated-code
+runtime has no public acquisition route: the browser can reach only the exact
+WordPress gateway origin, WordPress and CLI can reach only the database peer,
+and the database has no application-facing peer beyond that backend network.
+Widening either allowlist is a security change requiring inventory review,
+hostile-route canaries, both test profiles, and a new hosted Linux proof.

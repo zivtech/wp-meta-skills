@@ -28,6 +28,7 @@ gitignored and fetched by each environment (2026-07-02).
 | php-stubs/wordpress-stubs | 7.0.0 | MIT | Fetched dependency; loaded by PHPStan as scan files |
 | johnbillion/wp-compat | 1.5.0 | MIT | Fetched dependency; PHPStan rule set plus `symbols.json` used for did-you-mean suggestions |
 | wp-hooks/wordpress-core | 1.12.0 | GPL-3.0 | Transitive dependency of wp-compat, consumed inside the fetched `vendor/` tree at analysis time — by wp-compat's PHPStan rules and (since the 2026-07-02 phase-2 merge) by the lint's hooks engine, which reads `vendor/wp-hooks/wordpress-core/hooks/*.json` directly at run time. Update 2026-07-03: the repository relicensed to GPL-3.0, so committing a hooks snapshot is now license-compatible if ever wanted (with a ledger entry); the vendor-side consumption remains the current implementation. |
+| playwright | 1.58.0 | Apache-2.0 | Locked by `runtime-images/browser/package-lock.json`; installed while the trusted browser image is built and executed only in the final mount-free browser service |
 
 ## Committed Data Extraction Entries
 
@@ -56,3 +57,13 @@ The no-secrets Linux job installs Pytest 8.4.2 from PyPI without a credentialed
 cache; Pytest is MIT-licensed. The boundary job uses no actions or helper
 images: it fetches the exact public `$GITHUB_SHA` over HTTPS without credentials
 and uses the GitHub-hosted runner's Python and Docker installations.
+
+The final generated-code runtime additionally derives three local images from
+the immutable WordPress 7.0.1, MariaDB 11.8.5, and Playwright 1.58.0 platform
+digests. Its WordPress build consumes the separately hashed WordPress core,
+WP-CLI 2.12.0, and Plugin Check 2.0.0 inputs. The committed browser runner uses
+the npm lock above; generated package dependencies are never copied into that
+runner. Derived image tags are run-scoped handles, not provenance, and are
+deleted after evidence collection. No upstream source or prompt prose is
+vendored by these build inputs beyond the recorded archives and fetched locked
+dependencies under their stated licenses.

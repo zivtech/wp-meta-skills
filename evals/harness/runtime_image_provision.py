@@ -19,23 +19,27 @@ def platform_digest(item, machine):
     key = normalize_arch(machine)
     return item[key]
 
-def download_core(destination):
-    core=inventory()["wordpress_core"]
-    digest=hashlib.sha256(); total=0; maximum=64*1024*1024
+def download_pinned(item,destination,*,timeout=60,maximum=64*1024*1024):
+    digest=hashlib.sha256(); total=0
     try:
-        with urllib.request.urlopen(core["url"], timeout=60) as response, destination.open("xb") as out:
+        deadline=time.monotonic()+timeout
+        with urllib.request.urlopen(item["url"], timeout=timeout) as response, destination.open("xb") as out:
             length=response.headers.get("Content-Length")
-            if length and int(length)>maximum: raise RuntimeError("WordPress core archive exceeds byte limit")
+            if length and int(length)>maximum: raise RuntimeError("reviewed download exceeds byte limit")
             while chunk := response.read(1024*1024):
+                if time.monotonic()>deadline: raise TimeoutError("reviewed download deadline exceeded")
                 total+=len(chunk)
-                if total>maximum: raise RuntimeError("WordPress core archive exceeds byte limit")
+                if total>maximum: raise RuntimeError("reviewed download exceeds byte limit")
                 digest.update(chunk); out.write(chunk)
     except Exception:
         destination.unlink(missing_ok=True); raise
     actual=digest.hexdigest()
-    if actual != core["sha256"]:
-        destination.unlink(missing_ok=True); raise RuntimeError("WordPress core SHA-256 mismatch")
+    if actual != item["sha256"]:
+        destination.unlink(missing_ok=True); raise RuntimeError("reviewed download SHA-256 mismatch")
     return actual
+
+def download_core(destination,timeout=60):
+    return download_pinned(inventory()["wordpress_core"],destination,timeout=timeout)
 
 def _group_alive(pid):
     try: os.killpg(pid,0); return True
@@ -122,8 +126,8 @@ def _cleanup(process,streams,threads,stop):
     errors.extend(_finalize_streams(streams,threads,raw_closed))
     return errors
 
-def run_capped(command, *, cwd=None, limit=131072, timeout=300):
-    process=subprocess.Popen(command,cwd=cwd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env={"PATH":"/usr/bin:/bin"},start_new_session=True)
+def run_capped(command, *, cwd=None, limit=131072, timeout=300, stdin=None):
+    process=subprocess.Popen(command,cwd=cwd,stdin=stdin,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env={"PATH":"/usr/bin:/bin"},start_new_session=True)
     events=queue.Queue(maxsize=32); chunks={"stdout":[],"stderr":[]}; sizes={"stdout":0,"stderr":0}; stop=threading.Event(); threads=[]; original=None
     deadline=time.monotonic()+timeout; streams=(process.stdout,process.stderr)
     try:
