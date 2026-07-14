@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import errno
 import ipaddress
 import json
 import os
@@ -67,7 +68,7 @@ class ProxyLimits:
     tunnel_bytes: int = 256 * 1024 * 1024
     acquisition_bytes: int = 256 * 1024 * 1024
     duration: int = 300
-    idle: int = 60
+    idle: int = 10
     dns_timeout: int = 5
 
 
@@ -314,11 +315,25 @@ def _read_connect_header(client, timeout=10):
     return bytes(data[:end]), bytes(data[end:])
 
 
+EXPECTED_SHUTDOWN_ERRNOS = frozenset(
+    {errno.ENOTCONN, errno.EPIPE, errno.ECONNRESET, errno.ESHUTDOWN}
+)
+
+
+def _shutdown_write(target):
+    try:
+        target.shutdown(socket.SHUT_WR)
+    except OSError as exc:
+        if exc.errno not in EXPECTED_SHUTDOWN_ERRNOS:
+            raise
+
+
 def _relay(client, upstream, limits, budget, initial_client_bytes=0):
     selector = selectors.DefaultSelector()
     selector.register(client, selectors.EVENT_READ, (upstream, "client"))
     selector.register(upstream, selectors.EVENT_READ, (client, "upstream"))
     counts = {"client": initial_client_bytes, "upstream": 0}
+    readers = 2
     started = last_activity = time.monotonic()
     try:
         while True:
@@ -332,16 +347,30 @@ def _relay(client, upstream, limits, budget, initial_client_bytes=0):
                 target, direction = key.data
                 chunk = key.fileobj.recv(65536)
                 if not chunk:
-                    return counts
+                    selector.unregister(key.fileobj)
+                    _shutdown_write(target)
+                    readers -= 1
+                    if readers == 0:
+                        return counts
+                    continue
                 counts[direction] += len(chunk)
                 if counts[direction] > limits.direction_bytes or sum(counts.values()) > limits.tunnel_bytes:
                     raise ValueError("CONNECT tunnel byte limit exceeded")
                 budget.charge(len(chunk))
-                remaining = limits.duration - (time.monotonic() - started)
-                if remaining <= 0:
+                now = time.monotonic()
+                duration_remaining = limits.duration - (now - started)
+                idle_remaining = limits.idle - (now - last_activity)
+                if duration_remaining <= 0:
                     raise TimeoutError("CONNECT tunnel duration exceeded")
-                target.settimeout(max(0.001, min(limits.idle, remaining)))
-                target.sendall(chunk)
+                if idle_remaining <= 0:
+                    raise TimeoutError("CONNECT tunnel idle limit exceeded")
+                target.settimeout(min(duration_remaining, idle_remaining))
+                try:
+                    target.sendall(chunk)
+                except TimeoutError as exc:
+                    if idle_remaining <= duration_remaining:
+                        raise TimeoutError("CONNECT tunnel idle limit exceeded") from exc
+                    raise TimeoutError("CONNECT tunnel duration exceeded") from exc
                 last_activity = time.monotonic()
     finally:
         selector.close()

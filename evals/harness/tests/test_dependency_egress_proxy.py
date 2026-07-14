@@ -1,12 +1,12 @@
-import json, os, signal, socket, stat, subprocess, sys, threading
+import errno, json, os, signal, socket, stat, subprocess, sys, threading, time
 from pathlib import Path
 import pytest
 HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
 import dependency_egress_proxy as proxy
 
-def test_production_limits_preserve_concurrency_duration_and_extended_idle():
+def test_production_limits_preserve_concurrency_duration_and_bounded_idle():
     limits=proxy.ProxyLimits()
-    assert (limits.connections,limits.duration,limits.idle)==(8,300,60)
+    assert (limits.connections,limits.duration,limits.idle)==(8,300,10)
 
 def test_actual_reviewed_locks_validate():
     locks=HARNESS/"approved-locks"
@@ -126,6 +126,123 @@ def test_relay_enforces_independent_direction_and_idle_limits():
     assert errors and "idle" in str(errors[0])
     for item in (client,client_peer,upstream,upstream_peer): item.close()
 
+def _relay_fixture(limits=None,budget=None):
+    client,client_peer=socket.socketpair(); upstream,upstream_peer=socket.socketpair(); errors=[]; results=[]
+    client_peer.settimeout(2); upstream_peer.settimeout(2)
+    limits=limits or proxy.ProxyLimits(duration=2,idle=1)
+    budget=budget or proxy.AcquisitionByteBudget(limits.acquisition_bytes)
+    thread=threading.Thread(target=lambda:_capture_result(errors,results,proxy._relay,client,upstream,limits,budget),daemon=True); thread.start()
+    return client,client_peer,upstream,upstream_peer,thread,errors,results
+
+def _recv_exact(sock,size,timeout=2):
+    previous=sock.gettimeout(); deadline=time.monotonic()+timeout; data=bytearray()
+    try:
+        while len(data)<size:
+            remaining=deadline-time.monotonic()
+            if remaining<=0: raise TimeoutError("exact socket read deadline exceeded")
+            sock.settimeout(remaining); chunk=sock.recv(size-len(data))
+            if not chunk: raise AssertionError("socket reached EOF before exact read completed")
+            data.extend(chunk)
+        return bytes(data)
+    finally: sock.settimeout(previous)
+
+def _capture_result(errors,results,function,*args):
+    try: results.append(function(*args))
+    except Exception as exc: errors.append(exc)
+
+def test_relay_client_half_close_preserves_late_upstream_response_until_both_eof():
+    client,client_peer,upstream,upstream_peer,thread,errors,results=_relay_fixture()
+    client_peer.sendall(b"request"); client_peer.shutdown(socket.SHUT_WR)
+    assert _recv_exact(upstream_peer,7)==b"request" and upstream_peer.recv(1)==b""
+    assert thread.is_alive()
+    upstream_peer.sendall(b"late-response"); upstream_peer.shutdown(socket.SHUT_WR)
+    assert _recv_exact(client_peer,13)==b"late-response" and client_peer.recv(1)==b""
+    thread.join(1); assert not thread.is_alive() and not errors
+    assert results==[{"client":7,"upstream":13}]
+    for item in (client,client_peer,upstream,upstream_peer): item.close()
+
+def test_relay_upstream_half_close_preserves_late_client_data_until_both_eof():
+    client,client_peer,upstream,upstream_peer,thread,errors,results=_relay_fixture()
+    upstream_peer.sendall(b"response"); upstream_peer.shutdown(socket.SHUT_WR)
+    assert _recv_exact(client_peer,8)==b"response" and client_peer.recv(1)==b""
+    assert thread.is_alive()
+    client_peer.sendall(b"late-request"); client_peer.shutdown(socket.SHUT_WR)
+    assert _recv_exact(upstream_peer,12)==b"late-request" and upstream_peer.recv(1)==b""
+    thread.join(1); assert not thread.is_alive() and not errors
+    assert results==[{"client":12,"upstream":8}]
+    for item in (client,client_peer,upstream,upstream_peer): item.close()
+
+@pytest.mark.parametrize(("limits","budget","payload","message"),[
+    (proxy.ProxyLimits(duration=1,idle=0.05),proxy.AcquisitionByteBudget(20),None,"idle"),
+    (proxy.ProxyLimits(direction_bytes=3,tunnel_bytes=20,duration=1,idle=0.5),proxy.AcquisitionByteBudget(20),b"four","byte limit"),
+    (proxy.ProxyLimits(direction_bytes=20,tunnel_bytes=3,duration=1,idle=0.5),proxy.AcquisitionByteBudget(20),b"four","byte limit"),
+    (proxy.ProxyLimits(direction_bytes=20,tunnel_bytes=20,duration=1,idle=0.5),proxy.AcquisitionByteBudget(3),b"four","acquisition-wide"),
+])
+def test_relay_limits_remain_enforced_after_client_half_close(limits,budget,payload,message):
+    client,client_peer,upstream,upstream_peer,thread,errors,results=_relay_fixture(limits,budget)
+    client_peer.shutdown(socket.SHUT_WR); assert upstream_peer.recv(1)==b""
+    if payload is not None: upstream_peer.sendall(payload)
+    thread.join(1); assert not thread.is_alive() and not results
+    assert errors and message in str(errors[0])
+    for item in (client,client_peer,upstream,upstream_peer): item.close()
+
+def test_relay_duration_remains_enforced_after_upstream_half_close():
+    limits=proxy.ProxyLimits(duration=0.05,idle=0.5); budget=proxy.AcquisitionByteBudget(20)
+    client,client_peer,upstream,upstream_peer,thread,errors,results=_relay_fixture(limits,budget)
+    upstream_peer.shutdown(socket.SHUT_WR); assert client_peer.recv(1)==b""
+    thread.join(0.5); assert not thread.is_alive() and not results
+    assert errors and "duration" in str(errors[0])
+    for item in (client,client_peer,upstream,upstream_peer): item.close()
+
+def test_relay_unregisters_eof_readers_instead_of_spinning(monkeypatch):
+    factory=proxy.selectors.DefaultSelector; unregistered=[]; selected=[]; first=threading.Event()
+    class TrackingSelector:
+        def __init__(self): self.inner=factory()
+        def register(self,*args): return self.inner.register(*args)
+        def unregister(self,fileobj):
+            unregistered.append(fileobj); first.set(); return self.inner.unregister(fileobj)
+        def select(self,*args): selected.append(True); return self.inner.select(*args)
+        def close(self): return self.inner.close()
+    monkeypatch.setattr(proxy.selectors,"DefaultSelector",TrackingSelector)
+    client,client_peer,upstream,upstream_peer,thread,errors,results=_relay_fixture()
+    client_peer.shutdown(socket.SHUT_WR); assert first.wait(0.5)
+    assert unregistered==[client] and thread.is_alive()
+    observed=len(selected); time.sleep(0.05); assert len(selected)<=observed+1
+    upstream_peer.shutdown(socket.SHUT_WR); thread.join(1)
+    assert unregistered==[client,upstream] and not errors and results==[{"client":0,"upstream":0}]
+    for item in (client,client_peer,upstream,upstream_peer): item.close()
+
+def test_relay_half_close_backpressure_is_bounded_by_named_idle_timeout():
+    client,client_peer=socket.socketpair(); upstream,upstream_peer=socket.socketpair(); errors=[]
+    client.setsockopt(socket.SOL_SOCKET,socket.SO_SNDBUF,1024)
+    client_peer.setsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF,1024); client_peer.settimeout(2)
+    limits=proxy.ProxyLimits(direction_bytes=8*1024**2,tunnel_bytes=8*1024**2,acquisition_bytes=8*1024**2,duration=2,idle=0.4)
+    budget=proxy.AcquisitionByteBudget(limits.acquisition_bytes)
+    started=time.monotonic()
+    relay=threading.Thread(target=lambda:_capture_error(errors,proxy._relay,client,upstream,limits,budget)); relay.start()
+    client_peer.shutdown(socket.SHUT_WR); assert upstream_peer.recv(1)==b""
+    time.sleep(0.25)
+    def flood():
+        try: upstream_peer.sendall(b"x"*(4*1024**2)); upstream_peer.shutdown(socket.SHUT_WR)
+        except OSError: pass
+    sender=threading.Thread(target=flood); sender.start(); relay.join(1)
+    elapsed=time.monotonic()-started
+    try:
+        assert not relay.is_alive() and elapsed<=limits.idle+0.15
+        assert errors and str(errors[0])=="CONNECT tunnel idle limit exceeded"
+    finally:
+        for item in (client,client_peer,upstream,upstream_peer): item.close()
+        sender.join(2)
+    assert not sender.is_alive()
+
+def test_relay_shutdown_only_tolerates_expected_socket_errors(monkeypatch):
+    class Target:
+        def shutdown(self,_operation): raise OSError(9,"unexpected")
+    with pytest.raises(OSError,match="unexpected"): proxy._shutdown_write(Target())
+    for code in (errno.ENOTCONN,errno.EPIPE,errno.ECONNRESET,errno.ESHUTDOWN):
+        monkeypatch.setattr(Target,"shutdown",lambda _self,_operation,code=code:(_ for _ in ()).throw(OSError(code,"expected")))
+        proxy._shutdown_write(Target())
+
 def _capture_error(errors,function,*args):
     try: function(*args)
     except Exception as exc: errors.append(exc)
@@ -157,7 +274,9 @@ def test_acquisition_budget_is_shared_across_sequential_tunnels():
     budget=proxy.AcquisitionByteBudget(6); limits=proxy.ProxyLimits(direction_bytes=10,tunnel_bytes=20,duration=2,idle=1)
     first,first_peer=socket.socketpair(); upstream,upstream_peer=socket.socketpair(); errors=[]
     thread=threading.Thread(target=lambda:_capture_error(errors,proxy._relay,first,upstream,limits,budget),daemon=True); thread.start()
-    first_peer.sendall(b"four"); assert upstream_peer.recv(4)==b"four"; first_peer.shutdown(socket.SHUT_WR); thread.join(2)
+    first_peer.sendall(b"four"); assert _recv_exact(upstream_peer,4)==b"four"
+    first_peer.shutdown(socket.SHUT_WR); upstream_peer.shutdown(socket.SHUT_WR); thread.join(2)
+    assert not thread.is_alive() and not errors and budget.used==4
     for item in (first,first_peer,upstream,upstream_peer): item.close()
     second,second_peer=socket.socketpair(); upstream,upstream_peer=socket.socketpair(); upstream_peer.settimeout(0.1)
     thread=threading.Thread(target=lambda:_capture_error(errors,proxy._relay,second,upstream,limits,budget),daemon=True); thread.start()
