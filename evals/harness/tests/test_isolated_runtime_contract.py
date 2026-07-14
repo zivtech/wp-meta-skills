@@ -17,9 +17,9 @@ from wp_runtime_types import RuntimeResult
 DIGEST = "a" * 64
 MANIFEST = "b" * 64
 CHECKS = (
-    {"id": "wp_cli_activation", "status": "pass", "required": True},
-    {"id": "plugin_check", "status": "pass", "required": True},
-    {"id": "container_browser", "status": "pass", "required": True},
+    {"id": "wp_cli_activation", "status": "pass", "required": True, "duration_sec": 0.1},
+    {"id": "plugin_check", "status": "pass", "required": True, "duration_sec": 0.2},
+    {"id": "container_browser", "status": "pass", "required": True, "duration_sec": 0.3},
 )
 PERSISTED_CHECKS = (*CHECKS, {"id": "runtime_identity", "status": "pass", "required": True})
 
@@ -127,7 +127,7 @@ def _persisted():
         "artifact_kind": "plugin", "input_artifact_digest": DIGEST,
         "runtime_pre_command_manifest_digest": MANIFEST,
         "post_command_manifest_digest": MANIFEST, "status": "pass", "pass": True,
-        "checks": list(PERSISTED_CHECKS),
+        "checks": [dict(check) for check in PERSISTED_CHECKS],
         "provision_full_profile": True, "strict_full_profile": True,
         "full_plugin_runtime_profile": {"status": "pass", "pass": True, "checks": [
             {"id": "phpcs_wpcs", "status": "pass", "required": True},
@@ -173,9 +173,23 @@ def test_producer_and_persisted_consumer_reject_check_inventory_drift():
     assert "runtime check inventory mismatch" in contract.persisted_runtime_errors(data, **expected)
 
 
+def test_producer_adapter_and_consumer_require_finite_nonnegative_durations():
+    missing = tuple({key: value for key, value in check.items() if key != "duration_sec"}
+                    for check in CHECKS)
+    with pytest.raises(RuntimeError, match="timing drift"):
+        contract.require_exact_profile_checks(contract.STANDARD_PROFILE, missing)
+    assert _adapt(_runtime(checks=missing))["status"] == "blocked"
+    data = _persisted()
+    data["checks"][0]["duration_sec"] = float("nan")
+    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="plugin", input_digest=DIGEST)
+    assert "runtime check timing evidence invalid" in contract.persisted_runtime_errors(
+        data, **expected,
+    )
+
+
 def test_adversarial_persisted_profile_requires_every_named_check():
     checks = [
-        {"id": check_id, "status": "pass", "required": True}
+        {"id": check_id, "status": "pass", "required": True, "duration_sec": 0.1}
         for check_id in contract.REQUIRED_CHECKS_BY_PROFILE[contract.ADVERSARIAL_PROFILE]
     ]
     data = _persisted()

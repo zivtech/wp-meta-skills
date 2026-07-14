@@ -201,6 +201,7 @@ def test_repair_runtime_contract_rejects_legacy_profile_without_isolated_oracles
         "wp_cli_activation did not pass", "plugin_check did not pass",
         "container_browser did not pass",
         "runtime_identity did not pass",
+        "runtime check timing evidence invalid",
         "full plugin runtime profile did not pass",
     ]
 
@@ -222,9 +223,9 @@ def test_repair_runtime_verdict_requires_exact_isolated_checks():
         "runtime_pre_command_manifest_digest": "b" * 64,
         "post_command_manifest_digest": "b" * 64, "status": "pass", "pass": True,
         "checks": [
-            {"id": "wp_cli_activation", "status": "pass"},
-            {"id": "plugin_check", "status": "pass"},
-            {"id": "container_browser", "status": "pass"},
+            {"id": "wp_cli_activation", "status": "pass", "duration_sec": 0.1},
+            {"id": "plugin_check", "status": "pass", "duration_sec": 0.2},
+            {"id": "container_browser", "status": "pass", "duration_sec": 0.3},
             {"id": "runtime_identity", "status": "pass"},
         ],
         "provision_full_profile": True, "strict_full_profile": True,

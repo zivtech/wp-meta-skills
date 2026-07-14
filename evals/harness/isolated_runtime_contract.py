@@ -1,6 +1,7 @@
 """Exact producer and consumer contract for isolated WordPress runtime evidence."""
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -77,6 +78,22 @@ def require_exact_profile_checks(profile: str, checks: tuple[dict[str, Any], ...
     expected = REQUIRED_CHECKS_BY_PROFILE.get(profile)
     if expected is None or _check_ids(checks) != expected:
         raise RuntimeError(f"{profile} runtime check inventory drift")
+    if _timing_status(checks) != "pass":
+        raise RuntimeError(f"{profile} runtime check timing drift")
+
+
+def _has_valid_duration(check: dict[str, Any]) -> bool:
+    value = check.get("duration_sec")
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= 0
+    )
+
+
+def _timing_status(checks: tuple[dict[str, Any], ...]) -> str:
+    return "pass" if checks and all(_has_valid_duration(check) for check in checks) else "blocked"
 
 
 def _oracle_statuses(
@@ -155,11 +172,12 @@ def _required_gate_evidence(
     expected = REQUIRED_CHECKS_BY_PROFILE.get(profile or "", REQUIRED_ORACLE_CHECKS)
     oracle_statuses = _oracle_statuses(runtime.checks, expected)
     inventory_status = "pass" if profile else "blocked"
+    timing_status = _timing_status(runtime.checks)
     build_status = _gate_status(build_requested, build_gate)
     phpunit_status = _gate_status(phpunit_requested, phpunit_gate)
     full_profile = _full_profile(runtime, wpcs_gate) if full_profile_requested else None
     required = [
-        _normalized_status(runtime.status), identity_status, inventory_status,
+        _normalized_status(runtime.status), identity_status, inventory_status, timing_status,
         *oracle_statuses.values(),
     ]
     if build_requested:
@@ -172,6 +190,9 @@ def _required_gate_evidence(
     if not profile:
         checks.append({"id": "runtime_profile_contract", "status": "blocked", "required": True,
                        "detail": "runtime check inventory did not match an exact profile"})
+    if timing_status != "pass":
+        checks.append({"id": "runtime_timing_contract", "status": "blocked", "required": True,
+                       "detail": "runtime check duration evidence is missing or invalid"})
     checks.append({"id": "runtime_identity", "status": identity_status, "required": True,
                    "detail": identity_detail})
     return {"status": dominant_status(required), "checks": checks, "oracles": oracle_statuses,
@@ -280,6 +301,16 @@ def stopped_build_result(
     }
 
 
+def _persisted_timing_errors(checks, expected_checks):
+    oracle_checks = tuple(
+        check for check in checks
+        if isinstance(check, dict) and check.get("id") in expected_checks
+    )
+    return [] if _timing_status(oracle_checks) == "pass" else [
+        "runtime check timing evidence invalid"
+    ]
+
+
 def persisted_runtime_errors(
     data: dict[str, Any], *, run_id: str, evidence_id: str,
     artifact_kind: str, input_digest: str,
@@ -311,6 +342,7 @@ def persisted_runtime_errors(
         matches = [check for check in checks if isinstance(check, dict) and check.get("id") == check_id]
         if len(matches) != 1 or matches[0].get("status") != "pass":
             errors.append(f"{check_id} did not pass")
+    errors.extend(_persisted_timing_errors(checks, expected_checks))
     extras = set(actual_ids) - set(required_result)
     duplicates = len(actual_ids) != len(set(actual_ids))
     if extras or duplicates:

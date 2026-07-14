@@ -642,13 +642,16 @@ generated phase exports the already-held staged bytes into a sealed local image
 and creates a normalized, inspected Compose topology with five services:
 database, WordPress, CLI, gateway, and browser.
 
-Three internal networks enforce the peer allowlist. WordPress and CLI can reach
-the database only on `wp_db`; WordPress can reach the gateway only on
-`wordpress_gateway`; the browser can reach only the gateway on `browser_wp`.
-Apache listens on the `wordpress-application` alias and unprivileged port 8080,
-so generated PHP cannot turn loopback into an application escape. No service
-receives host ports, external DNS, `host.docker.internal`, the Docker socket,
-proxy variables, or an external network. The browser policy permits the exact
+Three internal networks enforce the peer allowlist. Database, WordPress, and
+CLI share `backend`; only WordPress/CLI can initiate required database traffic.
+WordPress and gateway share `application`, where Apache binds only
+`wordpress-application:8080`, allowing gateway-to-WordPress traffic while the
+gateway listener is unavailable to WordPress. Gateway and browser share
+`frontend`, where the gateway binds only `gateway-frontend:8081` for
+browser-to-gateway traffic. Generated PHP therefore cannot turn loopback into
+an application escape. No service receives host ports, external DNS,
+`host.docker.internal`, the Docker socket, proxy variables, or an external
+network. The browser policy permits the exact
 gateway origin and rejects loopback, RFC1918, link-local/metadata, public IP,
 public DNS, database-peer, host-gateway, WebSocket, WebRTC, service-worker,
 popup, download, and external-navigation attempts from both frontend and editor
@@ -688,6 +691,12 @@ The second command is a required no-secrets GitHub-hosted Linux gate. A local
 macOS run reports blocked by design. A diagnostic run that substitutes an
 available MariaDB image can help debug the harness, but it is not acceptance
 evidence for the committed MariaDB 11.8.5 digest.
+
+CI gives this gate a separate 35-minute job envelope. The runtime command is
+causally terminated at 30 minutes, leaving cleanup time. The job admits only
+with at least 20 GiB free and fails if the disk delta remains above 12 GiB after
+run-owned containers, networks, and image tags are removed. That final measure
+intentionally includes residual layers and build cache.
 
 If a timed-out run reports retained resources, use the exact recovery commands
 from its cleanup receipt. For a runner-level emergency cleanup, constrain the

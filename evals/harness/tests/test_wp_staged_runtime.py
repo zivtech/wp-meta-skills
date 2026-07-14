@@ -547,9 +547,9 @@ def test_smoke_dispatch_never_reaches_legacy_host_runtime(monkeypatch, tmp_path)
         observed.append(request)
         return RuntimeResult("pass", request.evidence_id, request.input_artifact_digest,
                              artifact_staging.manifest_sha256(request.staged.manifest),
-                             ({"id": "wp_cli_activation", "status": "pass", "required": True},
-                              {"id": "plugin_check", "status": "pass", "required": True},
-                              {"id": "container_browser", "status": "pass", "required": True}))
+                             ({"id": "wp_cli_activation", "status": "pass", "required": True, "duration_sec": 0.1},
+                              {"id": "plugin_check", "status": "pass", "required": True, "duration_sec": 0.1},
+                              {"id": "container_browser", "status": "pass", "required": True, "duration_sec": 0.1}))
 
     monkeypatch.setattr(smoke.wp_env_network_guard, "run_staged_runtime", isolated)
     monkeypatch.setattr(smoke, "run_command", lambda *_args, **_kwargs: pytest.fail("legacy host runtime called"))
@@ -590,9 +590,9 @@ def test_requested_phpunit_gate_can_pass_with_isolated_runtime(monkeypatch, tmp_
     digest = artifact_staging.digest_regular_tree(source)
 
     checks = (
-        {"id": "wp_cli_activation", "status": "pass", "required": True},
-        {"id": "plugin_check", "status": "pass", "required": True},
-        {"id": "container_browser", "status": "pass", "required": True},
+        {"id": "wp_cli_activation", "status": "pass", "required": True, "duration_sec": 0.1},
+        {"id": "plugin_check", "status": "pass", "required": True, "duration_sec": 0.1},
+        {"id": "container_browser", "status": "pass", "required": True, "duration_sec": 0.1},
     )
 
     def isolated(request):
@@ -624,9 +624,9 @@ def test_isolated_full_profile_combines_trusted_wpcs_and_plugin_check(monkeypatc
     (source / "plugin.php").write_text("<?php\n/** Plugin Name: Isolated */\n", encoding="utf-8")
     digest = artifact_staging.digest_regular_tree(source)
     checks = (
-        {"id": "wp_cli_activation", "status": "pass", "required": True},
-        {"id": "plugin_check", "status": "pass", "required": True},
-        {"id": "container_browser", "status": "pass", "required": True},
+        {"id": "wp_cli_activation", "status": "pass", "required": True, "duration_sec": 0.1},
+        {"id": "plugin_check", "status": "pass", "required": True, "duration_sec": 0.1},
+        {"id": "container_browser", "status": "pass", "required": True, "duration_sec": 0.1},
     )
     def isolated(request):
         return RuntimeResult(

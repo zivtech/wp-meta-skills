@@ -87,9 +87,11 @@ license. Update the repository runner lock with scripts disabled, verify its
 registry integrity, run the hermetic provisioning/materialization tests, and
 run the separate no-secrets GitHub-hosted Linux Docker feasibility job against
 the exact commit. Mutable tags, unreviewed helper images, local Docker Desktop
-results, and generated lock synthesis are not acceptable substitutes. The job
-requires at least 20 GiB free, permits at most a conservative 12 GiB post-run
-delta (leaving an 8 GiB reserve), and has a hard 30-minute timeout. A budget
+results, and generated lock synthesis are not acceptable substitutes. The
+legacy canary slice requires at least 20 GiB free, permits at most a
+conservative 12 GiB post-run delta (leaving an 8 GiB reserve), and has a causal
+30-minute process timeout. The aggregate no-secrets job has a 60-minute envelope
+because the package-acquisition boundary runs before that slice. A budget
 failure blocks the checkpoint.
 
 The generated-code runtime uses the same inventory but has a separate required
@@ -106,6 +108,13 @@ digests and committed build-input hashes, then proves generated PHP and browser
 JavaScript inside the repository-owned isolated topology. Do not substitute a
 host `wp-env`, host browser, Docker Desktop result, mutable image tag, or cached
 local image for this gate.
+
+The generated runtime runs in its own required job. Its process has a causal
+30-minute timeout inside a 35-minute job envelope reserved for cleanup. The job
+requires 20 GiB free before any runtime pull/build and permits at most a 12 GiB
+disk delta after its exact run-owned containers, networks, and image tags are
+removed. The post-cleanup measurement includes residual image layers and build
+cache; exceeding it fails the job.
 
 The acquisition proxy allowlist is limited to the reviewed npm and Composer
 registry endpoints represented by the committed locks. The final generated-code
