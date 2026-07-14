@@ -718,14 +718,26 @@ def test_runtime_preparation_metadata_failure_cleans_sandbox_output(tmp_path,mon
     if metadata is not None: (source/"block.json").write_text(metadata)
     output=patch_successful_block_build(monkeypatch,tmp_path,source)
     patch_artifact_validators(monkeypatch,lambda *_args,**_kwargs:{"status":"pass","pass":True,"checks":[]})
-    result=smoke.run_smoke(
-        timeout_sec=5,workdir=tmp_path/"runtime",artifact_path=source,
-        artifact_kind="block",block_build_smoke=True,
-    )
-    receipt=result["artifact_retention"]["components"]["sandbox_output"]
-    assert result["status"]=="blocked" and receipt["state"]=="removed"
-    assert not output.lease.root.exists()
-    assert next(check for check in result["checks"] if check["id"]=="artifact_preparation")["status"]=="blocked"
+    try:
+        result=smoke.run_smoke(
+            timeout_sec=5,workdir=tmp_path/"runtime",artifact_path=source,
+            artifact_kind="block",block_build_smoke=True,
+            expected_artifact_digest=smoke.artifact_staging.digest_regular_tree(source),
+            evidence_id="plan-010-metadata-failure",
+        )
+        receipt=result["artifact_retention"]["components"]["sandbox_output"]
+        assert result["status"]=="blocked"
+        if metadata is None:
+            assert receipt["state"]=="not_created" and output.lease.root.exists()
+            check=next(item for item in result["checks"] if item["id"]=="artifact_preparation")
+            assert check["status"]=="blocked"
+        else:
+            assert receipt["state"]=="removed" and not output.lease.root.exists()
+            check=next(item for item in result["checks"] if item["id"]=="execution_graph")
+            assert check["status"]=="fail"
+    finally:
+        if output.lease.lease_id in smoke.runtime_artifact_pipeline.workspace_lease._LIVE_LEASES:
+            smoke.artifact_staging.cleanup_staged_tree(output)
 
 
 def test_runtime_preparation_synthesis_exception_cleans_sandbox_output(tmp_path,monkeypatch):
@@ -788,7 +800,7 @@ def test_runtime_preparation_preserves_post_stage_and_sandbox_cleanup_receipts(t
                 tmp_path / "runtime", tmp_path / "trusted-wpcs",
             )
         receipts = {receipt.component: receipt for receipt in caught.value.receipts}
-        assert set(receipts) == {"synthesized_runtime", "sandbox_output"}
+        assert set(receipts) == {"scan_handoff", "synthesized_runtime", "sandbox_output"}
         assert all(receipt.state == "removed" for receipt in receipts.values())
         assert not output.root.exists()
     finally:
@@ -1317,7 +1329,8 @@ def test_runtime_smoke_runs_generated_block_build_gate_on_disposable_copy(tmp_pa
     assert result["block_build_smoke_status"] == "blocked"
     assert result["editor_smoke_status"] == "blocked"
     assert "legacy-editor-oracle" in result["reason"]
-    assert any(call[0] == "block" and call[2] == [] for call in validate_calls)
+    assert not any(call[0] == "block" and call[2] == [] for call in validate_calls)
+    assert result["block_runtime_artifact_requested"] is True
     assert result["artifact_retention"]["components"]["sandbox_output"]["state"] == "removed"
 
 

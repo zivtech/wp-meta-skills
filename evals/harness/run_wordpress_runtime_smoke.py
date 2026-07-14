@@ -32,10 +32,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import validate_wordpress_artifact
+import artifact_execution_gate
+import artifact_execution_graph
+import artifact_layout
 import artifact_staging
 import isolated_runtime_contract
 import runtime_artifact_pipeline
+import validate_wordpress_artifact
 import wp_env_network_guard
 import wp_security_gate
 from wp_runtime_types import RuntimeRequest, RuntimeResult
@@ -96,6 +99,8 @@ def _runtime_sandbox_posture(result, owned, active):
     generated = {}
     for requested, status, name in (
         ("block_build_smoke_requested", "block_build_smoke_status", "npm_build"),
+        ("block_runtime_artifact_requested", "block_runtime_artifact_gate_status",
+         "block_runtime_artifact"),
         ("phpunit_smoke_requested", "phpunit_smoke_status", "phpunit"),
     ):
         generated[name] = result.get(status, "not_run") if result.get(requested) else "not_requested"
@@ -213,15 +218,21 @@ class WrappedBlockArtifact:
 
 @dataclass(frozen=True)
 class PreparedRuntimeArtifact:
-    synthesized: runtime_artifact_pipeline.SynthesizedRuntime
+    synthesized: runtime_artifact_pipeline.SynthesizedRuntime | None
     effective_block: artifact_staging.StagedTree | None
     sandbox_output: artifact_staging.StagedTree | None
     block_build_gate: dict[str, Any] | None
+    block_runtime_artifact_gate: dict[str, Any] | None
     phpunit_gate: dict[str, Any] | None
     wpcs_gate: dict[str, Any] | None
     trusted_provisioning: dict[str, Any]
     wrapped: WrappedBlockArtifact | None
     preparation_receipts: tuple[runtime_artifact_pipeline.CleanupReceipt, ...] = ()
+
+    @property
+    def execution_proof_digest(self) -> str | None:
+        proof = self.synthesized.execution_proof if self.synthesized is not None else None
+        return proof.execution_proof_digest if proof is not None else None
 
 
 def write_runtime_fixture(root: Path) -> Path:
@@ -1643,7 +1654,7 @@ def oracle_args(
     )
 
 
-def _generated_build_gate(build, output_gate):
+def _generated_build_gate(build):
     check = {
         "id": "npm_build",
         "status": build.status,
@@ -1651,17 +1662,11 @@ def _generated_build_gate(build, output_gate):
         "detail": build.detail,
         "command": list(build.command),
     }
-    checks = [check]
-    if output_gate is not None:
-        checks.extend(output_gate.get("checks", []))
-    statuses = {item.get("status") for item in checks if item.get("required", True)}
-    status = "blocked" if "blocked" in statuses else "fail" if "fail" in statuses else "pass"
     return {
-        "status": status,
-        "pass": status == "pass",
-        "checks": checks,
+        "status": build.status,
+        "pass": build.status == "pass",
+        "checks": [check],
         "sandbox_posture": {"generated_execution": build.status, "host_fallback": False},
-        "post_build_validation": output_gate,
     }
 
 
@@ -1700,30 +1705,65 @@ def _prepare_phpunit(staged, artifact_kind, requested, timeout_sec):
     return gate,gate.pop("_artifact_retention_receipts", [])
 
 
+def _source_block_layout(staged):
+    with artifact_staging.hold_staged_tree(staged) as held:
+        return artifact_layout.select_source_layout(held.proof.manifest)
+
+
+def _source_block_proof(staged, source_layout):
+    with artifact_staging.hold_staged_tree(staged) as held:
+        selected = artifact_layout.select_post_build_layout(
+            held.proof.manifest, source_layout,
+        )
+        return artifact_execution_graph.build_execution_proof(held, selected)
+
+
 def _prepare_block_build(staged, artifact_kind, requested, timeout_sec):
-    if artifact_kind != "block" or not requested:
-        return staged,None,None,[]
+    if artifact_kind != "block":
+        return staged,None,None,None,None,None,[]
+    source_layout=_source_block_layout(staged)
+    if not requested:
+        source_proof=_source_block_proof(staged,source_layout)
+        return staged,None,None,None,source_proof,None,[]
     build=runtime_artifact_pipeline.build_block(staged,timeout_sec)
-    output=build.output; output_gate=None
+    output=build.output; validation=None
     receipts=[
         runtime_artifact_pipeline.cleanup_receipt_from_staging("sandbox_output",receipt)
         for receipt in build.staging_cleanup_receipts
     ]
-    if output is not None:
-        output_gate=validate_wordpress_artifact.validate_staged_artifact(
-            "block",output,oracle_args(
-                profile="static",require_tool=[],timeout_sec=timeout_sec,wp_env_root=None,
-            ),
+    if build.status == "pass" and output is not None:
+        validation=artifact_execution_gate.validate_block_execution_artifact(
+            output,source_layout,timeout_sec,php_tools_root=PHP_TOOLS_ROOT,
         )
-    return output or staged,output,_generated_build_gate(build,output_gate),receipts
+        receipts.extend(
+            runtime_artifact_pipeline.cleanup_receipt_from_staging("scan_handoff",receipt)
+            for receipt in validation.staging_receipts
+        )
+    gate=validation.gate if validation is not None else None
+    proof=validation.proof if validation is not None else None
+    return output or staged,output,_generated_build_gate(build),gate,proof,validation,receipts
 
 
-def _synthesize_runtime(staged, effective, artifact_kind, source_path, parent):
+def _synthesize_runtime(staged,effective,artifact_kind,source_path,parent,block_proof):
     if artifact_kind == "block":
-        synthesized=runtime_artifact_pipeline.synthesize_block_runtime(effective,parent)
+        if block_proof is None:
+            raise ValueError("block synthesis requires an authenticated execution proof")
+        synthesized=runtime_artifact_pipeline.synthesize_block_runtime(
+            effective,block_proof,parent,
+        )
         return synthesized,_wrapped_runtime(synthesized,effective)
     claimed=source_path.name if source_path is not None else "generated-plugin"
     return runtime_artifact_pipeline.synthesize_plugin_runtime(staged,claimed,parent),None
+
+
+def _bind_block_runtime_gate(validation, synthesized, gate):
+    if validation is None or gate is None or gate.get("status") != "pass":
+        return gate
+    if synthesized.execution_proof is None:
+        raise ValueError("passing block artifact gate lacks a runtime execution proof")
+    return artifact_execution_gate.bind_runtime_gate(
+        validation,synthesized.execution_proof,
+    )
 
 
 def _prepare_wpcs(synthesized, requested, timeout_sec, _temp_root):
@@ -1761,18 +1801,29 @@ def _prepare_generated_runtime(
         phpunit_gate,receipts=_prepare_phpunit(
             staged,artifact_kind,phpunit_requested,timeout_sec,
         ); preparation_receipts.extend(receipts)
-        effective,output,build_gate,receipts=_prepare_block_build(
+        effective,output,build_gate,artifact_gate,proof,validation,receipts=_prepare_block_build(
             staged,artifact_kind,build_requested,timeout_sec,
         ); preparation_receipts.extend(receipts)
+        if artifact_kind=="block" and build_requested and proof is None:
+            return PreparedRuntimeArtifact(
+                None,effective,output,build_gate,artifact_gate,phpunit_gate,
+                None,{},None,tuple(preparation_receipts),
+            )
         synthesized,wrapped=_synthesize_runtime(
-            staged,effective,artifact_kind,source_path,parent,
+            staged,effective,artifact_kind,source_path,parent,proof,
         )
+        artifact_gate=_bind_block_runtime_gate(validation,synthesized,artifact_gate)
+        if build_requested and gate_status(artifact_gate)!="pass":
+            return PreparedRuntimeArtifact(
+                synthesized,effective,output,build_gate,artifact_gate,phpunit_gate,
+                None,{},wrapped,tuple(preparation_receipts),
+            )
         wpcs_gate,provisioning,receipts=_prepare_wpcs(
             synthesized,full_profile_requested,timeout_sec,temp_root,
         ); preparation_receipts.extend(receipts)
         return PreparedRuntimeArtifact(
-            synthesized,effective if artifact_kind=="block" else None,output,build_gate,phpunit_gate,
-            wpcs_gate,provisioning,wrapped,
+            synthesized,effective if artifact_kind=="block" else None,output,build_gate,
+            artifact_gate,phpunit_gate,wpcs_gate,provisioning,wrapped,
             tuple(preparation_receipts),
         )
     except runtime_artifact_pipeline.RuntimePreparationError as exc:
@@ -1796,6 +1847,9 @@ def _preparation_failure_result(error, artifact_kind, temp_root, build_requested
         "status":"blocked","pass":False,"artifact_kind":artifact_kind,
         "runtime_root":str(temp_root),"fixture_root":str(temp_root),"fixture_retained":retained,
         "block_build_smoke_requested":build_requested,"block_build_smoke_status":"blocked" if build_requested else "not_run",
+        "block_runtime_artifact_requested":build_requested and artifact_kind=="block",
+        "block_runtime_artifact_gate_status":"blocked" if build_requested and artifact_kind=="block" else "not_run",
+        "block_runtime_artifact_gate":None,"execution_proof_digest":None,
         "phpunit_smoke_requested":phpunit_requested,
         "phpunit_smoke_status":"blocked" if phpunit_requested else "not_run",
         "checks":checks,"negative_space":list(BASE_NEGATIVE_SPACE),
@@ -1814,17 +1868,19 @@ def _release_prepared_runtime(prepared, hold_context, retain_synthesized):
     if prepared is None:
         return receipts
     receipts.extend(prepared.preparation_receipts)
-    synthesized = prepared.synthesized.staged
-    receipt = (
-        runtime_artifact_pipeline.observe_component("synthesized_runtime", synthesized)
-        if retain_synthesized
-        else runtime_artifact_pipeline.cleanup_component("synthesized_runtime", synthesized)
-    )
-    if hold_error and receipt.error is None:
-        receipt = runtime_artifact_pipeline.CleanupReceipt(
-            receipt.component, receipt.state, receipt.exists, receipt.live, receipt.recovery_path, hold_error, receipt.resource_path
+    if prepared.synthesized is not None:
+        synthesized = prepared.synthesized.staged
+        receipt = (
+            runtime_artifact_pipeline.observe_component("synthesized_runtime", synthesized)
+            if retain_synthesized
+            else runtime_artifact_pipeline.cleanup_component("synthesized_runtime", synthesized)
         )
-    receipts.append(receipt)
+        if hold_error and receipt.error is None:
+            receipt = runtime_artifact_pipeline.CleanupReceipt(
+                receipt.component,receipt.state,receipt.exists,receipt.live,
+                receipt.recovery_path,hold_error,receipt.resource_path,
+            )
+        receipts.append(receipt)
     if prepared.sandbox_output is not None:
         receipts.append(runtime_artifact_pipeline.cleanup_component("sandbox_output", prepared.sandbox_output))
     return _merged_receipts(receipts)
@@ -1851,6 +1907,11 @@ def _blocked_isolated_result(detail,digest,receipts=(),requested=None):
         "input_artifact_digest":digest,"negative_space":[*BASE_NEGATIVE_SPACE,"isolated runtime not executed"],
         "sandbox_posture":{"host_fallback":False,"generated_execution":"blocked"},
         "block_build_smoke_requested":bool(requested.get("block_build_smoke")),
+        "block_runtime_artifact_requested":bool(
+            requested.get("block_build_smoke") and requested.get("artifact_kind")=="block"
+        ),
+        "block_runtime_artifact_gate_status":"blocked" if requested.get("block_build_smoke") and requested.get("artifact_kind")=="block" else "not_run",
+        "block_runtime_artifact_gate":None,"execution_proof_digest":None,
         "phpunit_smoke_requested":bool(requested.get("phpunit_smoke")),
         "_artifact_retention_receipts":list(receipts),
     }
@@ -1866,11 +1927,20 @@ def _blocked_isolated_result(detail,digest,receipts=(),requested=None):
 
 
 def _isolated_result_payload(runtime,request,prepared,artifact_kind,kwargs,receipts):
+    if prepared.synthesized is None:
+        raise ValueError("isolated runtime result requires a synthesized artifact")
     expected_manifest=artifact_staging.manifest_sha256(prepared.synthesized.staged.manifest)
+    artifact_gate,execution_digest=_bound_artifact_evidence(prepared)
+    artifact_requested=bool(
+        artifact_kind=="block" and kwargs.get("block_build_smoke")
+    )
     result=isolated_runtime_contract.adapt_runtime_result(
         runtime,request,artifact_kind=artifact_kind,expected_manifest_digest=expected_manifest,
         block_build_requested=bool(kwargs.get("block_build_smoke")),
         block_build_gate=prepared.block_build_gate,
+        block_runtime_artifact_requested=artifact_requested,
+        block_runtime_artifact_gate=artifact_gate,
+        execution_proof_digest=execution_digest,
         phpunit_requested=bool(kwargs.get("phpunit_smoke")),
         phpunit_gate=prepared.phpunit_gate,
         full_profile_requested=bool(
@@ -1883,30 +1953,72 @@ def _isolated_result_payload(runtime,request,prepared,artifact_kind,kwargs,recei
     return result
 
 
+def _bound_artifact_evidence(prepared):
+    gate=prepared.block_runtime_artifact_gate
+    digest=prepared.execution_proof_digest
+    if gate_status(gate)!="pass":
+        return gate,digest
+    exact=(
+        isinstance(digest,str) and isolated_runtime_contract.DIGEST.fullmatch(digest)
+        and gate.get("execution_proof_digest")==digest
+    )
+    if exact:
+        return gate,digest
+    blocked=dict(gate); checks=list(gate.get("checks") or [])
+    checks.append({
+        "id":"execution_proof_binding","status":"blocked","required":True,
+        "detail":"artifact gate and synthesized runtime proof digest do not match",
+    })
+    blocked.update({"status":"blocked","pass":False,"checks":checks})
+    return blocked,digest
+
+
+def _block_runtime_ready(requested,build_gate,artifact_gate):
+    if not requested:
+        return True
+    return gate_status(build_gate)=="pass" and gate_status(artifact_gate)=="pass"
+
+
+def _unsupported_before_preparation(artifact_kind,kwargs):
+    unsupported=_generated_runtime_unsupported(kwargs)
+    if unsupported and artifact_kind=="block" and not kwargs.get("block_build_smoke"):
+        raise ValueError("unpinned optional runtime support is blocked: "+", ".join(unsupported))
+    return unsupported
+
+
 def _run_isolated_smoke_input(staged,evidence_id,kwargs):
     digest=artifact_staging.digest_manifest_tree(staged.manifest)
     expected=kwargs.get("expected_artifact_digest")
     artifact_kind=kwargs.get("artifact_kind","plugin")
-    lease=create_ephemeral(kwargs.get("workdir"),WorkspacePurpose.RUNTIME); prepared=None; terminal=None
+    lease=create_ephemeral(kwargs.get("workdir"),WorkspacePurpose.RUNTIME)
+    prepared=None; terminal=None; runtime=None; request=None
     try:
+        unsupported=_unsupported_before_preparation(artifact_kind,kwargs)
         prepared=_prepare_generated_runtime(
             staged,artifact_kind,kwargs.get("artifact_source_path"),
             kwargs.get("block_build_smoke",False),kwargs.get("phpunit_smoke",False),
             kwargs.get("provision_full_profile",False) or kwargs.get("strict_full_profile",False),
             kwargs["timeout_sec"],lease.root.parent,lease.root/"trusted-wpcs",
         )
-        unsupported=_generated_runtime_unsupported(kwargs)
         if unsupported: raise ValueError("unpinned optional runtime support is blocked: "+", ".join(unsupported))
         if expected != digest: raise ValueError("generated runtime requires the exact Plan 008 artifact digest")
         if not evidence_id: raise ValueError("generated runtime requires the Plan 008 evidence ID")
-        build_status=(prepared.block_build_gate or {}).get("status")
-        if kwargs.get("block_build_smoke") and build_status != "pass":
-            terminal=isolated_runtime_contract.stopped_build_result(
-                artifact_kind=artifact_kind,digest=digest,gate=prepared.block_build_gate or {},
-                receipts=[],phpunit_requested=bool(kwargs.get("phpunit_smoke")),
+        artifact_requested=bool(artifact_kind=="block" and kwargs.get("block_build_smoke"))
+        artifact_gate,execution_digest=_bound_artifact_evidence(prepared)
+        if not _block_runtime_ready(
+            artifact_requested,prepared.block_build_gate,artifact_gate,
+        ):
+            terminal=isolated_runtime_contract.stopped_block_prerequisite_result(
+                artifact_kind=artifact_kind,digest=digest,
+                build_gate=prepared.block_build_gate,
+                runtime_artifact_gate=artifact_gate,
+                execution_proof_digest=execution_digest,receipts=[],
+                phpunit_requested=bool(kwargs.get("phpunit_smoke")),
+                runtime_artifact_requested=artifact_requested,
             )
-            runtime=request=None
         else:
+            if prepared.synthesized is None:
+                raise ValueError("runtime prerequisites passed without a synthesized artifact")
             request=RuntimeRequest(prepared.synthesized.staged,prepared.synthesized.plugin_slug,evidence_id,
                 digest,expected,kwargs["timeout_sec"],lease.root.parent)
             runtime=wp_env_network_guard.run_staged_runtime(request)
@@ -1948,6 +2060,7 @@ def status_from_gates(
     mcp_adapter_gate: dict[str, Any] | None, mcp_adapter_smoke: bool,
     ai_client_gate: dict[str, Any] | None, ai_client_smoke: bool,
     stop: CommandRun | None, strict_full_profile: bool,
+    block_runtime_artifact_gate: dict[str, Any] | None = None,
 ) -> str:
     require_full_profile = strict_full_profile or provision_full_profile
     statuses=[]
@@ -1955,6 +2068,7 @@ def status_from_gates(
         statuses.append("blocked")
     if block_build_smoke:
         statuses.append(_required_status(gate_status(block_build_gate)))
+        statuses.append(_required_status(gate_status(block_runtime_artifact_gate)))
     interactivity_status = interactivity_smoke_status(editor_smoke, interactivity_smoke, interactivity_static_gate)
     if interactivity_smoke: statuses.append(_required_status(interactivity_status))
     deprecation_status = block_deprecation_smoke_status(
@@ -2036,7 +2150,8 @@ def run_smoke(
             stage_parent = lease.caller_parent or temp_root.parent
             prepared_artifact = _prepare_generated_runtime(
                 staged_artifact, artifact_kind, artifact_source_path, block_build_smoke,
-                phpunit_smoke, timeout_sec, stage_parent
+                phpunit_smoke,provision_full_profile or strict_full_profile,
+                timeout_sec,stage_parent,temp_root/"trusted-wpcs",
             )
             prepared_hold_context = artifact_staging.hold_staged_tree(prepared_artifact.synthesized.staged)
             prepared_hold = prepared_hold_context.__enter__()
@@ -2118,6 +2233,12 @@ def run_smoke(
     narrow_gate: dict[str, Any] | None = None
     block_gate: dict[str, Any] | None = None
     block_build_gate: dict[str, Any] | None = prepared_artifact.block_build_gate if prepared_artifact else None
+    if prepared_artifact is not None:
+        block_runtime_artifact_gate,execution_proof_digest=_bound_artifact_evidence(
+            prepared_artifact,
+        )
+    else:
+        block_runtime_artifact_gate=None; execution_proof_digest=None
     interactivity_static_gate: dict[str, Any] | None = None
     block_deprecation_static_gate: dict[str, Any] | None = None
     mcp_adapter_static_gate: dict[str, Any] | None = None
@@ -2195,7 +2316,9 @@ def run_smoke(
                     reason or "pinned WPCS toolchain", PHP_TOOLS_ROOT,
                 )
 
-        build_ready = not block_build_smoke or gate_status(block_build_gate) == "pass"
+        build_ready = _block_runtime_ready(
+            block_build_smoke,block_build_gate,block_runtime_artifact_gate,
+        )
         if npx and build_ready:
             start = run_command([npx, "--yes", "@wordpress/env", "start", "--auto-port"], temp_root, timeout_sec)
             if start.ok:
@@ -2462,6 +2585,7 @@ def run_smoke(
         block_deprecation_smoke=block_deprecation_smoke,
         block_deprecation_post=block_deprecation_post,
         block_build_gate=block_build_gate,
+        block_runtime_artifact_gate=block_runtime_artifact_gate,
         block_build_smoke=block_build_smoke,
         phpunit_gate=phpunit_gate,
         phpunit_smoke=phpunit_smoke,
@@ -2498,7 +2622,8 @@ def run_smoke(
         negative_space.append("not block runtime registration proof")
     elif block_smoke_status(block_smoke) == "pass":
         negative_space.remove("not block validation proof")
-        if block_build_smoke and gate_status(block_build_gate) == "pass":
+        if (block_build_smoke and gate_status(block_build_gate)=="pass"
+                and gate_status(block_runtime_artifact_gate)=="pass"):
             pass
         else:
             negative_space.append("not full block validation proof")
@@ -2553,6 +2678,7 @@ def run_smoke(
         "interactivity_smoke_requested": interactivity_smoke,
         "block_deprecation_smoke_requested": block_deprecation_smoke,
         "block_build_smoke_requested": block_build_smoke,
+        "block_runtime_artifact_requested": block_build_smoke and artifact_kind=="block",
         "phpunit_smoke_requested": phpunit_smoke,
         "mcp_adapter_smoke_requested": mcp_adapter_smoke,
         "mcp_adapter_execute_args": mcp_adapter_execute_args or {},
@@ -2586,6 +2712,8 @@ def run_smoke(
         "ai_client_smoke_status": ai_client_smoke_status(ai_client_gate),
         "block_smoke_status": block_smoke_status(block_smoke),
         "block_build_smoke_status": gate_status(block_build_gate),
+        "block_runtime_artifact_gate_status": gate_status(block_runtime_artifact_gate),
+        "execution_proof_digest": execution_proof_digest,
         "interactivity_smoke_status": interactivity_smoke_status(
             editor_smoke_run,
             interactivity_smoke,
@@ -2602,6 +2730,7 @@ def run_smoke(
         "narrow_gate": narrow_gate,
         "block_gate": block_gate,
         "block_build_gate": block_build_gate,
+        "block_runtime_artifact_gate": block_runtime_artifact_gate,
         "interactivity_static_gate": interactivity_static_gate,
         "block_deprecation_static_gate": block_deprecation_static_gate,
         "mcp_adapter_static_gate": mcp_adapter_static_gate,
