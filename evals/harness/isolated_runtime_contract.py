@@ -132,6 +132,12 @@ def _gate_status(requested: bool, gate: dict[str, Any] | None) -> str:
     return _normalized_status(gate.get("status"))
 
 
+def _execution_proof_status(requested: bool, digest: str | None) -> str:
+    if not requested:
+        return "not_run"
+    return "pass" if isinstance(digest, str) and DIGEST.fullmatch(digest) else "blocked"
+
+
 def _named_check_status(gate: dict[str, Any] | None, check_id: str) -> str:
     matches = [
         check for check in (gate or {}).get("checks", [])
@@ -165,7 +171,9 @@ def _required_gate_evidence(
     runtime: RuntimeResult, request: RuntimeRequest, expected_manifest_digest: str,
     build_requested: bool, build_gate: dict[str, Any] | None, phpunit_requested: bool,
     phpunit_gate: dict[str, Any] | None, full_profile_requested: bool,
-    wpcs_gate: dict[str, Any] | None,
+    wpcs_gate: dict[str, Any] | None, runtime_artifact_requested: bool,
+    runtime_artifact_gate: dict[str, Any] | None, execution_proof_digest: str | None,
+    artifact_kind: str,
 ) -> dict[str, Any]:
     identity_status, identity_detail = _identity_status(runtime, request, expected_manifest_digest)
     profile = profile_for_checks(runtime.checks)
@@ -174,6 +182,12 @@ def _required_gate_evidence(
     inventory_status = "pass" if profile else "blocked"
     timing_status = _timing_status(runtime.checks)
     build_status = _gate_status(build_requested, build_gate)
+    artifact_status = _gate_status(runtime_artifact_requested, runtime_artifact_gate)
+    proof_status = _execution_proof_status(runtime_artifact_requested, execution_proof_digest)
+    artifact_request_status = (
+        "pass" if not runtime_artifact_requested
+        or (artifact_kind == "block" and build_requested) else "blocked"
+    )
     phpunit_status = _gate_status(phpunit_requested, phpunit_gate)
     full_profile = _full_profile(runtime, wpcs_gate) if full_profile_requested else None
     required = [
@@ -182,6 +196,8 @@ def _required_gate_evidence(
     ]
     if build_requested:
         required.append(build_status)
+    if runtime_artifact_requested:
+        required.extend((artifact_request_status, artifact_status, proof_status))
     if phpunit_requested:
         required.append(phpunit_status)
     if full_profile_requested:
@@ -196,7 +212,8 @@ def _required_gate_evidence(
     checks.append({"id": "runtime_identity", "status": identity_status, "required": True,
                    "detail": identity_detail})
     return {"status": dominant_status(required), "checks": checks, "oracles": oracle_statuses,
-            "build": build_status, "phpunit": phpunit_status,
+            "build": build_status, "runtime_artifact": artifact_status,
+            "execution_proof": proof_status, "phpunit": phpunit_status,
             "full_profile": full_profile,
             "profile": profile or "invalid", "required_checks": expected}
 
@@ -212,9 +229,11 @@ def _negative_space(gates,phpunit_requested):
     return result
 
 
-def _runtime_result_overlay(runtime,gates,artifact_kind,expected_manifest_digest,
-                            block_requested,block_gate,phpunit_requested,phpunit_gate,
-                            full_requested,provisioning):
+def _runtime_result_overlay(
+    runtime, gates, artifact_kind, expected_manifest_digest, block_requested, block_gate,
+    runtime_artifact_requested, runtime_artifact_gate, execution_proof_digest,
+    phpunit_requested, phpunit_gate, full_requested, provisioning,
+):
     status = gates["status"]
     return {
         "status": status,
@@ -229,6 +248,10 @@ def _runtime_result_overlay(runtime,gates,artifact_kind,expected_manifest_digest
         "block_build_smoke_requested": block_requested,
         "block_build_smoke_status": gates["build"],
         "block_build_gate": block_gate,
+        "block_runtime_artifact_requested": runtime_artifact_requested,
+        "block_runtime_artifact_gate_status": gates["runtime_artifact"],
+        "block_runtime_artifact_gate": runtime_artifact_gate,
+        "execution_proof_digest": execution_proof_digest,
         "phpunit_smoke_requested": phpunit_requested,
         "phpunit_smoke_status": gates["phpunit"],
         "phpunit_gate": phpunit_gate,
@@ -256,19 +279,67 @@ def adapt_runtime_result(
     phpunit_gate: dict[str, Any] | None = None, full_profile_requested: bool = False,
     wpcs_gate: dict[str, Any] | None = None,
     trusted_provisioning: dict[str, Any] | None = None,
+    block_runtime_artifact_requested: bool = False,
+    block_runtime_artifact_gate: dict[str, Any] | None = None,
+    execution_proof_digest: str | None = None,
 ) -> dict[str, Any]:
     """Validate and enrich a runtime result without weakening any requested gate."""
     gates=_required_gate_evidence(
         runtime,request,expected_manifest_digest,block_build_requested,block_build_gate,
         phpunit_requested,phpunit_gate,full_profile_requested,wpcs_gate,
+        block_runtime_artifact_requested,block_runtime_artifact_gate,
+        execution_proof_digest,artifact_kind,
     )
     result=runtime.as_dict()
     result.update(_runtime_result_overlay(
         runtime,gates,artifact_kind,expected_manifest_digest,block_build_requested,
-        block_build_gate,phpunit_requested,phpunit_gate,full_profile_requested,
-        trusted_provisioning,
+        block_build_gate,block_runtime_artifact_requested,block_runtime_artifact_gate,
+        execution_proof_digest,phpunit_requested,phpunit_gate,
+        full_profile_requested,trusted_provisioning,
     ))
     return result
+
+
+def stopped_block_prerequisite_result(
+    *, artifact_kind: str, digest: str, build_gate: dict[str, Any] | None,
+    runtime_artifact_gate: dict[str, Any] | None, execution_proof_digest: str | None,
+    receipts: list[Any], phpunit_requested: bool,
+    runtime_artifact_requested: bool = True,
+) -> dict[str, Any]:
+    """Return both block prerequisite verdicts without starting WordPress."""
+    build_status = _gate_status(True, build_gate)
+    artifact_status = _gate_status(runtime_artifact_requested, runtime_artifact_gate)
+    proof_status = _execution_proof_status(runtime_artifact_requested, execution_proof_digest)
+    phpunit_status = "blocked" if phpunit_requested else "not_run"
+    required = [build_status]
+    if runtime_artifact_requested:
+        required.extend((artifact_status, proof_status))
+    if phpunit_requested:
+        required.append(phpunit_status)
+    checks = list((build_gate or {}).get("checks") or [])
+    checks.extend((runtime_artifact_gate or {}).get("checks") or [])
+    if phpunit_requested:
+        checks.append({"id": "phpunit", "status": "blocked", "required": True,
+                       "detail": "PHPUnit was requested but isolated runtime did not start"})
+    status = dominant_status(required)
+    return {
+        "status": status, "pass": False,
+        "reason": "block prerequisite did not pass; isolated runtime was not started",
+        "checks": checks, "artifact_kind": artifact_kind,
+        "input_artifact_digest": digest, "block_build_smoke_requested": True,
+        "block_build_smoke_status": build_status, "block_build_gate": build_gate,
+        "block_runtime_artifact_requested": runtime_artifact_requested,
+        "block_runtime_artifact_gate_status": artifact_status,
+        "block_runtime_artifact_gate": runtime_artifact_gate,
+        "execution_proof_digest": execution_proof_digest,
+        "phpunit_smoke_requested": phpunit_requested,
+        "phpunit_smoke_status": phpunit_status,
+        "negative_space": ["isolated runtime not executed", "not PHPUnit proof"],
+        "sandbox_posture": {"generated_execution": {
+            "npm_build": build_status, "runtime_artifact": artifact_status,
+        }, "host_fallback": False},
+        "_artifact_retention_receipts": receipts,
+    }
 
 
 def stopped_build_result(
@@ -276,29 +347,11 @@ def stopped_build_result(
     phpunit_requested: bool,
 ) -> dict[str, Any]:
     """Return a terminal build verdict without starting WordPress runtime."""
-    status = _gate_status(True, gate)
-    phpunit_status = "blocked" if phpunit_requested else "not_run"
-    overall = dominant_status([status, phpunit_status] if phpunit_requested else [status])
-    checks = list(gate.get("checks") or [])
-    if phpunit_requested:
-        checks.append({"id": "phpunit", "status": "blocked", "required": True,
-                       "detail": "PHPUnit was requested but is not executed by the isolated runtime"})
-    return {
-        "status": overall,
-        "pass": False,
-        "reason": f"block build prerequisite {status}; isolated runtime was not started",
-        "checks": checks,
-        "artifact_kind": artifact_kind,
-        "input_artifact_digest": digest,
-        "block_build_smoke_requested": True,
-        "block_build_smoke_status": status,
-        "block_build_gate": gate,
-        "phpunit_smoke_requested": phpunit_requested,
-        "phpunit_smoke_status": phpunit_status,
-        "negative_space": ["isolated runtime not executed", "not PHPUnit proof"],
-        "sandbox_posture": {"generated_execution": {"npm_build": status}, "host_fallback": False},
-        "_artifact_retention_receipts": receipts,
-    }
+    return stopped_block_prerequisite_result(
+        artifact_kind=artifact_kind, digest=digest, build_gate=gate,
+        runtime_artifact_gate=None, execution_proof_digest=None, receipts=receipts,
+        phpunit_requested=phpunit_requested, runtime_artifact_requested=False,
+    )
 
 
 def _persisted_timing_errors(checks, expected_checks):
@@ -311,12 +364,30 @@ def _persisted_timing_errors(checks, expected_checks):
     ]
 
 
+def _persisted_execution_proof_errors(
+    data: dict[str, Any], expected_digest: str | None,
+) -> list[str]:
+    if expected_digest is None:
+        return []
+    actual = data.get("execution_proof_digest")
+    errors = []
+    if (not isinstance(expected_digest, str) or not DIGEST.fullmatch(expected_digest)
+            or actual != expected_digest):
+        errors.append("execution proof digest mismatch")
+    gate = data.get("block_runtime_artifact_gate")
+    if (_gate_status(True, gate) != "pass"
+            or data.get("block_runtime_artifact_gate_status") != "pass"
+            or data.get("block_runtime_artifact_requested") is not True):
+        errors.append("block runtime artifact gate did not pass")
+    return errors
+
+
 def persisted_runtime_errors(
     data: dict[str, Any], *, run_id: str, evidence_id: str,
-    artifact_kind: str, input_digest: str,
+    artifact_kind: str, input_digest: str, execution_proof_digest: str | None = None,
 ) -> list[str]:
     """Return exact-result contract errors for the repair-loop consumer."""
-    errors = []
+    errors = _persisted_execution_proof_errors(data, execution_proof_digest)
     expected = {
         "schema_version": 1,
         "run_id": run_id,
