@@ -91,6 +91,163 @@ def test_held_snapshot_and_reproof_share_six_pass_ceiling(tmp_path):
                 for _index in range(5): staging.snapshot_held_tree(held)
     finally: cleanup(staged)
 
+def test_targeted_held_member_read_requires_authentic_normalized_manifest_path(tmp_path):
+    source=tmp_path/"source"; (source/"nested").mkdir(parents=True); (source/"nested/value.php").write_bytes(b"<?php safe")
+    staged=staging.stage_tree(source,tmp_path/"input")
+    try:
+        with staging.hold_staged_tree(staged) as held:
+            assert staging.read_held_member(held,"nested/value.php")==b"<?php safe"
+            for unsafe in ("", ".", "../value.php", "/value.php", "nested//value.php", "nested/./value.php"):
+                with pytest.raises(ValueError,match="normalized safe relative"):
+                    staging.read_held_member(held,unsafe)
+            with pytest.raises(ValueError,match="regular manifest member"):
+                staging.read_held_member(held,"nested")
+            with pytest.raises(ValueError,match="regular manifest member"):
+                staging.read_held_member(held,"missing.php")
+        with pytest.raises(ValueError,match="authentic"):
+            staging.read_held_member(held,"nested/value.php")
+        with pytest.raises(ValueError,match="authentic"):
+            staging.stage_scan_handoff(held,tmp_path/"late")
+    finally: cleanup(staged)
+
+def test_targeted_held_member_read_enforces_scan_cap_and_manifest_hash(tmp_path,monkeypatch):
+    source=tmp_path/"source"; source.mkdir(); (source/"value.php").write_bytes(b"safe")
+    staged=staging.stage_tree(source,tmp_path/"input")
+    try:
+        with staging.hold_staged_tree(staged) as held:
+            with monkeypatch.context() as bounded:
+                bounded.setattr(staging,"MAX_TARGET_MEMBER_BYTES",3)
+                with pytest.raises(ValueError,match="targeted read limit"):
+                    staging.read_held_member(held,"value.php")
+        with pytest.raises(ValueError,match="manifest mismatch"):
+            with staging.hold_staged_tree(staged) as held:
+                (staged.root/"value.php").write_bytes(b"evil")
+                staging.read_held_member(held,"value.php")
+    finally: cleanup(staged)
+
+def test_targeted_held_member_read_rejects_link_and_mid_read_mutation(tmp_path,monkeypatch):
+    source=tmp_path/"source"; source.mkdir(); (source/"value.php").write_bytes(b"safe")
+    linked=staging.stage_tree(source,tmp_path/"linked")
+    try:
+        with staging.hold_staged_tree(linked) as held:
+            alias=linked.root/"alias.php"; os.link(linked.root/"value.php",alias)
+            try:
+                with pytest.raises(ValueError,match="regular single-link"):
+                    staging.read_held_member(held,"value.php")
+            finally: alias.unlink()
+    finally: cleanup(linked)
+    mutated=staging.stage_tree(source,tmp_path/"mutated")
+    try:
+        with pytest.raises(ValueError,match="changed while reading"):
+            with staging.hold_staged_tree(mutated) as held:
+                original=staging.os.read; fired=False
+                def race(fd,size):
+                    nonlocal fired
+                    if not fired and size==staging.SCAN_HANDOFF_CHUNK_BYTES:
+                        fired=True; (mutated.root/"value.php").write_bytes(b"evil")
+                    return original(fd,size)
+                monkeypatch.setattr(staging.os,"read",race)
+                staging.read_held_member(held,"value.php")
+    finally: cleanup(mutated)
+
+def test_held_member_php_tag_classifier_detects_mixed_case_and_short_tag(tmp_path):
+    source=tmp_path/"source"; source.mkdir()
+    (source/"mixed.bin").write_bytes(b"prefix <?PhP echo 'safe';")
+    (source/"short.asset").write_bytes(b"prefix <?= $safe ?>")
+    (source/"clean.txt").write_bytes(b"plain text")
+    staged=staging.stage_tree(source,tmp_path/"input")
+    try:
+        with staging.hold_staged_tree(staged) as held:
+            assert staging.held_member_has_php_tag(held,"mixed.bin") is True
+            assert staging.held_member_has_php_tag(held,"short.asset") is True
+            assert staging.held_member_has_php_tag(held,"clean.txt") is False
+    finally: cleanup(staged)
+
+def test_held_member_php_tag_classifier_preserves_chunk_overlap(tmp_path):
+    source=tmp_path/"source"; source.mkdir(); chunk=staging.SCAN_HANDOFF_CHUNK_BYTES
+    (source/"long.bin").write_bytes(b"x"*(chunk-2)+b"<?PhP echo 1;")
+    (source/"short.bin").write_bytes(b"x"*(chunk-1)+b"<?= 1;")
+    staged=staging.stage_tree(source,tmp_path/"input")
+    try:
+        with staging.hold_staged_tree(staged) as held:
+            assert staging.held_member_has_php_tag(held,"long.bin") is True
+            assert staging.held_member_has_php_tag(held,"short.bin") is True
+    finally: cleanup(staged)
+
+def test_scan_handoff_streams_once_without_snapshot_and_preserves_manifest(tmp_path,monkeypatch):
+    source=tmp_path/"source"; (source/"nested").mkdir(parents=True); payload=b"x"*(staging.SCAN_HANDOFF_CHUNK_BYTES*2+17)
+    (source/"nested/value.php").write_bytes(payload); staged=staging.stage_tree(source,tmp_path/"input"); handoff=None
+    try:
+        with staging.hold_staged_tree(staged) as held:
+            monkeypatch.setattr(staging,"snapshot_held_tree",lambda *_args,**_kwargs:(_ for _ in ()).throw(AssertionError("snapshot used")))
+            original=staging.os.read; requested=[]
+            def spy(fd,size): requested.append(size); return original(fd,size)
+            monkeypatch.setattr(staging.os,"read",spy)
+            handoff=staging.stage_scan_handoff(held,tmp_path/"handoff")
+        assert handoff.role is staging.StageRole.SCAN_HANDOFF
+        assert handoff.manifest==staged.manifest
+        assert (handoff.root/"nested/value.php").read_bytes()==payload
+        assert staging.SCAN_HANDOFF_CHUNK_BYTES in requested and max(requested)<=staging.SCAN_HANDOFF_CHUNK_BYTES
+    finally:
+        if handoff is not None: cleanup(handoff)
+        cleanup(staged)
+
+def test_scan_handoff_explicit_selection_copies_only_members_and_prefixes(tmp_path):
+    source=tmp_path/"source"; (source/"nested").mkdir(parents=True); (source/"other").mkdir()
+    (source/"nested/a.php").write_bytes(b"a"); (source/"nested/b.js").write_bytes(b"b"); (source/"other/c.php").write_bytes(b"c")
+    staged=staging.stage_tree(source,tmp_path/"input"); handoff=None
+    try:
+        with staging.hold_staged_tree(staged) as held:
+            handoff=staging.stage_scan_handoff(held,tmp_path/"handoff",members=["other/c.php","nested/a.php"])
+        assert [entry.path for entry in handoff.manifest]==["nested/a.php","other/c.php"]
+        assert (handoff.root/"nested/a.php").read_bytes()==b"a"
+        assert (handoff.root/"other/c.php").read_bytes()==b"c"
+        assert not (handoff.root/"nested/b.js").exists()
+    finally:
+        if handoff is not None: cleanup(handoff)
+        cleanup(staged)
+
+def test_scan_handoff_explicit_selection_rejects_duplicates_before_lease(tmp_path):
+    source=tmp_path/"source"; source.mkdir(); (source/"a.php").write_bytes(b"a")
+    staged=staging.stage_tree(source,tmp_path/"input"); parent=tmp_path/"handoff"; before=set(workspace_lease._LIVE_LEASES)
+    try:
+        with staging.hold_staged_tree(staged) as held:
+            with pytest.raises(ValueError,match="duplicate scan handoff member"):
+                staging.stage_scan_handoff(held,parent,members=["a.php","a.php"])
+        assert set(workspace_lease._LIVE_LEASES)==before and not parent.exists()
+    finally: cleanup(staged)
+
+def test_scan_handoff_rejects_manifest_drift_and_cleans_failed_lease(tmp_path,monkeypatch):
+    source=tmp_path/"source"; source.mkdir(); (source/"value.php").write_bytes(b"safe")
+    staged=staging.stage_tree(source,tmp_path/"input"); parent=tmp_path/"handoff"; before=set(workspace_lease._LIVE_LEASES)
+    try:
+        with staging.hold_staged_tree(staged) as held:
+            monkeypatch.setattr(staging,"_manifest_from_fd",lambda *_args,**_kwargs:())
+            with pytest.raises(ValueError,match="scan handoff manifest mismatch"):
+                staging.stage_scan_handoff(held,parent)
+        assert set(workspace_lease._LIVE_LEASES)==before and (not parent.exists() or not any(parent.iterdir()))
+    finally: cleanup(staged)
+
+def test_scan_handoff_copy_failure_preserves_primary_and_reports_retention(tmp_path,monkeypatch):
+    source=tmp_path/"source"; source.mkdir(); (source/"value.php").write_bytes(b"safe")
+    staged=staging.stage_tree(source,tmp_path/"input"); original_cleanup=staging.workspace_lease.cleanup
+    try:
+        try:
+            with staging.hold_staged_tree(staged) as held:
+                original_create=staging.workspace_lease.create_secure_file
+                def fail_copy(parent,name,mode):
+                    if name==staging.workspace_lease.SENTINEL_NAME: return original_create(parent,name,mode)
+                    raise RuntimeError("copy failed")
+                monkeypatch.setattr(staging.workspace_lease,"create_secure_file",fail_copy)
+                monkeypatch.setattr(staging.workspace_lease,"cleanup",lambda _lease:(_ for _ in ()).throw(workspace_lease.WorkspaceCleanupError("cleanup failed")))
+                with pytest.raises(staging.StagingCleanupError,match="copy failed.*cleanup") as caught:
+                    staging.stage_scan_handoff(held,tmp_path/"handoff")
+        finally: monkeypatch.setattr(staging.workspace_lease,"cleanup",original_cleanup)
+        assert str(caught.value.primary)=="copy failed" and caught.value.receipt.issuer is staging.StageRole.SCAN_HANDOFF
+        assert caught.value.receipt.state=="retained" and caught.value.receipt.recovery_path
+        original_cleanup(caught.value.receipt.lease)
+    finally: cleanup(staged)
+
 def test_staged_modes_are_normalized_not_preserved(tmp_path):
     source=tmp_path/"source"; source.mkdir(); regular=source/"regular"; executable=source/"executable"
     regular.write_text("r"); executable.write_text("x"); regular.chmod(0o666); executable.chmod(0o777)

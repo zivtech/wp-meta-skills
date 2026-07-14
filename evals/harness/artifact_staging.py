@@ -5,11 +5,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Any, BinaryIO, Callable
 import workspace_lease
 
 MAX_ENTRIES=10_000; MAX_DEPTH=32; MAX_FILE_BYTES=64*1024*1024
 MAX_TOTAL_BYTES=512*1024*1024; MAX_PATH_BYTES=4096
+MAX_TARGET_MEMBER_BYTES=8*1024*1024; SCAN_HANDOFF_CHUNK_BYTES=64*1024
 MAX_ARCHIVE_STREAM_BYTES=MAX_TOTAL_BYTES+MAX_ENTRIES*(MAX_PATH_BYTES+2048)+10240
 DEPENDENCY_ROOTS=frozenset({"node_modules","vendor","sandbox-cache"})
 EXECUTION_CLOSURE_IGNORE=frozenset({".workspace-lease",".git",".wp-env","node_modules"})
@@ -44,7 +46,7 @@ class StagingCleanupError(RuntimeError):
 
 @dataclass(frozen=True)
 class HeldStagedTree:
-    staged:StagedTree; lease_fd:int; root_fd:int; proof:Any; proof_budget:Any
+    staged:StagedTree; lease_fd:int; root_fd:int; proof:Any; proof_budget:Any; manifest_by_path:Any
 
 _AUTHENTIC_STAGED=weakref.WeakKeyDictionary()
 _AUTHENTIC_HELD={}
@@ -388,7 +390,8 @@ def hold_staged_tree(staged:StagedTree,*,proof_deadline:float|None=None):
         root_fd=os.open("artifact",os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=lease_fd)
         proof=_proof_from_fd(root_fd,budget)
         if proof.manifest!=staged.manifest: raise ValueError("staged manifest is stale")
-        held=HeldStagedTree(staged,lease_fd,root_fd,proof,budget); _AUTHENTIC_HELD[id(held)]=held
+        manifest_by_path=MappingProxyType({item.path:item for item in proof.manifest})
+        held=HeldStagedTree(staged,lease_fd,root_fd,proof,budget,manifest_by_path); _AUTHENTIC_HELD[id(held)]=held
         yield held
         if _proof_from_fd(root_fd,budget)!=proof: raise ValueError("held staged tree changed")
     finally:
@@ -425,6 +428,150 @@ def _open_held_member(root_fd:int,path:str,directory:bool)->int:
             child=os.open(part,flags,dir_fd=fd); os.close(fd); fd=child
         return fd
     except Exception: os.close(fd); raise
+
+def _normalized_held_file(held:HeldStagedTree,relative)->tuple[str,ManifestEntry]:
+    _require_held(held)
+    if isinstance(relative,(Path,PurePosixPath)): raw=relative.as_posix()
+    elif isinstance(relative,str): raw=relative
+    else: raise TypeError("held member path must be path-like")
+    path=PurePosixPath(raw); normalized=path.as_posix()
+    if path.is_absolute() or not path.parts or any(part in {"",".",".."} for part in path.parts) or normalized!=raw:
+        raise ValueError("held member is not a normalized safe relative path")
+    expected=held.manifest_by_path.get(normalized)
+    if expected is None: raise ValueError("held member is not a regular manifest member")
+    return normalized,expected
+
+def _stable_member(info:os.stat_result)->tuple:
+    return (info.st_dev,info.st_ino,stat.S_IFMT(info.st_mode),stat.S_IMODE(info.st_mode),info.st_uid,info.st_gid,info.st_nlink,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+
+def _member_mode(info:os.stat_result)->str:
+    return "executable" if stat.S_IMODE(info.st_mode)&0o111 else "regular"
+
+def _open_verified_held_file(held,path,expected,limit):
+    member=_open_held_member(held.root_fd,path,False)
+    try:
+        before=os.fstat(member)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1:
+            raise ValueError("held member is not a regular single-link file")
+        if before.st_size>limit: raise ValueError("held member exceeds targeted read limit")
+        if before.st_size!=expected.size or _member_mode(before)!=expected.mode_class:
+            raise ValueError("held member identity does not match manifest")
+        return member,before
+    except Exception: os.close(member); raise
+
+def read_held_member(held:HeldStagedTree,relative)->bytes:
+    """Read one authenticated manifest file without following a path link."""
+    path,expected=_normalized_held_file(held,relative)
+    member,before=_open_verified_held_file(held,path,expected,MAX_TARGET_MEMBER_BYTES)
+    chunks=[]; digest=hashlib.sha256(); total=0
+    try:
+        held.proof_budget.charge("artifact",entries=1)
+        while chunk:=os.read(member,SCAN_HANDOFF_CHUNK_BYTES):
+            held.proof_budget.check(); held.proof_budget.charge("artifact",byte_count=len(chunk)); total+=len(chunk)
+            if total>MAX_TARGET_MEMBER_BYTES or total>expected.size:
+                raise ValueError("held member exceeds targeted read limit")
+            chunks.append(chunk); digest.update(chunk)
+        after=os.fstat(member)
+        if _stable_member(after)!=_stable_member(before): raise ValueError("held member changed while reading")
+        actual=ManifestEntry(path,_member_mode(after),total,digest.hexdigest())
+        if actual!=expected: raise ValueError("held member manifest mismatch")
+        return b"".join(chunks)
+    finally: os.close(member)
+
+def held_member_has_php_tag(held:HeldStagedTree,relative)->bool:
+    """Classify one verified member without materializing its contents."""
+    path,expected=_normalized_held_file(held,relative)
+    member,before=_open_verified_held_file(held,path,expected,MAX_FILE_BYTES)
+    digest=hashlib.sha256(); total=0; overlap=b""; found=False
+    try:
+        held.proof_budget.charge("artifact",entries=1)
+        while chunk:=os.read(member,SCAN_HANDOFF_CHUNK_BYTES):
+            held.proof_budget.check(); held.proof_budget.charge("artifact",byte_count=len(chunk)); total+=len(chunk)
+            if total>expected.size: raise ValueError("held member exceeds manifest size")
+            digest.update(chunk); probe=(overlap+chunk).lower()
+            found=found or b"<?php" in probe or b'<?=' in probe
+            overlap=probe[-4:]
+        after=os.fstat(member)
+        if _stable_member(after)!=_stable_member(before): raise ValueError("held member changed while scanning")
+        actual=ManifestEntry(path,_member_mode(after),total,digest.hexdigest())
+        if actual!=expected: raise ValueError("held member manifest mismatch")
+        return found
+    finally: os.close(member)
+
+def _copy_held_file(held,path,expected,root_fd,total):
+    source,before=_open_verified_held_file(held,path,expected,MAX_FILE_BYTES)
+    parent_fds=[]; output=None; digest=hashlib.sha256(); copied=0
+    try:
+        parent,parent_fds=_destination_parent(root_fd,PurePosixPath(path).parts[:-1])
+        mode=0o700 if expected.mode_class=="executable" else 0o600
+        output=workspace_lease.create_secure_file(parent,PurePosixPath(path).name,mode)
+        while chunk:=os.read(source,SCAN_HANDOFF_CHUNK_BYTES):
+            held.proof_budget.check(); copied+=len(chunk); total[0]+=len(chunk)
+            held.proof_budget.charge("artifact",byte_count=len(chunk))
+            if copied>expected.size or total[0]>MAX_TOTAL_BYTES: raise ValueError("scan handoff copy exceeds bounds")
+            _write_all(output,chunk); digest.update(chunk)
+        after=os.fstat(source)
+        if _stable_member(after)!=_stable_member(before): raise ValueError("held member changed while streaming")
+        actual=ManifestEntry(path,_member_mode(after),copied,digest.hexdigest())
+        if actual!=expected: raise ValueError("scan handoff source manifest mismatch")
+        return actual
+    finally:
+        if output is not None: os.close(output)
+        for descriptor in reversed(parent_fds): os.close(descriptor)
+        os.close(source)
+
+def _scan_handoff_selection(held:HeldStagedTree,members):
+    if members is None: return held.proof.manifest,held.proof.path_kinds
+    if isinstance(members,(str,Path,PurePosixPath)): raise TypeError("scan handoff members must be an iterable of paths")
+    selected={}
+    for relative in members:
+        path,entry=_normalized_held_file(held,relative)
+        if path in selected: raise ValueError("duplicate scan handoff member")
+        selected[path]=entry
+    manifest=tuple(selected[path] for path in sorted(selected)); kinds={}
+    for entry in manifest:
+        parts=PurePosixPath(entry.path).parts
+        for index in range(1,len(parts)): kinds[PurePosixPath(*parts[:index]).as_posix()]="directory"
+        kinds[entry.path]="file"
+    return manifest,tuple(sorted(kinds.items()))
+
+def _copy_held_tree(held:HeldStagedTree,root_fd:int,expected_manifest,path_kinds)->tuple[ManifestEntry,...]:
+    held.proof_budget.begin("artifact"); observed=[]; total=[0]
+    for path,kind in path_kinds:
+        held.proof_budget.check(); held.proof_budget.charge("artifact",entries=1)
+        if kind=="directory":
+            _parent,opened=_destination_parent(root_fd,PurePosixPath(path).parts)
+            for descriptor in reversed(opened): os.close(descriptor)
+            continue
+        expected=held.manifest_by_path.get(path)
+        if kind!="file" or expected is None: raise ValueError("held scan handoff graph is inconsistent")
+        observed.append(_copy_held_file(held,path,expected,root_fd,total))
+    result=tuple(sorted(observed,key=lambda item:item.path))
+    if result!=expected_manifest: raise ValueError("scan handoff source manifest mismatch")
+    return result
+
+def stage_scan_handoff(held:HeldStagedTree,parent:Path|None=None,members=None)->StagedTree:
+    """Stream one held artifact into a private authenticated scanner handoff."""
+    _require_held(held); expected_manifest,path_kinds=_scan_handoff_selection(held,members); role=StageRole.SCAN_HANDOFF
+    lease=workspace_lease.create_ephemeral(parent,workspace_lease.WorkspacePurpose.ARTIFACT_EXECUTION)
+    root=lease.root/"artifact"
+    try:
+        lease_fd=_verified_lease_fd(lease); root_fd=_create_artifact_root(lease_fd)
+        intended=_copy_held_tree(held,root_fd,expected_manifest,path_kinds); manifest=_manifest_from_fd(root_fd,"canonical")
+        if intended!=expected_manifest or manifest!=expected_manifest:
+            raise ValueError("scan handoff manifest mismatch")
+        if tuple(sorted(_filesystem_kinds_from_fd(root_fd).items()))!=path_kinds:
+            raise ValueError("scan handoff filesystem entry mismatch")
+        current=os.stat("artifact",dir_fd=lease_fd,follow_symlinks=False); opened=os.fstat(root_fd)
+        if (current.st_dev,current.st_ino)!=(opened.st_dev,opened.st_ino): raise ValueError("scan handoff root changed")
+        os.close(root_fd); os.close(lease_fd)
+        return _register_staged(StagedTree(lease,root,manifest,role,None,False),role)
+    except Exception as primary:
+        for name in ("root_fd","lease_fd"):
+            if name in locals():
+                try: os.close(locals()[name])
+                except OSError: pass
+        _raise_after_staging_cleanup(primary,"scan_handoff",role,lease,root)
 
 def _tar_info(path:str,kind:str,size:int=0)->tarfile.TarInfo:
     item=tarfile.TarInfo(path); item.uid=0; item.gid=0; item.uname=""; item.gname=""; item.mtime=0
