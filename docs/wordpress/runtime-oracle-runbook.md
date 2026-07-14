@@ -1,6 +1,6 @@
 # WordPress Runtime Oracle Runbook
 
-Updated: 2026-07-06.
+Updated: 2026-07-13.
 
 The WordPress executor evidence stack has three deterministic layers before any LLM judge or critic review:
 
@@ -349,9 +349,11 @@ python3 evals/harness/run_wordpress_runtime_smoke.py \
 
 This proves the saved block packet can materialize into files, pass the static
 block artifact gate, run `npm install` plus `npm run build` on a disposable
-copy, register through a disposable wrapper in `wp-env`, pass WPCS/PHPCS and
-Plugin Check for that wrapper, appear in the editor, insert/save/publish, and
-render on the frontend. It does not prove PHPUnit, deprecation migration,
+copy, pass a fresh post-build execution-artifact gate, register through a
+disposable wrapper in `wp-env`, pass WPCS/PHPCS and Plugin Check for that
+wrapper, appear in the editor, insert/save/publish, and render on the frontend.
+The build-command gate and emitted-artifact gate are independent required rows;
+neither substitutes for the other. It does not prove PHPUnit, deprecation migration,
 Interactivity API behavior, cross-browser behavior, MCP Adapter exposure, AI
 Client provider-call behavior, or release readiness unless those gates are also
 run and pass. The first local proofs are recorded at
@@ -384,10 +386,11 @@ python3 evals/harness/run_wordpress_runtime_smoke.py \
   --timeout-sec 300
 ```
 
-When `npm run build` emits a built block metadata file, the disposable wrapper
-registers the built block directory so `viewScriptModule` uses the compiled
-module asset. `--interactivity-smoke` adds a static Interactivity surface gate
-and a Playwright frontend click/state assertion. The first local proof is
+When `npm run build` emits the exact source-anchored child `build/block.json`,
+the disposable wrapper registers that literal metadata file so
+`viewScriptModule` uses the compiled module asset. Any other plausible metadata
+root blocks instead of being guessed. `--interactivity-smoke` adds a static
+Interactivity surface gate and a Playwright frontend click/state assertion. The first local proof is
 recorded at
 `evals/results/wordpress-skill-candidate-eval/generated-block-interactivity-artifact-cert-20260621/`
 and
@@ -396,6 +399,30 @@ It proves the generated block can publish and render, then change `context.count
 from `0` to `1` through Interactivity API directives. It does not prove block
 deprecation migration, MCP Adapter exposure, AI Client provider calls, broad
 cross-browser behavior, or release readiness.
+
+### Post-build block execution-artifact proof
+
+For built block runtime, a full artifact proof means all of the following pass:
+
+- the isolated build command completes and returns an authenticated sandbox-output capability;
+- one source-anchored metadata layout selects either the exact child
+  `build/block.json` or the source fallback, with ambiguity rejected;
+- WordPress 7.0.1 metadata references and optional `.asset.php`/RTL companions
+  resolve against the pinned core rule table and authenticated manifest;
+- every executable-PHP candidate outside excluded namespaces is scanned with
+  syntax, secret, API, and security gates, including PHP-tagged files without a
+  `.php` suffix; candidates inside excluded namespaces are rejected;
+- one minimal no-follow scanner handoff is re-proved around each path-required
+  tool and removed afterward;
+- the wrapper registers the exact selected `block.json` with one safely encoded
+  literal path; and
+- the output manifest, graph, candidate set, scan file table, wrapper bytes,
+  synthesized manifest, core rule identity, and final
+  `execution_proof_digest` remain bound in runtime JSON.
+
+This is deliberately conservative, not an exact dynamic-include graph. It does
+not prove JavaScript import reachability, `eval()` or runtime-generated code,
+runtime-specific PHP short-tag behavior, authorization, or release readiness.
 
 For a generated block deprecation proof, use a block packet that includes a
 legacy serialized-content fixture plus `deprecation-smoke.json`, then add

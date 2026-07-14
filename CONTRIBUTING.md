@@ -52,6 +52,14 @@ python3 -m pytest \
   evals/harness/tests/test_isolated_runtime_contract.py \
   evals/harness/tests/test_wp_staged_runtime.py \
   evals/harness/tests/test_executor_repair_loop.py \
+  evals/harness/tests/test_artifact_layout.py \
+  evals/harness/tests/test_artifact_execution_graph.py \
+  evals/harness/tests/test_artifact_execution_gate.py \
+  evals/harness/tests/test_artifact_explicit_scanners.py \
+  evals/harness/tests/test_artifact_traversal.py \
+  evals/harness/tests/test_runtime_artifact_pipeline.py \
+  evals/harness/tests/test_isolated_block_artifact_contract.py \
+  evals/harness/tests/test_wordpress_runtime_artifact_gate.py \
   evals/harness/tests/test_wordpress_runtime_smoke.py \
   evals/harness/tests/test_wordpress_artifact_oracle.py \
   evals/harness/tests/test_wordpress_blueprint_launch_readiness.py \
