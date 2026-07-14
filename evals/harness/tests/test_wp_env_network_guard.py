@@ -236,6 +236,43 @@ def test_wp_cli_verification_fails_closed():
     with pytest.raises(RuntimeError,match="WP-CLI"):
         guard.verify_wp_cli_result({"returncode":0,"stdout":"wrong file","stderr":""},"abc")
 
+def test_canary_service_quota_targets_preserve_first_matching_profile(monkeypatch):
+    profiles={
+        "wordpress": ({32:("wordpress-id","/tmp")},{2048:("wordpress-id","/tmp")}),
+        "cli": ({16:("cli-id","/tmp")},{1024:("cli-id","/tmp")}),
+        "database": ({16:("database-id","/tmp")},{1024:("database-id","/tmp")}),
+        "browser": ({64:("browser-id","/tmp")},{4096:("browser-id","/tmp")}),
+    }
+    def inspect(_base,service,_image,_built,_identities):
+        size,inodes=profiles[service]
+        return f"live-{service}",f"cid-{service}",set(),([], {"size":size,"inodes":inodes})
+    monkeypatch.setattr(guard,"_inspect_canary_service",inspect)
+    _live,_gateways,_observed,targets=guard._inspect_canary_services([],{}, {},"wp","db","browser")
+    assert targets["size"][16] == ("cli-id","/tmp")
+    assert targets["inodes"][1024] == ("cli-id","/tmp")
+
+def test_canary_cleanup_preserves_primary_and_attempts_all_boundaries(monkeypatch):
+    calls=[]
+    def fail(command,**_kwargs):
+        calls.append(command)
+        raise RuntimeError("cleanup transport failure")
+    monkeypatch.setattr(guard.provision,"run_capped",fail)
+    with pytest.raises(RuntimeError,match="primary canary failure"):
+        try: raise RuntimeError("primary canary failure")
+        finally: guard._cleanup_canary(["docker","compose"],("wp-image","db-image"))
+    assert calls[0][-3:] == ["down","-v","--remove-orphans"]
+    assert calls[1] == ["docker","image","rm","-f","wp-image","db-image"]
+
+def test_canary_cleanup_only_failure_remains_nonzero(monkeypatch):
+    calls=[]
+    def fail(command,**_kwargs):
+        calls.append(command)
+        raise RuntimeError("cleanup only failure")
+    monkeypatch.setattr(guard.provision,"run_capped",fail)
+    with pytest.raises(RuntimeError,match="cleanup only failure"):
+        guard._cleanup_canary(["docker","compose"],("wp-image","db-image"))
+    assert len(calls) == 2 and calls[1][0:4] == ["docker","image","rm","-f"]
+
 def test_outer_cleanup_preserves_inspection_failure(monkeypatch,tmp_path):
     monkeypatch.setattr(guard.platform,"system",lambda:"Linux")
     monkeypatch.setenv("CANARY_COMMIT_SHA","a"*40)

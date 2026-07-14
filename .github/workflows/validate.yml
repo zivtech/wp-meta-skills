@@ -100,6 +100,7 @@ jobs:
           set +e
           STEP4_EVIDENCE_DIR="$evidence_dir" python -m pytest \
             evals/harness/tests/test_sandboxed_package_runner.py \
+            evals/harness/tests/test_sandboxed_package_runner_limits.py \
             evals/harness/tests/test_sandboxed_package_runner_canonical_bind.py \
             evals/harness/tests/test_sandbox_proxy_supervisor_contract.py \
             evals/harness/tests/test_sandbox_python_preflight.py \
@@ -235,7 +236,7 @@ jobs:
           set +e
           timeout --signal=TERM --kill-after=30s 1800s \
             python -m pytest \
-              evals/harness/tests/test_wp_staged_runtime.py \
+              evals/harness/tests/test_wp_staged_runtime_docker.py \
               -m docker_boundary -q
           runtime_status=$?
           set -e

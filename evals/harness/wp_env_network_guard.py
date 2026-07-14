@@ -345,8 +345,7 @@ def run_linux_canary(work, result_path=None):
         except Exception as exc: cleanup_error=cleanup_error or exc
         if cleanup_error is not None and not active_error: raise cleanup_error
 
-def _run_linux_canary(work):
-    inventory=provision.inventory(); inv=inventory["images"]; arch=platform.machine()
+def _review_upstream_images(inv,arch):
     arch_key=provision.normalize_arch(arch)
     engine_arch=provision.run_capped(["docker","info","--format","{{.Architecture}}"])["stdout"].strip()
     if provision.normalize_arch(engine_arch) != arch_key: raise RuntimeError("Docker engine architecture mismatch")
@@ -360,97 +359,161 @@ def _run_linux_canary(work):
         if result["returncode"]: raise RuntimeError(f"reviewed image pull failed: {reference}: {result['stderr']}")
         inspected=json.loads(provision.run_capped(["docker","image","inspect",reference])["stdout"])[0]
         if not inspected["Id"].startswith("sha256:") or not any(value.endswith(provision.platform_digest(inv[key],arch)) for value in inspected.get("RepoDigests",[])): raise RuntimeError(f"pulled child provenance mismatch: {key}")
-    prove_fixture_locks(work,inv,arch)
+    return upstream
+
+
+def _build_canary_images(work,inventory,inv,arch,wp_tag,db_tag):
     wpctx,dbctx,_browserctx=wp_runtime_provisioning.prepare_build_contexts(work,inventory)
-    run_id=__import__("hashlib").sha256(str(work).encode()).hexdigest()[:12]; wp_tag=f"wp-sandbox-wordpress:{run_id}"; db_tag=f"wp-sandbox-database:{run_id}"
     commands=[
       ["docker","build","--network=none","--pull=false","-t",wp_tag,"--build-arg",f"WORDPRESS_BASE=wordpress@{provision.platform_digest(inv['wordpress'],arch)}","--build-arg",f"CLI_BASE=wordpress@{provision.platform_digest(inv['wordpress_cli'],arch)}","--build-arg",f"WP_CLI_SHA256={inventory['wp_cli_binary']['sha256']}","--build-arg",f"PLUGIN_CHECK_SHA256={inventory['plugin_check']['sha256']}",str(wpctx)],
       ["docker","build","--network=none","--pull=false","-t",db_tag,"--build-arg",f"DATABASE_BASE=mariadb@{provision.platform_digest(inv['database'],arch)}",str(dbctx)]]
     for command in commands:
         result=provision.run_capped(command,timeout=900)
-        if result["returncode"]:
-            provision.run_capped(["docker","image","rm","-f",wp_tag,db_tag],timeout=120)
-            raise RuntimeError(result["stderr"])
+        if result["returncode"]: raise RuntimeError(result["stderr"])
     built={key:provision.run_capped(["docker","image","inspect",tag,"--format","{{.Id}}"])["stdout"].strip() for key,tag in (("wordpress",wp_tag),("database",db_tag))}
     if not all(value.startswith("sha256:") for value in built.values()): raise RuntimeError("missing built image ID")
     wordpress_config=json.loads(provision.run_capped(["docker","image","inspect",built["wordpress"]])["stdout"])[0]["Config"]
     validate_wordpress_image_config(wordpress_config)
     wp_cli=provision.run_capped(["docker","run","--rm","--entrypoint","sha256sum",built["wordpress"],"/usr/local/bin/wp"])
     verify_wp_cli_result(wp_cli,inventory["wp_cli_binary"]["sha256"])
-    def identity(image,user):
-        result=provision.run_capped(["docker","run","--rm","--entrypoint","sh",image,"-c",f"id -u {user}; id -g {user}"])
-        if result["returncode"]: raise RuntimeError(result["stderr"])
-        uid,gid=result["stdout"].splitlines(); return f"{uid}:{gid}"
+    return built
+
+
+def _image_identity(image,user):
+    result=provision.run_capped(["docker","run","--rm","--entrypoint","sh",image,"-c",f"id -u {user}; id -g {user}"])
+    if result["returncode"]: raise RuntimeError(result["stderr"])
+    uid,gid=result["stdout"].splitlines()
+    return f"{uid}:{gid}"
+
+
+def _prepare_canary_compose(work,built,inv,arch):
     playwright=f"{inv['playwright']['tag'].split(':')[0]}@{provision.platform_digest(inv['playwright'],arch)}"
+    identities={"wordpress":_image_identity(built["wordpress"],"www-data"),
+                "database":_image_identity(built["database"],"mysql"),
+                "browser":_image_identity(playwright,"pwuser")}
+    compose=work/"compose.json"
+    write_canary(compose,built,identities)
+    return compose,identities,playwright
+
+
+def _inspect_tmpfs_profiles(cid,service,built,identities):
+    profiles=[]; targets={"size":{},"inodes":{}}
+    mounts=canary_compose(built,identities)["services"][service]["tmpfs"]
+    mount_specs={entry.split(":",1)[0]:dict(item.split("=",1) for item in entry.split(":",1)[1].split(",")) for entry in mounts}
+    for path,options in mount_specs.items():
+        writable=provision.run_capped(["docker","exec",cid,"sh","-eu","-c",f"test -w {path}; touch {path}/.wp-step0-write; rm {path}/.wp-step0-write; ! touch /.wp-step0-forbidden; df -Pk {path} | tail -1; df -Pi {path} | tail -1"])
+        if writable["returncode"]: raise RuntimeError(f"{service} writable ownership/quota profile failed")
+        profile=validate_df_profile(writable["stdout"],int(options["size"]),int(options["nr_inodes"]))
+        profile.update(service=service,path=path); profiles.append(profile)
+        targets["size"].setdefault(int(options["size"]),(cid,path))
+        targets["inodes"].setdefault(int(options["nr_inodes"]),(cid,path))
+    return profiles,targets
+
+
+def _inspect_canary_service(base,service,image_tag,built,identities):
+    expected=provision.run_capped(["docker","image","inspect",image_tag,"--format","{{.Id}}"])["stdout"].strip()
+    cid=provision.run_capped(base+["ps","-q",service])["stdout"].strip()
+    live=provision.run_capped(["docker","inspect",cid,"--format","{{.Image}}"])["stdout"].strip()
+    if not expected or live != expected: raise RuntimeError(f"{service} live image ID mismatch")
+    inspected=json.loads(provision.run_capped(["docker","inspect",cid])["stdout"])[0]
+    host=inspected["HostConfig"]
+    if not host["ReadonlyRootfs"] or host["CapDrop"] != ["ALL"] or host["PidsLimit"] != 128 or host["Memory"] != 536870912 or host["NanoCpus"] != 1000000000: raise RuntimeError(f"{service} live resource policy mismatch")
+    if host["SecurityOpt"] != ["no-new-privileges:true"] or host["LogConfig"]["Type"] != "none": raise RuntimeError(f"{service} live security/default-seccomp policy mismatch")
+    if host["Privileged"] or host.get("Binds") or host.get("Devices") or host.get("PortBindings") or host.get("ExtraHosts") or host.get("Dns") or host.get("DnsSearch"): raise RuntimeError(f"{service} live forbidden host surface")
+    if host.get("Ulimits") != [{"Name":"nofile","Hard":1024,"Soft":1024}]: raise RuntimeError(f"{service} live nofile drift")
+    if any(item.split("=",1)[0].lower().endswith("proxy") for item in inspected["Config"].get("Env",[])): raise RuntimeError(f"{service} inherited proxy environment")
+    expected_tmpfs={entry.split(":",1)[0]:set(entry.split(":",1)[1].split(",")) for entry in canary_compose(built,identities)["services"][service]["tmpfs"]}
+    validate_live_tmpfs_inventory(inspected,service,expected_tmpfs)
+    if not inspected["Config"]["User"].split(":")[0].isdigit(): raise RuntimeError(f"{service} live user is not numeric")
+    networks={name.rsplit("_",1)[-1] for name in inspected["NetworkSettings"]["Networks"]}
+    expected_networks={"database":{"db"},"cli":{"db"},"wordpress":{"db","wp"},"browser":{"wp"}}[service]
+    if networks != expected_networks: raise RuntimeError(f"{service} live network inventory mismatch")
+    gateways={value["Gateway"] for value in inspected["NetworkSettings"]["Networks"].values() if value.get("Gateway")}
+    return live,cid,gateways,_inspect_tmpfs_profiles(cid,service,built,identities)
+
+
+def _inspect_canary_services(base,built,identities,wp_tag,db_tag,playwright):
+    live_ids={}; gateways=set(); profiles=[]; targets={"size":{},"inodes":{}}
+    services=(("wordpress",wp_tag),("cli",wp_tag),("database",db_tag),("browser",playwright))
+    for service,image_tag in services:
+        live,_cid,found,storage=_inspect_canary_service(base,service,image_tag,built,identities)
+        live_ids[service]=live; gateways.update(found); profiles.extend(storage[0])
+        for kind in targets:
+            for limit,target in storage[1][kind].items(): targets[kind].setdefault(limit,target)
+    return live_ids,gateways,profiles,targets
+
+
+def _prove_quota_exhaustion(targets):
+    exhaustion=[]
+    for size,(cid,path) in targets["size"].items():
+        script=f"set -eu; a=$(df -Pk {path}|tail -1|awk '{{print $4}}'); n=$((a>16?a-8:1)); dd if=/dev/zero of={path}/.byte-fill bs=1024 count=$n 2>/dev/null; if dd if=/dev/zero of={path}/.byte-over bs=1024 count=16 2>/dev/null; then exit 1; fi; rm -f {path}/.byte-fill {path}/.byte-over; touch {path}/.byte-recovered; rm {path}/.byte-recovered"
+        result=provision.run_capped(["docker","exec",cid,"sh","-c",script],timeout=180)
+        if result["returncode"]: raise RuntimeError(f"byte exhaustion/recovery failed for profile {size}")
+        exhaustion.append({"kind":"bytes","reviewed":size,"contained":True,"recovered":True})
+    for count,(cid,path) in targets["inodes"].items():
+        limit=count+max(16,(count+99)//100)
+        script=f"set -eu; i=0; while touch {path}/.inode-$i 2>/dev/null; do i=$((i+1)); test $i -le {limit}; done; test $i -le {limit}; rm -f {path}/.inode-*; touch {path}/.inode-recovered; rm {path}/.inode-recovered"
+        result=provision.run_capped(["docker","exec",cid,"sh","-c",script],timeout=180)
+        if result["returncode"]: raise RuntimeError(f"inode exhaustion/recovery failed for profile {count}")
+        exhaustion.append({"kind":"inodes","reviewed":count,"contained":True,"recovered":True})
+    return exhaustion
+
+
+def _prove_gateway_and_cpu(base,gateways):
+    browser_cid=provision.run_capped(base+["ps","-q","browser"])["stdout"].strip()
+    script="const t="+json.dumps(sorted(gateways))+";Promise.all(t.map(h=>fetch('http://'+h,{signal:AbortSignal.timeout(2000)}).then(()=>{throw Error('gateway escaped')},()=>true))).then(()=>process.exit(0),()=>process.exit(1))"
+    result=provision.run_capped(["docker","exec",browser_cid,"node","-e",script],timeout=10)
+    if result["returncode"]: raise RuntimeError("browser reached a network gateway")
+    provision.run_capped(["docker","exec","-d",browser_cid,"node","-e","const end=Date.now()+5000;while(Date.now()<end){}"])
+    __import__("time").sleep(1)
+    cpu=float(provision.run_capped(["docker","stats","--no-stream","--format","{{.CPUPerc}}",browser_cid])["stdout"].strip().rstrip("%"))
+    if cpu > 110.0: raise RuntimeError("browser CPU quota exceeded")
+
+
+def _provenance_chain(inv,upstream,arch):
+    chain={}
+    for key in inv:
+        repo=provision.run_capped(["docker","image","inspect",upstream[key],"--format","{{json .RepoDigests}}"])["stdout"].strip()
+        chain[key]={"index":inv[key]["index"],"platform_child":provision.platform_digest(inv[key],arch),"pulled_repo_digests":json.loads(repo)}
+    return chain
+
+
+def _execute_canary(base,inventory,inv,arch,upstream,built,identities,tags,playwright):
+    result=provision.run_capped(base+["config","--images"],timeout=300)
+    if result["returncode"]: raise RuntimeError(result["stderr"])
+    if set(result["stdout"].splitlines()) != {built["wordpress"],built["database"],playwright}: raise RuntimeError("final Compose image inventory mismatch")
+    result=provision.run_capped(base+["up","-d","--wait"],timeout=300)
+    if result["returncode"]: raise compose_start_failure(result,base)
+    for probe in runtime_probe_specs(base): run_named_probe(probe)
+    live,gateways,profiles,targets=_inspect_canary_services(base,built,identities,*tags,playwright)
+    exhaustion=_prove_quota_exhaustion(targets); _prove_gateway_and_cpu(base,gateways)
+    return {"status":"pass","platform":arch,"core_sha256":inventory["wordpress_core"]["sha256"],
+            "built_image_ids":built,"live_image_ids":live,
+            "provenance":_provenance_chain(inv,upstream,arch),
+            "observed_tmpfs_profiles":profiles,"quota_exhaustion":exhaustion}
+
+
+def _cleanup_canary(base,tags):
+    active_error=__import__("sys").exc_info()[0] is not None
+    cleanup_error=None
+    if base is not None:
+        try: provision.run_capped(base+["down","-v","--remove-orphans"],timeout=120)
+        except Exception as exc: cleanup_error=exc
+    try: provision.run_capped(["docker","image","rm","-f",*tags],timeout=120)
+    except Exception as exc: cleanup_error=cleanup_error or exc
+    if cleanup_error is not None and not active_error: raise cleanup_error
+
+
+def _run_linux_canary(work):
+    inventory=provision.inventory(); inv=inventory["images"]; arch=platform.machine()
+    run_id=__import__("hashlib").sha256(str(work).encode()).hexdigest()[:12]
+    tags=(f"wp-sandbox-wordpress:{run_id}",f"wp-sandbox-database:{run_id}")
+    base=None
     try:
-        identities={"wordpress":identity(built["wordpress"],"www-data"),"database":identity(built["database"],"mysql"),"browser":identity(playwright,"pwuser")}
-        compose=work/"compose.json"; write_canary(compose,built,identities)
-    except Exception:
-        provision.run_capped(["docker","image","rm","-f",wp_tag,db_tag],timeout=120)
-        raise
-    base=["docker","compose","-p",f"wpstep0{run_id}","-f",str(compose)]
-    try:
-        result=provision.run_capped(base+["config","--images"],timeout=300)
-        if result["returncode"]: raise RuntimeError(result["stderr"])
-        configured=set(result["stdout"].splitlines())
-        if configured != {built["wordpress"],built["database"],playwright}: raise RuntimeError("final Compose image inventory mismatch")
-        result=provision.run_capped(base+["up","-d","--wait"],timeout=300)
-        if result["returncode"]:
-            raise compose_start_failure(result,base)
-        for probe in runtime_probe_specs(base): run_named_probe(probe)
-        live_ids={}; gateways=set(); observed_profiles=[]; exhaustion_targets={"size":{},"inodes":{}}
-        for service,image_tag in (("wordpress",wp_tag),("cli",wp_tag),("database",db_tag),("browser",playwright)):
-            expected=provision.run_capped(["docker","image","inspect",image_tag,"--format","{{.Id}}"])["stdout"].strip()
-            cid=provision.run_capped(base+["ps","-q",service])["stdout"].strip()
-            live=provision.run_capped(["docker","inspect",cid,"--format","{{.Image}}"])["stdout"].strip()
-            if not expected or live != expected: raise RuntimeError(f"{service} live image ID mismatch")
-            live_ids[service]=live
-            inspected=json.loads(provision.run_capped(["docker","inspect",cid])["stdout"])[0]
-            host=inspected["HostConfig"]
-            if not host["ReadonlyRootfs"] or host["CapDrop"] != ["ALL"] or host["PidsLimit"] != 128 or host["Memory"] != 536870912 or host["NanoCpus"] != 1000000000: raise RuntimeError(f"{service} live resource policy mismatch")
-            if host["SecurityOpt"] != ["no-new-privileges:true"] or host["LogConfig"]["Type"] != "none": raise RuntimeError(f"{service} live security/default-seccomp policy mismatch")
-            if host["Privileged"] or host.get("Binds") or host.get("Devices") or host.get("PortBindings") or host.get("ExtraHosts") or host.get("Dns") or host.get("DnsSearch"): raise RuntimeError(f"{service} live forbidden host surface")
-            if host.get("Ulimits") != [{"Name":"nofile","Hard":1024,"Soft":1024}]: raise RuntimeError(f"{service} live nofile drift")
-            if any(item.split("=",1)[0].lower().endswith("proxy") for item in inspected["Config"].get("Env",[])): raise RuntimeError(f"{service} inherited proxy environment")
-            expected_tmpfs={entry.split(":",1)[0]:set(entry.split(":",1)[1].split(",")) for entry in canary_compose(built,identities)["services"][service]["tmpfs"]}
-            validate_live_tmpfs_inventory(inspected,service,expected_tmpfs)
-            if not inspected["Config"]["User"].split(":")[0].isdigit(): raise RuntimeError(f"{service} live user is not numeric")
-            networks={name.rsplit("_",1)[-1] for name in inspected["NetworkSettings"]["Networks"]}
-            gateways.update(value.get("Gateway") for value in inspected["NetworkSettings"]["Networks"].values() if value.get("Gateway"))
-            expected_networks={"database":{"db"},"cli":{"db"},"wordpress":{"db","wp"},"browser":{"wp"}}[service]
-            if networks != expected_networks: raise RuntimeError(f"{service} live network inventory mismatch")
-            mount_specs={entry.split(":",1)[0]:dict(item.split("=",1) for item in entry.split(":",1)[1].split(",")) for entry in canary_compose(built,identities)["services"][service]["tmpfs"]}
-            for path,options in mount_specs.items():
-                writable=provision.run_capped(["docker","exec",cid,"sh","-eu","-c",f"test -w {path}; touch {path}/.wp-step0-write; rm {path}/.wp-step0-write; ! touch /.wp-step0-forbidden; df -Pk {path} | tail -1; df -Pi {path} | tail -1"])
-                if writable["returncode"]: raise RuntimeError(f"{service} writable ownership/quota profile failed")
-                profile=validate_df_profile(writable["stdout"],int(options["size"]),int(options["nr_inodes"])); profile.update(service=service,path=path); observed_profiles.append(profile)
-                exhaustion_targets["size"].setdefault(int(options["size"]),(cid,path))
-                exhaustion_targets["inodes"].setdefault(int(options["nr_inodes"]),(cid,path))
-        browser_cid=provision.run_capped(base+["ps","-q","browser"])["stdout"].strip()
-        exhaustion=[]
-        for size,(cid,path) in exhaustion_targets["size"].items():
-            script=f"set -eu; a=$(df -Pk {path}|tail -1|awk '{{print $4}}'); n=$((a>16?a-8:1)); dd if=/dev/zero of={path}/.byte-fill bs=1024 count=$n 2>/dev/null; if dd if=/dev/zero of={path}/.byte-over bs=1024 count=16 2>/dev/null; then exit 1; fi; rm -f {path}/.byte-fill {path}/.byte-over; touch {path}/.byte-recovered; rm {path}/.byte-recovered"
-            result=provision.run_capped(["docker","exec",cid,"sh","-c",script],timeout=180)
-            if result["returncode"]: raise RuntimeError(f"byte exhaustion/recovery failed for profile {size}")
-            exhaustion.append({"kind":"bytes","reviewed":size,"contained":True,"recovered":True})
-        for count,(cid,path) in exhaustion_targets["inodes"].items():
-            limit=count+max(16,(count+99)//100)
-            script=f"set -eu; i=0; while touch {path}/.inode-$i 2>/dev/null; do i=$((i+1)); test $i -le {limit}; done; test $i -le {limit}; rm -f {path}/.inode-*; touch {path}/.inode-recovered; rm {path}/.inode-recovered"
-            result=provision.run_capped(["docker","exec",cid,"sh","-c",script],timeout=180)
-            if result["returncode"]: raise RuntimeError(f"inode exhaustion/recovery failed for profile {count}")
-            exhaustion.append({"kind":"inodes","reviewed":count,"contained":True,"recovered":True})
-        gateway_script="const t="+json.dumps(sorted(gateways))+";Promise.all(t.map(h=>fetch('http://'+h,{signal:AbortSignal.timeout(2000)}).then(()=>{throw Error('gateway escaped')},()=>true))).then(()=>process.exit(0),()=>process.exit(1))"
-        gateway_probe=provision.run_capped(["docker","exec",browser_cid,"node","-e",gateway_script],timeout=10)
-        if gateway_probe["returncode"]: raise RuntimeError("browser reached a network gateway")
-        provision.run_capped(["docker","exec","-d",browser_cid,"node","-e","const end=Date.now()+5000;while(Date.now()<end){}"])
-        __import__("time").sleep(1)
-        cpu=float(provision.run_capped(["docker","stats","--no-stream","--format","{{.CPUPerc}}",browser_cid])["stdout"].strip().rstrip("%"))
-        if cpu > 110.0: raise RuntimeError("browser CPU quota exceeded")
-        chain={}
-        for key in inv:
-            repo=provision.run_capped(["docker","image","inspect",upstream[key],"--format","{{json .RepoDigests}}"])["stdout"].strip()
-            chain[key]={"index":inv[key]["index"],"platform_child":provision.platform_digest(inv[key],arch),"pulled_repo_digests":json.loads(repo)}
-        return {"status":"pass","platform":arch,"core_sha256":provision.inventory()["wordpress_core"]["sha256"],"built_image_ids":built,"live_image_ids":live_ids,"provenance":chain,"observed_tmpfs_profiles":observed_profiles,"quota_exhaustion":exhaustion}
+        upstream=_review_upstream_images(inv,arch); prove_fixture_locks(work,inv,arch)
+        built=_build_canary_images(work,inventory,inv,arch,*tags)
+        compose,identities,playwright=_prepare_canary_compose(work,built,inv,arch)
+        base=["docker","compose","-p",f"wpstep0{run_id}","-f",str(compose)]
+        return _execute_canary(base,inventory,inv,arch,upstream,built,identities,tags,playwright)
     finally:
-        provision.run_capped(base+["down","-v","--remove-orphans"],timeout=120)
-        provision.run_capped(["docker","image","rm","-f",wp_tag,db_tag],timeout=120)
+        _cleanup_canary(base,tags)

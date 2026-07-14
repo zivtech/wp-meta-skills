@@ -767,36 +767,3 @@ def test_smoke_blocks_a_malformed_runtime_result(monkeypatch, tmp_path):
     )
     assert result["status"] == "blocked" and result["pass"] is False
     assert "invalid result" in result["reason"]
-
-
-@pytest.fixture(scope="module")
-def live_runtime_result(tmp_path_factory):
-    if platform.system() != "Linux" or shutil.which("docker") is None:
-        pytest.skip("real staged runtime requires Linux Docker")
-    tmp_path=tmp_path_factory.mktemp("isolated-runtime")
-    staged, synthesized, digest = _synthesized(tmp_path,adversarial=True)
-    try:
-        request=replace(_request(synthesized,digest,tmp_path/"live-result"),timeout_sec=1800,
-            requested_oracles=runtime_contract.ADVERSARIAL_REQUESTED_ORACLES)
-        yield guard.run_staged_runtime(request)
-    finally:
-        _cleanup(staged, synthesized)
-
-
-@pytest.mark.docker_boundary
-def test_real_generated_plugin_uses_internal_runtime(live_runtime_result):
-    assert live_runtime_result.status == "pass", live_runtime_result.reason
-
-
-@pytest.mark.docker_boundary
-def test_real_runtime_exercises_named_hostile_canaries(live_runtime_result):
-    expected=set(runtime_contract.REQUIRED_CHECKS_BY_PROFILE[runtime_contract.ADVERSARIAL_PROFILE])
-    checks={item["id"]:item["status"] for item in live_runtime_result.checks}
-    assert expected<=set(checks) and all(checks[name]=="pass" for name in expected)
-
-
-@pytest.mark.docker_boundary
-def test_real_runtime_is_mount_free_and_cleanup_converges(live_runtime_result):
-    created=live_runtime_result.inspection["created"]["services"]
-    assert all(not service["mounts"] for service in created.values())
-    assert all(item["state"] not in {"retained","unknown"} for item in live_runtime_result.cleanup.values())
