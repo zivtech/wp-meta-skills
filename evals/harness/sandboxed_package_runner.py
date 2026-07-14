@@ -9,6 +9,7 @@ import sandbox_evidence, sandbox_dns_guard
 import sandbox_acquisition_diagnostic, sandbox_active_daemon as active_daemon
 import sandbox_daemon_control as daemon_control
 import sandbox_mount_policy, sandbox_network_policy, sandbox_none_network
+import sandbox_output_cleanup as output_cleanup
 import sandbox_process_transport as process_transport
 import sandbox_python_preflight as python_preflight
 import sandbox_proxy_supervisor as proxy_supervisor
@@ -52,35 +53,8 @@ def _assert_local_image(reference,ledger=None):
     digest=reference.rpartition("@")[2]
     if not re.fullmatch(r"sha256:[0-9a-f]{64}",image_id) or not isinstance(repo_digests,list) or not any(item.endswith(f"@{digest}") for item in repo_digests): raise RuntimeError("local image digest evidence mismatch")
     return image_id
-def _resource_events(ledger):
-    return [{"kind":item.kind,"name":item.name,"state":item.state} for item in ledger.events] if ledger else []
-def _staging_cleanup_receipts(error):
-    receipts=[]; seen=set(); current=error
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current,artifact_staging.StagingCleanupError): receipts.append(current.receipt)
-        current=current.__cause__ or current.__context__
-    return tuple(receipts)
-def _merge_staging_cleanup_receipts(*groups):
-    merged=[]
-    for group in groups:
-        for receipt in group:
-            if receipt not in merged: merged.append(receipt)
-    return tuple(merged)
-def _cleanup_successful_output(output,existing=()):
-    receipt=artifact_staging.cleanup_staged_tree(output)
-    meaningful=receipt.error is not None or receipt.state!="removed"
-    merged=_merge_staging_cleanup_receipts(existing,(receipt,) if meaningful else ())
-    return merged,receipt if meaningful else None
-def _output_cleanup_note(receipt):
-    if receipt is None: return ""
-    recovery=f"; recovery: {receipt.recovery_path}" if receipt.recovery_path else ""
-    error=f" ({receipt.error})" if receipt.error else ""
-    return f"; sandbox output cleanup {receipt.state}{error}{recovery}"
-def _discard_result_output(result):
-    if result.output is None: return result,""
-    receipts,receipt=_cleanup_successful_output(result.output,result.staging_cleanup_receipts)
-    return replace(result,output=None,staging_cleanup_receipts=receipts),_output_cleanup_note(receipt)
+_resource_events=output_cleanup.resource_events
+_staging_cleanup_receipts=output_cleanup.staging_cleanup_receipts
 def _blocked(request,name,detail,timings=None,metrics=None,staging_cleanup_receipts=()):
     return SandboxResult(
         "blocked",None,"","",None,sandbox_evidence.encode("blocked",timings,metrics,detail),name,
@@ -254,7 +228,7 @@ def _import_output(name,request,exclude_dependencies=False):
     operation=lambda:process_transport.import_output(name,request,_run,exclude_dependencies,health)
     retained=[]
     def cleanup(output):
-        _receipts,receipt=_cleanup_successful_output(output)
+        _receipts,receipt=output_cleanup.cleanup_successful_output(output)
         if receipt is not None: retained.append(receipt)
     try: return active_daemon.call(operation,deadline,cleanup)
     except Exception as primary:
@@ -727,6 +701,26 @@ def _start_event_channel(run_ledger,request,identity):
     follower=docker_event_guard.start(identity.container_id,gate)
     bound=lambda command,timeout:_bound_control(run_ledger,command,timeout,deadline)
     return follower,bound
+def _raise_live_boundary(primary,output,follower,context,acquisition_clean,name,request,timings,metrics,acquisition_ledger):
+    receipts=_staging_cleanup_receipts(primary); output_note=""
+    if output is not None:
+        receipts,receipt=output_cleanup.cleanup_successful_output(output,receipts)
+        output_note=output_cleanup.output_cleanup_note(receipt)
+    cleanup_notes=[]
+    if follower:
+        started=time.monotonic()
+        try: docker_event_guard.abort(follower); timings["event_follower_cleanup"]=time.monotonic()-started
+        except Exception as exc: cleanup_notes.append(f"event follower cleanup failed: {exc}")
+    if context and not acquisition_clean:
+        started=time.monotonic()
+        try: _cleanup_acquisition(context,name,force=True); timings["acquisition_cleanup"]=time.monotonic()-started
+        except Exception as exc: cleanup_notes.append(f"acquisition cleanup failed: {exc}")
+    ledger=context.ledger if context else acquisition_ledger
+    notes="".join(f"; {item}" for item in cleanup_notes)
+    raise SandboxBoundaryError(
+        f"{type(primary).__name__}: {primary}{output_note}{notes}",
+        timings,metrics,_resource_events(ledger) if ledger else [],receipts,
+    ) from primary
 def _run_live(request,name,capability,profile=None,run_ledger=None):
     run_ledger=run_ledger or ResourceLedger()
     admission_deadline=time.monotonic()+30; control=lambda command,value:_run(command,request,value); taint=lambda:setattr(run_ledger,"identity_tainted",True)
@@ -763,66 +757,17 @@ def _run_live(request,name,capability,profile=None,run_ledger=None):
         if profile: timing_contract.require_runtime(timings)
         detail=sandbox_evidence.encode("pass",timings,metrics)
         return SandboxResult("pass",0,executed["stdout"],executed["stderr"],output,detail,name,runtime_identity)
-    except Exception as original:
-        primary=original; staging_cleanup_receipts=_staging_cleanup_receipts(primary); output_note=""
-        if output is not None:
-            staging_cleanup_receipts,receipt=_cleanup_successful_output(output,staging_cleanup_receipts)
-            output_note=_output_cleanup_note(receipt); output=None
-        cleanup_notes=[]
-        if follower:
-            mark=time.monotonic()
-            try: docker_event_guard.abort(follower); timings["event_follower_cleanup"]=time.monotonic()-mark
-            except Exception as event_cleanup: cleanup_notes.append(f"event follower cleanup failed: {event_cleanup}")
-        if context and not acquisition_clean:
-            mark=time.monotonic();
-            try: _cleanup_acquisition(context,name,force=True); timings["acquisition_cleanup"]=time.monotonic()-mark
-            except Exception as cleanup: cleanup_notes.append(f"acquisition cleanup failed: {cleanup}")
-        evidence_ledger=context.ledger if context else acquisition_ledger
-        resources=_resource_events(evidence_ledger) if evidence_ledger else []
-        notes="".join(f"; {item}" for item in cleanup_notes)
-        raise SandboxBoundaryError(
-            f"{type(primary).__name__}: {primary}{output_note}{notes}",
-            timings,metrics,resources,staging_cleanup_receipts,
-        ) from primary
+    except Exception as primary:
+        _raise_live_boundary(
+            primary,output,follower,context,acquisition_clean,name,request,
+            timings,metrics,acquisition_ledger,
+        )
     finally: active_daemon.reset(active_token)
-def _retry_container_cleanup(target,ledger,deadline):
-    control=lambda command,value:provision.run_capped(command,timeout=value,limit=32768)
-    try: daemon_control.retry(ledger,["docker","rm","-f",target],control,deadline); return True
-    except Exception: return False
-def _cleanup_recovery(name,target,retained,ledger):
-    if not retained: return "; retry completed"
-    identity="; recovery requires the original daemon" if ledger.identity_tainted else ""
-    return f"; retained {name}{identity}; recovery: docker rm -f {target}"
+_retry_container_cleanup=output_cleanup.retry_container_cleanup
 def _cleanup_package_result(result,name,run_ledger,run_started):
-    package_states=[item.state for item in run_ledger.events if item.kind=="container" and item.name==name]
-    if not run_ledger.created("container",name) or package_states[-1]=="removed": return replace(result,detail=sandbox_evidence.finalize(result.detail,end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger)))
-    cleanup_started=time.monotonic()
-    if run_ledger.identity_tainted:
-        result,output_note=_discard_result_output(result)
-        run_ledger.record("container",name,"retained"); detail=sandbox_evidence.finalize(result.detail,outcome="blocked",error=f"Docker identity was tainted; retained {name}; recovery requires the original daemon{output_note}",timing={"cleanup":time.monotonic()-cleanup_started},end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger))
-        return replace(result,status="blocked",returncode=None,output=None,detail=detail)
-    try:
-        deadline=time.monotonic()+90; control=lambda command,value:provision.run_capped(command,timeout=value,limit=32768); target=run_ledger.target(name)
-        cleanup=daemon_control.run(run_ledger,["docker","rm","-f",target],60,control,deadline)
-    except sandbox_none_network.DaemonIdentityError as exc:
-        result,output_note=_discard_result_output(result)
-        run_ledger.record("container",name,"retained"); detail=sandbox_evidence.finalize(result.detail,outcome="blocked",error=f"container cleanup identity failed: {exc}; retained {name}; recovery requires the original daemon{output_note}",timing={"cleanup":time.monotonic()-cleanup_started},end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger))
-        return replace(result,status="blocked",returncode=None,output=None,detail=detail)
-    except Exception as exc:
-        target=run_ledger.target(name); retained=not _retry_container_cleanup(target,run_ledger,deadline); run_ledger.record("container",name,"retained" if retained else "removed")
-        result,output_note=_discard_result_output(result)
-        recovery=_cleanup_recovery(name,target,retained,run_ledger)
-        detail=sandbox_evidence.finalize(result.detail,outcome="blocked",error=f"container cleanup raised {type(exc).__name__}{recovery}{output_note}",timing={"cleanup":time.monotonic()-cleanup_started},end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger))
-        return replace(result,status="blocked",returncode=None,output=None,detail=detail)
-    if cleanup["returncode"]:
-        target=run_ledger.target(name); retained=not _retry_container_cleanup(target,run_ledger,deadline); run_ledger.record("container",name,"retained" if retained else "removed")
-        result,output_note=_discard_result_output(result)
-        recovery=_cleanup_recovery(name,target,retained,run_ledger)
-        detail=sandbox_evidence.finalize(result.detail,outcome="blocked",error=f"container cleanup initially failed{recovery}{output_note}",timing={"cleanup":time.monotonic()-cleanup_started},end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger))
-        return replace(result,status="blocked",returncode=None,output=None,detail=detail)
-    run_ledger.record("container",name,"removed")
-    detail=sandbox_evidence.finalize(result.detail,timing={"cleanup":time.monotonic()-cleanup_started},end_to_end=time.monotonic()-run_started,resources=_resource_events(run_ledger))
-    return replace(result,detail=detail)
+    return output_cleanup.cleanup_package_result(
+        result,name,run_ledger,run_started,retry=_retry_container_cleanup,
+    )
 
 def run_sandbox(request:SandboxRequest)->SandboxResult:
     run_started=time.monotonic(); name=f"wp-package-{uuid.uuid4().hex[:16]}"; run_ledger=ResourceLedger()
