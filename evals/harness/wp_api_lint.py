@@ -773,6 +773,11 @@ def allowlist_prefixes(
     return prefixes
 
 
+def _neon_string(value: object) -> str:
+    """Encode an exact scalar as a NEON-compatible JSON string."""
+    return json.dumps(str(value), ensure_ascii=True)
+
+
 def build_neon(
     artifact_path: Path,
     toolchain: Toolchain,
@@ -782,7 +787,7 @@ def build_neon(
 ) -> str:
     lines: list[str] = []
     if requires_at_least is not None:
-        lines += ["includes:", f'    - "{toolchain.wp_compat_neon}"', ""]
+        lines += ["includes:", f"    - {_neon_string(toolchain.wp_compat_neon)}", ""]
     # Excludes are scoped to directories INSIDE the artifact: a bare */tests/*
     # pattern would also exclude artifacts that themselves live under a tests/
     # directory (the committed bait fixtures do).
@@ -790,23 +795,29 @@ def build_neon(
     lines += [
         "parameters:",
         "    level: 0",
-        f'    tmpDir: "{tmp_dir}"',
+        f"    tmpDir: {_neon_string(tmp_dir)}",
         "    paths:",
-        *(f'        - "{file_path}"' for file_path in phpstan_paths),
+        *(f"        - {_neon_string(file_path)}" for file_path in phpstan_paths),
     ]
     if explicit_files is None:
         exclude_base = artifact_path if artifact_path.is_dir() else artifact_path.parent
         excluded = ("vendor", "node_modules", "tests", "test")
         lines += [
             "    excludePaths:",
-            *(f'        - "{exclude_base}/{ignored}/*"' for ignored in excluded),
-            *(f'        - "{exclude_base}/*/{ignored}/*"' for ignored in excluded),
+            *(
+                f"        - {_neon_string(f'{exclude_base}/{ignored}/*')}"
+                for ignored in excluded
+            ),
+            *(
+                f"        - {_neon_string(f'{exclude_base}/*/{ignored}/*')}"
+                for ignored in excluded
+            ),
         ]
-    lines += ["    scanFiles:", f'        - "{toolchain.stubs}"']
+    lines += ["    scanFiles:", f"        - {_neon_string(toolchain.stubs)}"]
     if requires_at_least is not None:
         lines += [
             "    WPCompat:",
-            f'        requiresAtLeast: "{requires_at_least}"',
+            f"        requiresAtLeast: {_neon_string(requires_at_least)}",
         ]
     return "\n".join(lines) + "\n"
 

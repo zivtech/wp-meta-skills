@@ -183,6 +183,21 @@ def test_bounded_text_scan_fails_secret_and_destructive_bait(
     assert checks[check_id]["status"] == "fail"
 
 
+def test_text_bound_blocks_before_any_external_scanner(tmp_path, monkeypatch):
+    calls = _stub_external(monkeypatch)
+    monkeypatch.setattr(gate, "MAX_TEXT_SCAN_BYTES", 1)
+    output = _output(tmp_path)
+    try:
+        validation = gate.validate_block_execution_artifact(
+            output, _source_layout(), 30
+        )
+    finally:
+        artifact_staging.cleanup_staged_tree(output)
+
+    assert validation.gate["status"] == "blocked"
+    assert calls == {"php": [], "api": [], "security": []}
+
+
 def test_mutation_between_scanner_and_reproof_blocks_and_cleans(tmp_path, monkeypatch):
     calls = _stub_external(monkeypatch, mutate_api=True)
     output = _output(tmp_path)

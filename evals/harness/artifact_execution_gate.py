@@ -216,6 +216,8 @@ def _security_check(handoff, proof, deadline: float, php_tools_root) -> dict[str
 
 def _run_scanners(handoff, proof, deadline: float, php_tools_root) -> list[dict[str, str]]:
     checks = _bounded_text_checks(handoff, proof, deadline)
+    if any(item["status"] == "blocked" for item in checks):
+        return checks
     checks.append(_reproved(
         handoff, deadline, lambda: _php_syntax_check(handoff, proof, deadline)
     ))

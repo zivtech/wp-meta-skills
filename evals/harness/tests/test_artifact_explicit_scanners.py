@@ -108,6 +108,25 @@ def test_api_explicit_headers_and_phpstan_paths_ignore_suffix_policy(tmp_path):
     assert f'        - "{root}"' not in neon
 
 
+def test_api_phpstan_config_encodes_exact_filename_scalars(tmp_path):
+    root = tmp_path / "scan-handoff"
+    root.mkdir()
+    unusual = root / 'render"\\\n.php'
+    unusual.write_text("<?php\n", encoding="utf-8")
+
+    neon = wp_api_lint.build_neon(
+        root,
+        _api_toolchain(tmp_path),
+        tmp_path / "cache",
+        '6.7"\nparameters:',
+        explicit_files=[unusual],
+    )
+
+    assert f"        - {json.dumps(str(unusual))}" in neon
+    assert f"        requiresAtLeast: {json.dumps('6.7\"\nparameters:')}" in neon
+    assert str(unusual) not in neon
+
+
 def test_security_gate_passes_one_exact_list_to_both_phpcs_runs(tmp_path, monkeypatch):
     root, files = _handoff_files(tmp_path)
     calls: list[list[Path]] = []
