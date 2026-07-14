@@ -694,6 +694,7 @@ from its cleanup receipt. For a runner-level emergency cleanup, constrain the
 operation to Plan 009 ownership markers:
 
 ```bash
+docker ps -aq --filter 'name=^/wpisolated' | xargs -r docker rm -f
 docker ps -aq --filter label=com.docker.compose.project | \
   xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}} {{.Id}}' | \
   awk '$1 ~ /^wpisolated/ {print $2}' | xargs -r docker rm -f
