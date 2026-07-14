@@ -194,10 +194,14 @@ def test_artifact_image_handoff_never_starts_seed_and_cleans_seed(monkeypatch,tm
         {"wordpress":base,"database":"sha256:"+"2"*64,"browser":"sha256:"+"3"*64},
         {"wordpress":"33:33","database":"999:999","browser":"1000:1000"},(),{},
     )
-    config={"User":"www-data","Entrypoint":["/usr/local/bin/wp-sandbox-entrypoint"]}
-    seed_profile={"Image":base,"State":{"Status":"created","Running":False},"Mounts":[],
+    seed_id="5"*64
+    config={"User":"www-data","Entrypoint":["/usr/local/bin/wp-sandbox-entrypoint"],
+            "AttachStderr":False,"AttachStdout":False,"Hostname":"","Image":"","Labels":None}
+    seed_config={**config,"AttachStderr":True,"AttachStdout":True,"Hostname":seed_id[:12],
+                 "Image":base,"Labels":{}}
+    seed_profile={"Id":seed_id,"Image":base,"State":{"Status":"created","Running":False},"Mounts":[],
         "HostConfig":{"NetworkMode":"none","CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"ReadonlyRootfs":False},
-        "Config":{"User":"www-data"}}
+        "Config":seed_config}
     def fake(command,_deadline,_cap=120,_limit=131072,allow_failure=False,stdin=None):
         calls.append(command)
         if command[1:3]==["image","inspect"]:
@@ -250,6 +254,22 @@ def test_artifact_image_config_drift_diagnostic_names_keys_not_values():
     base = {"User": "www-data", "Hostname": "", "Env": ["SECRET=value"]}
     derived = {"User": "www-data", "Hostname": "container-id", "Env": ["SECRET=changed"]}
     assert wp_runtime_export._config_drift_keys(base, derived) == ("Env", "Hostname")
+
+
+def test_artifact_image_config_accepts_only_observed_passive_commit_serialization():
+    image="sha256:"+"a"*64; seed_id="b"*64
+    base={"AttachStderr":False,"AttachStdout":False,"Hostname":"","Image":"",
+          "Labels":None,"User":"www-data","Env":["SAFE=value"]}
+    seed={**base,"AttachStderr":True,"AttachStdout":True,"Hostname":seed_id[:12],
+          "Image":image,"Labels":{}}
+    derived={**seed}
+    wp_runtime_export._validate_committed_config(base,seed,derived,seed_id,image)
+    for key,value in (("Env",["SECRET=changed"]),("Labels",{"surprise":"true"}),
+                      ("Hostname","unrelated"),("Image","sha256:"+"c"*64),
+                      ("AttachStdout","true")):
+        changed={**derived,key:value}
+        with pytest.raises(RuntimeError,match="metadata drift field"):
+            wp_runtime_export._validate_committed_config(base,seed,changed,seed_id,image)
 
 
 def test_artifact_cleanup_reports_seed_and_image_failures(monkeypatch):

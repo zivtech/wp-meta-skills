@@ -90,6 +90,34 @@ def _config_drift_keys(base, derived):
     return tuple(key for key in keys if base.get(key) != derived.get(key))
 
 
+_COMMIT_PASSIVE_CONFIG_FIELDS=frozenset({
+    "AttachStderr","AttachStdout","Hostname","Image","Labels",
+})
+
+
+def _validate_committed_config(base,seed,derived,seed_id,base_image):
+    drift=_config_drift_keys(base,derived)
+    unexpected=tuple(key for key in drift if key not in _COMMIT_PASSIVE_CONFIG_FIELDS)
+    if unexpected:
+        raise RuntimeBlocked(
+            f"derived artifact image WordPress metadata drift fields: {','.join(unexpected)}"
+        )
+    for key in ("AttachStderr","AttachStdout"):
+        values=(base.get(key),seed.get(key),derived.get(key))
+        if any(type(value) is not bool for value in values) or derived.get(key) not in values[:2]:
+            raise RuntimeBlocked(f"derived artifact image passive metadata drift field: {key}")
+    seed_hostname=seed.get("Hostname")
+    if (base.get("Hostname")!="" or seed_hostname not in (seed_id,seed_id[:12])
+            or derived.get("Hostname") not in ("",seed_hostname)):
+        raise RuntimeBlocked("derived artifact image passive metadata drift field: Hostname")
+    seed_image=seed.get("Image")
+    if (base.get("Image")!="" or seed_image!=base_image
+            or derived.get("Image") not in ("",seed_image)):
+        raise RuntimeBlocked("derived artifact image passive metadata drift field: Image")
+    if any(config.get("Labels") not in (None,{}) for config in (base,seed,derived)):
+        raise RuntimeBlocked("derived artifact image passive metadata drift field: Labels")
+
+
 def materialize_export(held,work,slug,runtime,deadline,project):
     suffix=hashlib.sha256((project+slug).encode()).hexdigest()[:12]
     seed=f"{project}-artifact-seed"; tag=f"wp-isolated-artifact:{suffix}"; created=False
@@ -108,11 +136,9 @@ def materialize_export(held,work,slug,runtime,deadline,project):
         exact=_inspect_image(tag,deadline)
         if exact["Id"] != derived:
             raise RuntimeBlocked("derived artifact image identity drift")
-        drift = _config_drift_keys(base["Config"], exact["Config"])
-        if drift:
-            raise RuntimeBlocked(
-                f"derived artifact image WordPress metadata drift fields: {','.join(drift)}"
-            )
+        _validate_committed_config(
+            base["Config"],inspected["Config"],exact["Config"],inspected["Id"],runtime.images["wordpress"]
+        )
         if not _remove_seed(seed,deadline): raise RuntimeBlocked("artifact seed container cleanup failed")
         plugin_manifest=_plugin_manifest(manifest,slug)
         evidence={"seed_started":False,"seed_removed":True,"artifact_mounts":0,
