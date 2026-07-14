@@ -13,6 +13,8 @@ import sandbox_proxy_supervisor as supervisor
 
 
 def record(value,inode=7): return supervisor.ControlRecord(value,1,inode)
+def proxy_status(nonce="n",accepted=0,active=0,completed=0,rejected=0,client_bytes=0,upstream_bytes=0,**reasons):
+    return {"nonce":nonce,"accepted":accepted,"active":active,"completed":completed,"rejected":rejected,"rejected_peer":0,"rejected_capacity":0,"rejected_handler":0,"client_bytes":client_bytes,"upstream_bytes":upstream_bytes,**reasons}
 
 
 def test_control_json_requires_complete_canonical_unique_payload():
@@ -83,9 +85,9 @@ def test_overflow_nonzero_exit_and_live_drain_thread_each_block():
 
 
 def test_status_schema_rejects_negative_boolean_or_nonce_drift():
-    base={"nonce":"n","accepted":0,"active":0,"completed":0,"rejected":0,"client_bytes":0,"upstream_bytes":0}
+    base=proxy_status()
     assert supervisor._status_record(record(base),"n").value==base
-    for change in ({"nonce":"x"},{"active":-1},{"accepted":True},{"extra":0}):
+    for change in ({"nonce":"x"},{"active":-1},{"accepted":True},{"extra":0},{"rejected":1}):
         value={**base,**change}
         with pytest.raises(RuntimeError,match="status"): supervisor._status_record(record(value),"n")
 
@@ -106,7 +108,7 @@ def test_subsecond_hung_status_control_cannot_receive_one_second(monkeypatch):
 
 
 def test_wait_file_retries_stale_inode_then_accepts_fresh_at_fixed_cadence(monkeypatch):
-    base={"nonce":"n","accepted":0,"active":0,"completed":0,"rejected":0,"client_bytes":0,"upstream_bytes":0}; inodes=iter((7,8)); sleeps=[]
+    base=proxy_status(); inodes=iter((7,8)); sleeps=[]
     monkeypatch.setattr(supervisor,"_read_file",lambda *_args:record(base,next(inodes)))
     monkeypatch.setattr(supervisor.time,"sleep",lambda value:sleeps.append(value))
     def fresh(item):
@@ -175,7 +177,7 @@ def test_launch_uses_exact_user_env_i_isolated_python_argv(monkeypatch):
         stdout=io.BytesIO(); stderr=io.BytesIO()
         def poll(self): return None
     monkeypatch.setattr(supervisor.subprocess,"Popen",lambda command,**kwargs:commands.append((command,kwargs)) or Process())
-    values=iter((9,{"nonce":"n","accepted":0,"active":0,"completed":0,"rejected":0,"client_bytes":0,"upstream_bytes":0}))
+    values=iter((9,proxy_status()))
     monkeypatch.setattr(supervisor,"_wait_file",lambda *_args,**_kwargs:next(values))
     monkeypatch.setattr(supervisor,"_process_evidence",lambda *_args:None); monkeypatch.setattr(supervisor,"_top_gate",lambda *_args:None)
     argv=("/usr/bin/env","-i","/usr/local/bin/python","-I","-S","-B","/proxy.py","--nonce","n")
@@ -255,7 +257,7 @@ def test_signal_timeout_and_post_control_helper_survival_each_block(monkeypatch)
 
 @pytest.mark.parametrize("event",["authenticated-kill","host-term","host-kill","pid-identity-loss","whole-container-cleanup"])
 def test_zero_exit_after_any_escalation_remains_blocked(monkeypatch,event):
-    base={"nonce":"nonce","accepted":0,"active":0,"completed":0,"rejected":0,"client_bytes":0,"upstream_bytes":0}
+    base=proxy_status("nonce")
     item=_fake(process=ExitedProcess()); item.process.returncode=0; item.termination=(event,)
     before=supervisor.StatusRecord(base,1,7); fresh=supervisor.StatusRecord(base,1,8)
     monkeypatch.setattr(supervisor,"read_status",lambda *_args,**_kwargs:before)
@@ -266,7 +268,7 @@ def test_zero_exit_after_any_escalation_remains_blocked(monkeypatch,event):
 
 
 def test_only_graceful_term_fresh_drained_status_and_zero_exit_can_pass(monkeypatch):
-    base={"nonce":"nonce","accepted":1,"active":0,"completed":1,"rejected":0,"client_bytes":4,"upstream_bytes":4}
+    base=proxy_status("nonce",accepted=1,completed=1,client_bytes=4,upstream_bytes=4)
     item=_fake(process=ExitedProcess()); item.process.returncode=0
     monkeypatch.setattr(supervisor,"read_status",lambda *_args,**_kwargs:supervisor.StatusRecord(base,1,7))
     monkeypatch.setattr(supervisor,"_signal_inside",lambda *_args:None); monkeypatch.setattr(supervisor,"_container_reap",lambda *_args:None); monkeypatch.setattr(supervisor,"_finish_transport",lambda *_args:None)
@@ -284,7 +286,7 @@ def test_only_graceful_term_fresh_drained_status_and_zero_exit_can_pass(monkeypa
     ("wrong-nonce","status record is invalid"),("non-drained","retained active tunnels"),
 ])
 def test_stop_rejects_every_invalid_final_status_surface(monkeypatch,mode,match):
-    base={"nonce":"nonce","accepted":1,"active":0,"completed":1,"rejected":0,"client_bytes":4,"upstream_bytes":4}
+    base=proxy_status("nonce",accepted=1,completed=1,client_bytes=4,upstream_bytes=4)
     item=_fake(process=ExitedProcess()); item.process.returncode=0
     before=supervisor.StatusRecord(base,1,7)
     monkeypatch.setattr(supervisor,"read_status",lambda *_args,**_kwargs:before)
@@ -308,7 +310,7 @@ def test_stop_rejects_every_invalid_final_status_surface(monkeypatch,mode,match)
 
 
 def test_stop_rejects_early_workload_exit(monkeypatch):
-    base={"nonce":"nonce","accepted":0,"active":0,"completed":0,"rejected":0,"client_bytes":0,"upstream_bytes":0}
+    base=proxy_status("nonce")
     item=_fake(process=ExitedProcess())
     monkeypatch.setattr(supervisor,"read_status",lambda *_args,**_kwargs:supervisor.StatusRecord(base,1,7))
     monkeypatch.setattr(supervisor,"_signal_inside",lambda *_args:None)
@@ -318,7 +320,7 @@ def test_stop_rejects_early_workload_exit(monkeypatch):
 
 
 def test_stop_term_survivor_kill_is_sticky_and_blocks_zero_exit(monkeypatch):
-    base={"nonce":"nonce","accepted":0,"active":0,"completed":0,"rejected":0,"client_bytes":0,"upstream_bytes":0}
+    base=proxy_status("nonce")
     class Survivor:
         pid=31; returncode=None
         def poll(self): return self.returncode

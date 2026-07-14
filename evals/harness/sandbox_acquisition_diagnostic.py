@@ -10,6 +10,7 @@ _CURL_CATEGORIES = {
     5: "proxy-connect", 6: "dns", 7: "proxy-connect", 22: "http-status",
     28: "proxy-connect", 35: "tls", 51: "tls", 58: "tls", 60: "tls",
 }
+_PROXY_KEYS = ("accepted", "active", "completed", "rejected", "rejected_peer", "rejected_capacity", "rejected_handler")
 
 
 def _stream_bytes(value):
@@ -47,7 +48,7 @@ def _classify(text):
     return "unclassified", "none"
 
 
-def describe(profile, result):
+def describe(profile, result, proxy_status=None):
     stdout = _stream_bytes(result.get("stdout")); stderr = _stream_bytes(result.get("stderr"))
     text = _sample(stdout, stderr); category, detail = _classify(text); hosts = _recognized_hosts(text, profile.allowed_hosts)
     code = result.get("returncode"); code = code if isinstance(code, int) and not isinstance(code, bool) else -1
@@ -59,4 +60,6 @@ def describe(profile, result):
         "stderr": {"bytes": len(stderr), "sha256": hashlib.sha256(stderr).hexdigest()},
         "stdout": {"bytes": len(stdout), "sha256": hashlib.sha256(stdout).hexdigest()},
     }
+    if proxy_status is not None:
+        payload["proxy_status"] = {key: proxy_status[key] if type(proxy_status.get(key)) is int and proxy_status[key] >= 0 else -1 for key in _PROXY_KEYS}
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))

@@ -414,7 +414,7 @@ class ProxyStatus:
     def __init__(self, path, nonce):
         self.path = Path(path)
         self.lock = threading.Lock()
-        self.data = {"nonce": nonce, "accepted": 0, "active": 0, "completed": 0, "rejected": 0, "client_bytes": 0, "upstream_bytes": 0}
+        self.data = {"nonce": nonce, "accepted": 0, "active": 0, "completed": 0, "rejected": 0, "rejected_peer": 0, "rejected_capacity": 0, "rejected_handler": 0, "client_bytes": 0, "upstream_bytes": 0}
         self._write()
 
     def _write(self):
@@ -445,6 +445,21 @@ class ProxyStatus:
             self._write()
 
 
+def _reject_client(client, status, reason):
+    client.close()
+    status.update(rejected=1, **{reason: 1})
+
+
+def _admit_client(client, address, peer, semaphore, status):
+    if address[0] != peer:
+        _reject_client(client, status, "rejected_peer")
+        return False
+    if not semaphore.acquire(False):
+        _reject_client(client, status, "rejected_capacity")
+        return False
+    return True
+
+
 def serve(host, port, peer, allowed, limits, status):
     listener = socket.create_server((host, port))
     listener.settimeout(1)
@@ -459,10 +474,7 @@ def serve(host, port, peer, allowed, limits, status):
             client, address = listener.accept()
         except TimeoutError:
             continue
-        if address[0] != peer or not semaphore.acquire(False):
-            client.close()
-            status.update(rejected=1)
-            continue
+        if not _admit_client(client, address, peer, semaphore, status): continue
         status.update(accepted=1, active=1)
 
         def run(sock=client):
@@ -470,8 +482,7 @@ def serve(host, port, peer, allowed, limits, status):
                 counts = handle_connect(sock, allowed, limits, budget)
                 status.update(completed=1, client_bytes=counts["client"], upstream_bytes=counts["upstream"])
             except BaseException:
-                sock.close()
-                status.update(rejected=1)
+                _reject_client(sock, status, "rejected_handler")
             finally:
                 status.update(active=-1)
                 semaphore.release()

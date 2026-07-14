@@ -130,11 +130,13 @@ def _pid_record(record, nonce):
 
 def _status_record(record, nonce):
     value=record.value
-    expected = {"nonce", "accepted", "active", "completed", "rejected", "client_bytes", "upstream_bytes"}
+    expected = {"nonce", "accepted", "active", "completed", "rejected", "rejected_peer", "rejected_capacity", "rejected_handler", "client_bytes", "upstream_bytes"}
     if set(value) != expected or value["nonce"] != nonce:
         raise RuntimeError("proxy status record is invalid")
     if any(not isinstance(value[key], int) or isinstance(value[key], bool) or value[key] < 0 for key in expected - {"nonce"}):
         raise RuntimeError("proxy status counters are invalid")
+    if value["rejected"] != sum(value[key] for key in ("rejected_peer", "rejected_capacity", "rejected_handler")):
+        raise RuntimeError("proxy status rejection counters are invalid")
     return StatusRecord(value,record.device,record.inode)
 
 

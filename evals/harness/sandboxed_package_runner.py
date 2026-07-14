@@ -3,16 +3,12 @@ from __future__ import annotations
 import hashlib, json, math, os, platform, re, stat, time, uuid
 from dataclasses import replace
 from pathlib import Path
-import artifact_staging
-import dependency_egress_proxy
-import docker_event_guard
+import artifact_staging, dependency_egress_proxy, docker_event_guard
 import runtime_image_provision as provision
-import sandbox_evidence
-import sandbox_dns_guard
+import sandbox_evidence, sandbox_dns_guard
 import sandbox_acquisition_diagnostic, sandbox_active_daemon as active_daemon
 import sandbox_daemon_control as daemon_control
-import sandbox_mount_policy
-import sandbox_network_policy, sandbox_none_network
+import sandbox_mount_policy, sandbox_network_policy, sandbox_none_network
 import sandbox_process_transport as process_transport
 import sandbox_python_preflight as python_preflight
 import sandbox_proxy_supervisor as proxy_supervisor
@@ -437,8 +433,9 @@ def _read_proxy_status(context,request,deadline=None):
     if len(fields)!=4 or fields[:3]!=["600",uid,gid] or int(fields[3])>8192: raise RuntimeError("proxy status metadata drift")
     result=bound(["docker","exec",_proxy_target(context),"cat","/tmp/status.json"],15)
     if result["returncode"] or len(result["stdout"].encode())>8192: raise RuntimeError("proxy status unavailable or oversized")
-    status=_strict_json(result["stdout"]); expected={"nonce","accepted","active","completed","rejected","client_bytes","upstream_bytes"}
-    if set(status)!=expected or status["nonce"]!=context.nonce or any(not isinstance(status[key],int) or status[key]<0 for key in expected-{"nonce"}): raise RuntimeError("proxy status is invalid")
+    status=_strict_json(result["stdout"]); expected={"nonce","accepted","active","completed","rejected","rejected_peer","rejected_capacity","rejected_handler","client_bytes","upstream_bytes"}
+    if set(status)!=expected or status["nonce"]!=context.nonce or any(type(status[key]) is not int or status[key]<0 for key in expected-{"nonce"}): raise RuntimeError("proxy status is invalid")
+    if status["rejected"]!=sum(status[key] for key in ("rejected_peer","rejected_capacity","rejected_handler")): raise RuntimeError("proxy status rejection counters are invalid")
     return status
 def _live_proxy_source_gate(context,deadline=None):
     opened=os.fstat(context.proxy_code.file_fd)
@@ -564,11 +561,15 @@ def _cleanup_acquisition(context,name,force=False):
         identity="; verify the original Docker daemon before recovery" if context.ledger.identity_tainted else ""
         raise RuntimeError(f"acquisition cleanup retained: {retained}{identity}{suffix}")
 def _start_acquisition(name,request,profile,context): _probe_versions(name,request,profile); sandbox_dns_guard.pre_acquisition(name,profile.kind,lambda command,timeout:_run(command,request,timeout)); _prepare_acquisition_paths(name,request,profile); return _start_proxy(context,name,request,profile)
+def _failed_acquisition(profile,result,context,request,deadline):
+    try: status=_read_proxy_status(context,request,deadline)
+    except Exception: raise RuntimeError(f"{profile.kind} acquisition failed: authenticated proxy status unavailable") from None
+    keys=("accepted","active","completed","rejected","rejected_peer","rejected_capacity","rejected_handler"); return RuntimeError(f"{profile.kind} acquisition failed: {sandbox_acquisition_diagnostic.describe(profile,result,{key:status[key] for key in keys})}")
 def _acquire(name,request,profile,context,capability):
     deadline=context.supervisor.lifecycle_deadline
     health=lambda:proxy_supervisor.check(context.supervisor)
     result=_run_capped_process(["docker","exec","--workdir","/workspace","--",name,*_acquisition_argv(profile.kind,context.proxy_ip)],request,deadline=deadline,health_check=health)
-    if result["returncode"]: raise RuntimeError(f"{profile.kind} acquisition failed: {sandbox_acquisition_diagnostic.describe(profile,result)}")
+    if result["returncode"]: raise _failed_acquisition(profile,result,context,request,deadline)
     health(); _assert_package_process(name,request,deadline); health(); _wait_proxy_idle(context,request); _assert_proxy_process(context,request); proof=_verify_copy(name,request,exclude_dependencies=True,deadline=deadline)
     if proof.manifest!=request.staged.manifest or proof.path_kinds!=capability.path_kinds: raise RuntimeError("nondependency artifact changed during acquisition")
     return context

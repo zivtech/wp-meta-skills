@@ -48,3 +48,10 @@ def test_unknown_malformed_and_oversized_output_is_digest_only():
 def test_host_matching_rejects_suffix_and_subdomain_confusion():
     value = json.loads(diagnostic.describe(PROFILE, {"returncode": 1, "stdout": "evilapi.github.com api.github.com.evil", "stderr": ""}))
     assert value["hosts"] == []
+
+
+def test_proxy_snapshot_is_numeric_only_bounded_and_excludes_nonce_and_secrets():
+    status={"accepted":1,"active":0,"completed":0,"rejected":1,"rejected_peer":0,"rejected_capacity":1,"rejected_handler":0,"nonce":"secret-nonce","credential":"hidden"}
+    encoded=diagnostic.describe(PROFILE,{"returncode":1,"stdout":"Bearer hidden","stderr":""},status); value=json.loads(encoded)
+    assert value["proxy_status"]=={key:status[key] for key in diagnostic._PROXY_KEYS}
+    assert len(encoded)<1024 and "secret-nonce" not in encoded and "credential" not in encoded and "hidden" not in encoded

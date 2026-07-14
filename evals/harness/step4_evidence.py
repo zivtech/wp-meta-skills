@@ -323,11 +323,13 @@ def _validate_controlled(payload):
         if type(payload.get(key)) is not str or not re.fullmatch(r"[a-z0-9-]{8,128}", payload[key]):
             raise ValueError("controlled CONNECT nonce is invalid")
     status = payload["proxy_status"]
-    expected = {"nonce", "accepted", "active", "completed", "rejected", "client_bytes", "upstream_bytes"}
+    expected = {"nonce", "accepted", "active", "completed", "rejected", "rejected_peer", "rejected_capacity", "rejected_handler", "client_bytes", "upstream_bytes"}
     if not isinstance(status,dict) or set(status) != expected or status["nonce"] != payload["run_nonce"]:
         raise ValueError("controlled CONNECT proxy status identity is invalid")
     if any(type(status[key]) is not int or status[key] < 0 for key in expected - {"nonce"}):
         raise ValueError("controlled CONNECT proxy status values are invalid")
+    if status["rejected"] != sum(status[key] for key in ("rejected_peer", "rejected_capacity", "rejected_handler")):
+        raise ValueError("controlled CONNECT proxy status rejection counters are invalid")
     if (status["accepted"], status["active"], status["completed"], status["rejected"]) != (1, 0, 1, 0):
         raise ValueError("controlled CONNECT proxy status counters are invalid")
     if status["client_bytes"] != len(payload["relay_nonce"]) or status["upstream_bytes"] != len(payload["relay_nonce"]):

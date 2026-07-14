@@ -85,7 +85,7 @@ def controlled():
     removed={kind:{role:{"id":item["id"],"name":item["name"]} for role,item in topology[kind].items()} for kind in ("containers","networks")}
     return {
         "cleanup_disposition": {"complete": True, "retained": [], "removed":removed},
-        "proxy_status": {"nonce": "wp-status-1234", "accepted": 1, "active": 0, "completed": 1, "rejected": 0, "client_bytes": len(relay), "upstream_bytes": len(relay)},
+        "proxy_status": {"nonce": "wp-status-1234", "accepted": 1, "active": 0, "completed": 1, "rejected": 0, "rejected_peer": 0, "rejected_capacity": 0, "rejected_handler": 0, "client_bytes": len(relay), "upstream_bytes": len(relay)},
         "relay_nonce": relay,
         "run_nonce": "wp-status-1234",
         "topology": topology,
@@ -224,6 +224,9 @@ def _mutate_controlled(mutation,connect):
     elif mutation=="fake_subnet": connect["topology"]["networks"]["egress"]["subnet"]="93.184.217.0/28"
     elif mutation=="registry_ip": connect["topology"]["containers"]["registry"]["ips"][egress]="93.184.216.36"
     elif mutation=="bad_control": connect["proxy_status"]["accepted"]=2
+    elif mutation=="control_bool": connect["proxy_status"]["rejected_peer"]=False
+    elif mutation=="control_negative": connect["proxy_status"]["rejected_capacity"]=-1
+    elif mutation=="control_rejection_sum": connect["proxy_status"]["rejected_handler"]=1
     elif mutation=="control_cleanup": connect["cleanup_disposition"]["complete"]=False; connect["cleanup_disposition"]["retained"]=["proxy"]
     elif mutation=="cleanup_one": connect["cleanup_disposition"]["complete"]=1
     elif mutation=="cleanup_inventory": connect["cleanup_disposition"]["removed"]["containers"]["proxy"]["id"]="f"*64
@@ -235,7 +238,7 @@ def mutate(mutation,npm,composer,connect):
     _mutate_lifecycle(mutation,npm,composer); _mutate_numeric(mutation,npm); _mutate_controlled(mutation,connect)
 
 
-@pytest.mark.parametrize("mutation", ["missing","extra","failed_pytest","pytest_false","pytest_float","duration_bool","duration_zero","schema_bool","schema_float","wrong_sha","lifecycle_extra","identity_extra","identity_profile","identity_observed","identity_container","timing_extra","timing_negative","phase_zero","cleanup_zero","end_zero","phase_over_e2e","phase_sum","metric_extra","metric_bool","mem_zero","mem_below_admission","proxy_peak_zero","proxy_over_limit","package_pre_peak_zero","package_peak_zero","package_pre_over","package_over","workspace_pre_zero","workspace_zero","workspace_pre_over","workspace_over","peak_regression","limit_mismatch","admission_mismatch","event_key","event_kind","event_state","resource_missing","resource_terminal","detached_only","resurrection","cross_token","network_no_detach","retained","controlled_extra","duplicate_id","duplicate_name","duplicate_ip","public_internal","network_endpoint","broadcast_endpoint","gateway_endpoint","ipv6_endpoint","fake_subnet","registry_ip","bad_control","control_cleanup","cleanup_one","cleanup_inventory","runner_mismatch","same_run_token","global_id_collision","proxy_identity_cross","controlled_name","controlled_cross_token","e2e_duration","sum_duration"])
+@pytest.mark.parametrize("mutation", ["missing","extra","failed_pytest","pytest_false","pytest_float","duration_bool","duration_zero","schema_bool","schema_float","wrong_sha","lifecycle_extra","identity_extra","identity_profile","identity_observed","identity_container","timing_extra","timing_negative","phase_zero","cleanup_zero","end_zero","phase_over_e2e","phase_sum","metric_extra","metric_bool","mem_zero","mem_below_admission","proxy_peak_zero","proxy_over_limit","package_pre_peak_zero","package_peak_zero","package_pre_over","package_over","workspace_pre_zero","workspace_zero","workspace_pre_over","workspace_over","peak_regression","limit_mismatch","admission_mismatch","event_key","event_kind","event_state","resource_missing","resource_terminal","detached_only","resurrection","cross_token","network_no_detach","retained","controlled_extra","duplicate_id","duplicate_name","duplicate_ip","public_internal","network_endpoint","broadcast_endpoint","gateway_endpoint","ipv6_endpoint","fake_subnet","registry_ip","bad_control","control_bool","control_negative","control_rejection_sum","control_cleanup","cleanup_one","cleanup_inventory","runner_mismatch","same_run_token","global_id_collision","proxy_identity_cross","controlled_name","controlled_cross_token","e2e_duration","sum_duration"])
 def test_combiner_rejects_incomplete_or_failed_evidence(tmp_path, mutation):
     evidence = tmp_path / "legs"; evidence.mkdir()
     npm = lifecycle(); composer = lifecycle("plugin-phpunit-12.5.31"); connect = controlled()

@@ -336,7 +336,29 @@ def test_status_record_is_nonce_bound_bounded_and_mode_0600(tmp_path):
     path=tmp_path/"status.json"; status=proxy.ProxyStatus(path,"run-nonce"); status.update(accepted=1,active=1); status.update(active=-1,completed=1,client_bytes=4)
     data=json.loads(path.read_text())
     assert data["nonce"]=="run-nonce" and data["active"]==0 and data["completed"]==1
+    assert data["rejected"]==data["rejected_peer"]==data["rejected_capacity"]==data["rejected_handler"]==0
     assert path.stat().st_size<8192 and stat.S_IMODE(path.stat().st_mode)==0o600
+
+@pytest.mark.parametrize(("address","available","reason"),[("192.0.2.2",True,"rejected_peer"),("192.0.2.1",False,"rejected_capacity")])
+def test_admission_rejections_have_one_typed_reason(tmp_path,address,available,reason):
+    class Client:
+        closed=False
+        def close(self): self.closed=True
+    class Admission:
+        def acquire(self,_blocking): return available
+    client=Client(); status=proxy.ProxyStatus(tmp_path/"status.json","run-nonce")
+    assert proxy._admit_client(client,(address,1234),"192.0.2.1",Admission(),status) is False
+    data=json.loads((tmp_path/"status.json").read_text()); assert client.closed and data["rejected"]==data[reason]==1
+    assert sum(data[key] for key in ("rejected_peer","rejected_capacity","rejected_handler"))==1
+
+def test_handler_rejection_has_one_typed_reason(tmp_path):
+    class Client:
+        closed=False
+        def close(self): self.closed=True
+    client=Client(); status=proxy.ProxyStatus(tmp_path/"status.json","run-nonce")
+    proxy._reject_client(client,status,"rejected_handler"); data=json.loads((tmp_path/"status.json").read_text())
+    assert client.closed and data["rejected"]==data["rejected_handler"]==1
+    assert data["rejected_peer"]==data["rejected_capacity"]==0
 
 def test_final_status_is_atomic_fresh_inode_even_without_counter_change(tmp_path):
     path=tmp_path/"status.json"; status=proxy.ProxyStatus(path,"run-nonce"); before=path.stat().st_ino

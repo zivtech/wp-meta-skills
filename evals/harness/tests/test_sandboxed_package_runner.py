@@ -664,6 +664,7 @@ def test_docker_production_proxy_connect_canary_uses_only_fake_public_egress_end
         assert bound(["docker","exec",package_id,"timeout","4","node","-e",connect],8)["returncode"]==0
         status=runner._wait_proxy_idle(context,req)
         assert status["nonce"]==context.nonce and status["accepted"]==status["completed"]==1 and status["active"]==status["rejected"]==0
+        assert status["rejected_peer"]==status["rejected_capacity"]==status["rejected_handler"]==0
         assert status["client_bytes"]==status["upstream_bytes"]==len(relay_nonce)
         runner._stop_proxy(context,req); stopped=True
         internal_config=internal_data["IPAM"]["Config"][0]; egress_config=egress_data["IPAM"]["Config"][0]
