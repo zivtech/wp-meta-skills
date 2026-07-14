@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 import artifact_execution
+import artifact_execution_graph
+import artifact_layout
 import artifact_staging
 import runtime_artifact_pipeline as pipeline
 import workspace_lease
@@ -30,6 +32,17 @@ def import_sandbox_output(source: Path, parent: Path):
         archive.add(source,arcname=".")
     stream.seek(0)
     return artifact_staging.import_tar_stream(stream,parent,dependency_policy="strict")
+
+
+def proof_for(output):
+    source_entries = tuple(
+        entry for entry in output.manifest
+        if entry.path.endswith("block.json") and "build" not in Path(entry.path).parts
+    )
+    source = artifact_layout.select_source_layout(source_entries)
+    layout = artifact_layout.select_post_build_layout(output.manifest, source)
+    with artifact_staging.hold_staged_tree(output) as held:
+        return artifact_execution_graph.build_execution_proof(held, layout)
 
 
 def test_pass_without_authentic_sandbox_output_blocks(tmp_path, monkeypatch):
@@ -84,11 +97,18 @@ def test_synthesized_runtime_uses_exact_sandbox_output(tmp_path, monkeypatch):
     synthesized = None
     try:
         build = pipeline.build_block(staged, 5)
-        synthesized = pipeline.synthesize_block_runtime(build.output, tmp_path / "runtime")
+        proof = proof_for(build.output)
+        synthesized = pipeline.synthesize_block_runtime(
+            build.output, proof, tmp_path / "runtime"
+        )
         marker = synthesized.staged.root / "acme-card" / "generated" / "blocks" / "card" / "build" / "marker.js"
         assert marker.read_text() == "fresh"
         assert synthesized.staged.role is artifact_staging.StageRole.SYNTHESIZED_RUNTIME
         assert synthesized.source_role is artifact_staging.StageRole.SANDBOX_OUTPUT
+        assert synthesized.execution_proof is not None
+        wrapper = synthesized.plugin_dir / "acme-card.php"
+        assert "file_exists" not in wrapper.read_text()
+        assert "generated/blocks/card/build/block.json" in wrapper.read_text()
     finally:
         if synthesized is not None: workspace_lease.cleanup(synthesized.staged.lease)
         workspace_lease.cleanup(output.lease)
@@ -105,7 +125,11 @@ def test_held_exit_drift_prevents_synthesized_lease_creation(tmp_path, monkeypat
         source.mkdir()
         (source / "plugin.php").write_text("<?php")
         changed = Path("plugin.php")
-    staged = artifact_staging.stage_tree(source, tmp_path / "input")
+    staged = (
+        import_sandbox_output(source, tmp_path / "input")
+        if artifact_kind == "block"
+        else artifact_staging.stage_tree(source, tmp_path / "input")
+    )
     live_before = set(workspace_lease._LIVE_LEASES)
     original_snapshot = artifact_staging.snapshot_held_tree
 
@@ -119,7 +143,9 @@ def test_held_exit_drift_prevents_synthesized_lease_creation(tmp_path, monkeypat
     try:
         with pytest.raises(ValueError, match="held staged tree changed"):
             if artifact_kind == "block":
-                pipeline.synthesize_block_runtime(staged, runtime_parent)
+                pipeline.synthesize_block_runtime(
+                    staged, proof_for(staged), runtime_parent
+                )
             else:
                 pipeline.synthesize_plugin_runtime(staged, "plugin", runtime_parent)
         assert set(workspace_lease._LIVE_LEASES) == live_before
@@ -150,6 +176,179 @@ def test_post_stage_constructor_failure_cleans_synthesized_lease(tmp_path, monke
         assert created[0].lease.lease_id not in workspace_lease._LIVE_LEASES
     finally:
         workspace_lease.cleanup(staged.lease)
+
+
+def test_block_synthesis_rejects_stale_or_forged_proof_before_staging(tmp_path):
+    first = write_block(tmp_path / "first", "one")
+    second = write_block(tmp_path / "second", "two")
+    first_output = import_sandbox_output(first, tmp_path / "first-output")
+    second_output = import_sandbox_output(second, tmp_path / "second-output")
+    proof = proof_for(first_output)
+    runtime_parent = tmp_path / "runtime"
+    try:
+        with pytest.raises(ValueError, match="manifest"):
+            pipeline.synthesize_block_runtime(second_output, proof, runtime_parent)
+        forged = dataclasses.replace(proof, selected_block_json="other/block.json")
+        with pytest.raises(ValueError, match="proof"):
+            pipeline.synthesize_block_runtime(first_output, forged, runtime_parent)
+        assert not runtime_parent.exists() or not any(runtime_parent.iterdir())
+    finally:
+        workspace_lease.cleanup(first_output.lease)
+        workspace_lease.cleanup(second_output.lease)
+
+
+def test_wrapper_literal_encoder_blocks_injection_and_preserves_exact_path(tmp_path):
+    block_dir = tmp_path / "source" / "blocks" / "odd'?>${bait}"
+    block_dir.mkdir(parents=True)
+    (block_dir / "block.json").write_text(
+        '{"name":"acme/odd","textdomain":"acme-odd"}'
+    )
+    output = import_sandbox_output(tmp_path / "source", tmp_path / "output")
+    synthesized = None
+    try:
+        proof = proof_for(output)
+        synthesized = pipeline.synthesize_block_runtime(
+            output, proof, tmp_path / "runtime"
+        )
+        wrapper = (synthesized.plugin_dir / "acme-odd.php").read_text()
+        assert "file_exists" not in wrapper
+        assert "register_block_type( __DIR__ . '/generated/blocks/odd\\'?>${bait}/block.json' );" in wrapper
+        assert "file_put_contents" not in wrapper
+    finally:
+        if synthesized is not None:
+            workspace_lease.cleanup(synthesized.staged.lease)
+        workspace_lease.cleanup(output.lease)
+
+
+def test_php_single_quoted_literal_escapes_quote_and_backslash():
+    assert pipeline._php_single_quoted_literal("/odd'\\path") == "'/odd\\'\\\\path'"
+
+
+def test_wrapper_literal_rejects_control_character_path_bait(tmp_path):
+    block_dir = tmp_path / "source" / "blocks" / "bad\nname"
+    block_dir.mkdir(parents=True)
+    (block_dir / "block.json").write_text('{"name":"acme/bad"}')
+    output = import_sandbox_output(tmp_path / "source", tmp_path / "output")
+    try:
+        with pytest.raises(ValueError, match="control"):
+            pipeline.synthesize_block_runtime(
+                output, proof_for(output), tmp_path / "runtime"
+            )
+    finally:
+        workspace_lease.cleanup(output.lease)
+
+
+def test_source_fallback_registers_exact_source_block_json(tmp_path):
+    source = tmp_path / "source" / "blocks" / "card"
+    source.mkdir(parents=True)
+    (source / "block.json").write_text(
+        '{"name":"acme/card","textdomain":"acme-card"}'
+    )
+    output = import_sandbox_output(tmp_path / "source", tmp_path / "output")
+    synthesized = None
+    try:
+        proof = proof_for(output)
+        synthesized = pipeline.synthesize_block_runtime(
+            output, proof, tmp_path / "runtime"
+        )
+        wrapper = (synthesized.plugin_dir / "acme-card.php").read_text()
+        assert proof.selection_reason == "source_block_json"
+        assert "'/generated/blocks/card/block.json'" in wrapper
+        assert "/build/block.json" not in wrapper
+    finally:
+        if synthesized is not None:
+            workspace_lease.cleanup(synthesized.staged.lease)
+        workspace_lease.cleanup(output.lease)
+
+
+def test_synthesis_reads_only_selected_metadata_and_snapshots_output_once(
+    tmp_path, monkeypatch
+):
+    root = write_block(tmp_path / "source", "fresh")
+    source_json = root / "blocks/card/block.json"
+    build_json = root / "blocks/card/build/block.json"
+    source_json.write_text('{"name":"acme/source","textdomain":"source"}')
+    build_json.write_text('{"name":"acme/built","textdomain":"built"}')
+    output = import_sandbox_output(root, tmp_path / "output")
+    proof = proof_for(output)
+    synthesized = None
+    snapshots = 0
+    original = artifact_staging.snapshot_held_tree
+
+    def count_snapshot(held):
+        nonlocal snapshots
+        snapshots += 1
+        return original(held)
+
+    monkeypatch.setattr(artifact_staging, "snapshot_held_tree", count_snapshot)
+    try:
+        synthesized = pipeline.synthesize_block_runtime(
+            output, proof, tmp_path / "runtime"
+        )
+        assert synthesized.plugin_slug == "built"
+        assert synthesized.block_name == "acme/built"
+        assert snapshots == 1
+    finally:
+        if synthesized is not None:
+            workspace_lease.cleanup(synthesized.staged.lease)
+        workspace_lease.cleanup(output.lease)
+
+
+def test_plugin_synthesis_has_no_block_execution_proof(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "plugin.php").write_text("<?php")
+    staged = artifact_staging.stage_tree(source, tmp_path / "input")
+    synthesized = None
+    try:
+        synthesized = pipeline.synthesize_plugin_runtime(
+            staged, "plugin", tmp_path / "runtime"
+        )
+        assert synthesized.execution_proof is None
+    finally:
+        if synthesized is not None:
+            workspace_lease.cleanup(synthesized.staged.lease)
+        workspace_lease.cleanup(staged.lease)
+
+
+def test_synthesized_php_closure_drift_fails_and_cleans_stage(tmp_path, monkeypatch):
+    source = write_block(tmp_path / "source", "fresh")
+    output = import_sandbox_output(source, tmp_path / "output")
+    proof = proof_for(output)
+    original = pipeline._block_snapshot
+
+    def inject(*args, **kwargs):
+        snapshot, wrapper_path, wrapper_bytes = original(*args, **kwargs)
+        snapshot.append((Path("acme-card/extra.txt"), b"<?php echo 'drift';", pipeline._regular_info()))
+        return snapshot, wrapper_path, wrapper_bytes
+
+    monkeypatch.setattr(pipeline, "_block_snapshot", inject)
+    try:
+        with pytest.raises(pipeline.RuntimePreparationError, match="closure") as caught:
+            pipeline.synthesize_block_runtime(output, proof, tmp_path / "runtime")
+        assert caught.value.receipts[0].state == "removed"
+    finally:
+        workspace_lease.cleanup(output.lease)
+
+
+def test_runtime_digest_changes_with_wrapper_bytes(tmp_path, monkeypatch):
+    source = write_block(tmp_path / "source", "fresh")
+    output = import_sandbox_output(source, tmp_path / "output")
+    proof = proof_for(output)
+    first = second = None
+    try:
+        first = pipeline.synthesize_block_runtime(output, proof, tmp_path / "runtime-a")
+        original = pipeline._block_wrapper
+        monkeypatch.setattr(
+            pipeline, "_block_wrapper", lambda *args: original(*args) + b"\n"
+        )
+        second = pipeline.synthesize_block_runtime(output, proof, tmp_path / "runtime-b")
+        assert first.execution_proof.wrapper_sha256 != second.execution_proof.wrapper_sha256
+        assert first.execution_proof.execution_proof_digest != second.execution_proof.execution_proof_digest
+    finally:
+        if first is not None: workspace_lease.cleanup(first.staged.lease)
+        if second is not None: workspace_lease.cleanup(second.staged.lease)
+        workspace_lease.cleanup(output.lease)
 
 
 def test_internal_synthesized_stage_dual_failure_preserves_primary_and_receipt(tmp_path, monkeypatch):

@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import artifact_execution
+import artifact_execution_graph
 import artifact_staging
 import workspace_lease
 
@@ -29,6 +30,7 @@ class SynthesizedRuntime:
     block_name: str | None = None
     textdomain: str | None = None
     block_relative: Path | None = None
+    execution_proof: artifact_execution_graph.RuntimeExecutionProof | None = None
 
     @property
     def plugin_dir(self) -> Path:
@@ -97,23 +99,32 @@ def _safe_slug(value: str) -> str:
     return "-".join(part for part in slug.split("-") if part)[:48] or "generated-block"
 
 
-def _block_metadata(snapshot) -> tuple[Path, dict]:
-    candidates = sorted((path, content) for path, content, _info in snapshot if path.name == "block.json")
-    if not candidates:
-        raise FileNotFoundError("no block.json found in held artifact")
-    preferred = [entry for entry in candidates if "build" in entry[0].parts] or candidates
-    path, content = preferred[0]
+def _runtime_metadata(content: bytes) -> dict:
     metadata = json.loads(content.decode("utf-8"))
     if not isinstance(metadata, dict) or not isinstance(metadata.get("name"), str):
         raise ValueError("block.json must contain a block name")
-    return path, metadata
+    if not metadata["name"]:
+        raise ValueError("block.json must contain a non-empty block name")
+    if "textdomain" in metadata and not isinstance(metadata["textdomain"], str):
+        raise ValueError("block.json textdomain must be a string")
+    return metadata
 
 
 def _regular_info(executable: bool = False):
     return SimpleNamespace(st_mode=stat.S_IFREG | (0o700 if executable else 0o600))
 
 
-def _block_wrapper(textdomain: str, block_relative: str) -> bytes:
+def _php_single_quoted_literal(value: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError("PHP literal value must be a string")
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("PHP literal path contains a control character")
+    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
+
+
+def _block_wrapper(textdomain: str, selected_block_json: str) -> bytes:
+    literal = _php_single_quoted_literal(f"/generated/{selected_block_json}")
     return f"""<?php
 /**
  * Plugin Name: Generated Block Runtime Wrapper
@@ -124,22 +135,19 @@ def _block_wrapper(textdomain: str, block_relative: str) -> bytes:
 if ( ! defined( 'ABSPATH' ) ) {{ exit; }}
 add_action( 'init', 'generated_block_runtime_wrapper_register_block' );
 function generated_block_runtime_wrapper_register_block(): void {{
-\t$source = __DIR__ . '/{block_relative}';
-\t$built = $source . '/build';
-\tregister_block_type( file_exists( $built . '/block.json' ) ? $built : $source );
+\tregister_block_type( __DIR__ . {literal} );
 }}
 """.encode("utf-8")
 
 
-def _block_snapshot(source_snapshot, block_json: Path, metadata: dict, textdomain: str):
+def _block_snapshot(source_snapshot, proof, metadata: dict, textdomain: str):
     generated = [(Path(textdomain) / "generated" / path, content, info) for path, content, info in source_snapshot]
-    block_dir = block_json.parent
-    block_relative = (Path("generated") / block_dir).as_posix()
     wrapper = Path(textdomain) / f"{textdomain}.php"
     readme = Path(textdomain) / "readme.txt"
-    generated.append((wrapper, _block_wrapper(textdomain, block_relative), _regular_info()))
+    wrapper_bytes = _block_wrapper(textdomain, proof.selected_block_json)
+    generated.append((wrapper, wrapper_bytes, _regular_info()))
     generated.append((readme, f"Generated runtime wrapper for {metadata['name']}.\n".encode(), _regular_info()))
-    return generated
+    return generated, wrapper.as_posix(), wrapper_bytes
 
 
 def _owned_synthesized(staged, *args) -> SynthesizedRuntime:
@@ -158,14 +166,89 @@ def _stage_synthesized(snapshot, parent):
         raise RuntimePreparationError(error.primary,[receipt]) from error
 
 
-def synthesize_block_runtime(output: artifact_staging.StagedTree, parent: Path | None = None) -> SynthesizedRuntime:
+def _verify_block_proof(output, proof) -> None:
+    if not isinstance(proof, artifact_execution_graph.BlockExecutionProof):
+        raise TypeError("block synthesis requires a BlockExecutionProof")
+    artifact_execution_graph._validate_artifact_proof(proof)
+    if not _authentic_role(output, artifact_staging.StageRole.SANDBOX_OUTPUT):
+        raise ValueError("block synthesis requires an authentic sandbox output")
+    digest = artifact_staging.manifest_sha256(output.manifest)
+    if digest != proof.output_manifest_sha256:
+        raise ValueError("sandbox output manifest does not match execution proof")
+
+
+def _read_proven_output(output, proof):
     with artifact_staging.hold_staged_tree(output) as held:
+        digest = artifact_staging.manifest_sha256(held.proof.manifest)
+        if digest != proof.output_manifest_sha256:
+            raise ValueError("held output manifest does not match execution proof")
+        content = artifact_staging.read_held_member(held, proof.selected_block_json)
         source_snapshot = artifact_staging.snapshot_held_tree(held)
-        block_json, metadata = _block_metadata(source_snapshot)
-        textdomain = _safe_slug(str(metadata.get("textdomain") or metadata["name"].split("/")[-1]))
-        snapshot = _block_snapshot(source_snapshot, block_json, metadata, textdomain)
+    return source_snapshot, _runtime_metadata(content)
+
+
+def _is_php_candidate(held, path: str) -> bool:
+    lowered = path.casefold()
+    if any(lowered.endswith(suffix) for suffix in artifact_execution_graph.PHP_SUFFIXES):
+        return True
+    return artifact_staging.held_member_has_php_tag(held, path)
+
+
+def _expected_runtime_php(proof, slug, wrapper_path, wrapper_bytes):
+    expected = {
+        f"{slug}/generated/{item.path}": item.sha256
+        for item in proof.php_candidates
+    }
+    expected[wrapper_path] = artifact_execution_graph.sha256_bytes(wrapper_bytes)
+    return expected
+
+
+def _verify_synthesized_closure(staged, proof, slug, wrapper_path, wrapper_bytes):
+    expected = _expected_runtime_php(proof, slug, wrapper_path, wrapper_bytes)
+    with artifact_staging.hold_staged_tree(staged) as held:
+        index = {item.path: item for item in held.proof.manifest}
+        observed = {
+            path for path in sorted(index) if _is_php_candidate(held, path)
+        }
+        if observed != set(expected):
+            raise ValueError("synthesized executable-PHP closure does not match proof")
+        if any(index[path].sha256 != digest for path, digest in expected.items()):
+            raise ValueError("synthesized executable-PHP closure hash mismatch")
+
+
+def _finish_block_runtime(staged, output, proof, metadata, slug, wrapper_path, wrapper_bytes):
+    try:
+        _verify_synthesized_closure(
+            staged, proof, slug, wrapper_path, wrapper_bytes
+        )
+        manifest = artifact_staging.manifest_sha256(staged.manifest)
+        execution_proof = artifact_execution_graph.bind_runtime_proof(
+            proof, wrapper_path, wrapper_bytes, manifest
+        )
+        return SynthesizedRuntime(
+            staged, output.role, slug, metadata["name"], slug,
+            Path(proof.selected_root), execution_proof,
+        )
+    except Exception as primary:
+        receipt = cleanup_component("synthesized_runtime", staged)
+        raise RuntimePreparationError(primary, [receipt]) from primary
+
+
+def synthesize_block_runtime(
+    output: artifact_staging.StagedTree,
+    proof: artifact_execution_graph.BlockExecutionProof,
+    parent: Path | None = None,
+) -> SynthesizedRuntime:
+    _verify_block_proof(output, proof)
+    source_snapshot, metadata = _read_proven_output(output, proof)
+    slug = _safe_slug(metadata.get("textdomain") or metadata["name"].split("/")[-1])
+    snapshot, wrapper_path, wrapper_bytes = _block_snapshot(
+        source_snapshot, proof, metadata, slug
+    )
     staged = _stage_synthesized(snapshot,parent)
-    return _owned_synthesized(staged,output.role,textdomain,str(metadata["name"]),textdomain,block_json.parent)
+    return _finish_block_runtime(
+        staged, output, proof, metadata, slug, wrapper_path, wrapper_bytes
+    )
 
 
 def synthesize_plugin_runtime(source: artifact_staging.StagedTree, plugin_slug: str, parent: Path | None = None) -> SynthesizedRuntime:
