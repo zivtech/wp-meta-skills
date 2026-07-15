@@ -8,8 +8,11 @@ RUN npm ci --ignore-scripts --no-audit --no-fund \
  && chown -R pwuser:pwuser /opt/wp-runtime
 COPY browser-policy.js /opt/wp-runtime/browser-policy.js
 COPY gateway-policy.js /opt/wp-runtime/gateway-policy.js
+COPY request-policy.js /opt/wp-runtime/request-policy.js
 RUN chmod 0444 /opt/wp-runtime/browser-policy.js /opt/wp-runtime/gateway-policy.js \
- && chown root:root /opt/wp-runtime/browser-policy.js /opt/wp-runtime/gateway-policy.js
+    /opt/wp-runtime/request-policy.js \
+ && chown root:root /opt/wp-runtime/browser-policy.js /opt/wp-runtime/gateway-policy.js \
+    /opt/wp-runtime/request-policy.js
 USER pwuser
 ENTRYPOINT ["sleep"]
 CMD ["infinity"]

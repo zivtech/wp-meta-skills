@@ -311,6 +311,8 @@ python3 evals/harness/run_wordpress_runtime_smoke.py \
   --fixture-kind block \
   --block-name acme/runtime-card \
   --editor-insert-render-smoke \
+  --expected-frontend-selector .wp-block-acme-runtime-card \
+  --expected-frontend-text "Runtime block smoke" \
   --write \
   --run-id wp-env-block-editor-insert-render-smoke-YYYYMMDD \
   --timeout-sec 180
@@ -325,8 +327,9 @@ release readiness. The first local proof is recorded at
 For a generated block executor artifact, keep the packet block-only and let the
 runtime harness synthesize the disposable wrapper plugin. First materialize and
 certify the block packet, then pass the generated block directory with
-`--artifact-kind block`. When `--block-name` is omitted, the harness infers it
-from `block.json`:
+`--artifact-kind block`. Direct external-artifact use requires the exact block
+name, frontend selector, expected text, evidence ID, and pre-stage artifact
+digest; none is inferred:
 
 ```bash
 python3 evals/harness/certify_wordpress_executor_artifact.py \
@@ -336,12 +339,26 @@ python3 evals/harness/certify_wordpress_executor_artifact.py \
   --result-dir <result-dir> \
   --overwrite
 
+artifact="<generated-block-dir>"
+digest="$(PYTHONPATH=evals/harness python3 - "$artifact" <<'PY'
+import sys
+from pathlib import Path
+from artifact_staging import digest_regular_tree
+print(digest_regular_tree(Path(sys.argv[1])))
+PY
+)"
 python3 evals/harness/run_wordpress_runtime_smoke.py \
-  --artifact-path <generated-block-dir> \
+  --artifact-path "$artifact" \
   --artifact-kind block \
+  --expected-artifact-digest "$digest" \
+  --evidence-id generated-block-full-profile-YYYYMMDD \
   --block-build-smoke \
+  --block-name vendor/block-name \
   --editor-insert-render-smoke \
+  --expected-frontend-selector .wp-block-vendor-block-name \
+  --expected-frontend-text "Exact fixture-owned text" \
   --provision-full-profile \
+  --strict-full-profile \
   --write \
   --run-id generated-block-full-profile-YYYYMMDD \
   --timeout-sec 300
@@ -351,7 +368,8 @@ This proves the saved block packet can materialize into files, pass the static
 block artifact gate, run `npm install` plus `npm run build` on a disposable
 copy, pass a fresh post-build execution-artifact gate, register through a
 disposable wrapper in `wp-env`, pass WPCS/PHPCS and Plugin Check for that
-wrapper, appear in the editor, insert/save/publish, and render on the frontend.
+wrapper, appear in the editor, insert/save/publish, and render in the same
+isolated no-egress runtime.
 The build-command gate and emitted-artifact gate are independent required rows;
 neither substitutes for the other. It does not prove PHPUnit, deprecation migration,
 Interactivity API behavior, cross-browser behavior, MCP Adapter exposure, AI
@@ -361,44 +379,11 @@ run and pass. The first local proofs are recorded at
 and
 `evals/results/wordpress-skill-candidate-eval/generated-block-full-profile-20260620/`.
 
-For a generated block Interactivity API proof, use a block packet that declares
-`supports.interactivity`, `viewScriptModule`, `@wordpress/interactivity`, and
-frontend `data-wp-*` directives, then add `--interactivity-smoke` to the runtime
-profile:
-
-```bash
-python3 evals/harness/certify_wordpress_executor_artifact.py \
-  --executor block \
-  --packet evals/suites/wordpress-block-executor/examples/interactivity-wordpress-v1.materializable-packet.md \
-  --out-dir evals/results/wordpress-skill-candidate-eval/generated-block-interactivity-artifact-cert-YYYYMMDD/generated-block \
-  --result-dir evals/results/wordpress-skill-candidate-eval/generated-block-interactivity-artifact-cert-YYYYMMDD \
-  --overwrite
-
-python3 evals/harness/run_wordpress_runtime_smoke.py \
-  --artifact-path evals/results/wordpress-skill-candidate-eval/generated-block-interactivity-artifact-cert-YYYYMMDD/generated-block \
-  --artifact-kind block \
-  --block-build-smoke \
-  --editor-insert-render-smoke \
-  --interactivity-smoke \
-  --provision-full-profile \
-  --write \
-  --run-id generated-block-interactivity-full-profile-YYYYMMDD \
-  --timeout-sec 300
-```
-
-When `npm run build` emits the exact source-anchored child `build/block.json`,
-the disposable wrapper registers that literal metadata file so
-`viewScriptModule` uses the compiled module asset. Any other plausible metadata
-root blocks instead of being guessed. `--interactivity-smoke` adds a static
-Interactivity surface gate and a Playwright frontend click/state assertion. The first local proof is
-recorded at
-`evals/results/wordpress-skill-candidate-eval/generated-block-interactivity-artifact-cert-20260621/`
-and
-`evals/results/wordpress-skill-candidate-eval/generated-block-interactivity-full-profile-20260621/`.
-It proves the generated block can publish and render, then change `context.count`
-from `0` to `1` through Interactivity API directives. It does not prove block
-deprecation migration, MCP Adapter exposure, AI Client provider calls, broad
-cross-browser behavior, or release readiness.
+External generated-block Interactivity and deprecation runtime modes are not
+supported by the isolated artifact path. The historical built-in fixture modes
+remain diagnostic-only and cannot substitute for the `block-runtime` adapter's
+fixture-owned selector/text proof. Historical result directories show what ran
+then; they do not establish current support.
 
 ### Post-build block execution-artifact proof
 
@@ -471,119 +456,13 @@ runtime-specific PHP short-tag behavior, authorization, Docker/`wp-env`,
 WordPress boot, database behavior, browser rendering, concurrency, production
 throughput, or release readiness.
 
-For a generated block deprecation proof, use a block packet that includes a
-legacy serialized-content fixture plus `deprecation-smoke.json`, then add
-`--deprecation-smoke` to the runtime profile:
-
-```bash
-python3 evals/harness/certify_wordpress_executor_artifact.py \
-  --executor block \
-  --packet evals/suites/wordpress-block-executor/examples/deprecation-wordpress-v1.materializable-packet.md \
-  --out-dir evals/results/wordpress-skill-candidate-eval/generated-block-deprecation-artifact-cert-YYYYMMDD/generated-block \
-  --result-dir evals/results/wordpress-skill-candidate-eval/generated-block-deprecation-artifact-cert-YYYYMMDD \
-  --overwrite
-
-python3 evals/harness/run_wordpress_runtime_smoke.py \
-  --artifact-path evals/results/wordpress-skill-candidate-eval/generated-block-deprecation-artifact-cert-YYYYMMDD/generated-block \
-  --artifact-kind block \
-  --block-build-smoke \
-  --deprecation-smoke \
-  --provision-full-profile \
-  --write \
-  --run-id generated-block-deprecation-full-profile-YYYYMMDD \
-  --timeout-sec 300
-```
-
-`--deprecation-smoke` creates a draft post from the legacy fixture, opens it in
-the block editor, requires the target block to parse as valid current-block
-content, verifies the exact migrated attribute named by `deprecation-smoke.json`,
-serializes the editor's current block tree, saves the post, and checks both the
-current serialized marker and frontend text. The first local proof is recorded
-at
-`evals/results/wordpress-skill-candidate-eval/generated-block-deprecation-artifact-cert-20260621/`
-and
-`evals/results/wordpress-skill-candidate-eval/generated-block-deprecation-full-profile-20260621/`.
-It proves the generated block can migrate one legacy fixture through WordPress'
-block deprecation path into current saved markup and frontend output. It does
-not prove Interactivity API behavior, MCP Adapter exposure, AI Client provider
-calls, broad cross-browser behavior, every historical deprecation variant, or
-release readiness.
-
-To wrap an existing generated plugin artifact in a disposable `wp-env` project, pass `--artifact-path`:
-
-```bash
-python3 evals/harness/run_wordpress_runtime_smoke.py \
-  --artifact-path <generated-plugin-dir>/<plugin-slug> \
-  --write \
-  --run-id generated-plugin-runtime-smoke-YYYYMMDD \
-  --timeout-sec 300
-```
-
-For generated plugin artifacts with a PHPUnit suite, add `--phpunit-smoke` and provision the full profile:
-
-```bash
-python3 evals/harness/run_wordpress_runtime_smoke.py \
-  --artifact-path <generated-plugin-dir>/<plugin-slug> \
-  --phpunit-smoke \
-  --provision-full-profile \
-  --write \
-  --run-id generated-plugin-phpunit-full-profile-YYYYMMDD \
-  --timeout-sec 300
-```
-
-When the copied artifact contains `composer.json`, the harness installs artifact-local Composer dependencies before running `phpunit`. This proves plugin activation, artifact-local PHPUnit, WPCS/PHPCS, Plugin Check, and `wp-env` for that generated plugin copy. It does not prove block/editor/browser behavior, MCP Adapter runtime exposure, AI Client provider-call behavior, broad integration coverage, or release readiness. The first local proofs are recorded at `evals/results/wordpress-skill-candidate-eval/generated-plugin-phpunit-artifact-cert-20260620/` and `evals/results/wordpress-skill-candidate-eval/generated-plugin-phpunit-full-profile-20260620/`.
-
-For generated Abilities API plugins, add a named ability smoke. The post-summary execution mode creates a disposable post, resolves the named ability with `wp_get_ability()`, executes it with a `post_id` input, and requires a non-empty summary result:
-
-```bash
-python3 evals/harness/run_wordpress_runtime_smoke.py \
-  --artifact-path <generated-plugin-dir>/<plugin-slug> \
-  --ability-name vendor/ability-name \
-  --execute-post-summary-ability \
-  --write \
-  --run-id generated-abilities-runtime-smoke-YYYYMMDD \
-  --timeout-sec 300
-```
-
-This proves plugin activation, `wp-env`, and Abilities registration/execution for that generated artifact. It does not prove MCP Adapter exposure, AI Client provider calls, browser/editor behavior, WPCS, Plugin Check, or release readiness unless those checks are also required and pass.
-
-For generated MCP-public Abilities API plugins, add `--mcp-adapter-smoke`.
-The harness installs the current WordPress MCP Adapter plugin zip in disposable
-`wp-env`, lists the default adapter server, calls `tools/list` through
-`wp mcp-adapter serve`, discovers the named public ability, and executes it
-through `mcp-adapter-execute-ability`:
-
-```bash
-python3 evals/harness/run_wordpress_runtime_smoke.py \
-  --artifact-path <generated-plugin-dir>/<plugin-slug> \
-  --ability-name vendor/ability-name \
-  --mcp-adapter-smoke \
-  --mcp-adapter-execute-args-json '{"marker":"Runtime MCP smoke"}' \
-  --mcp-adapter-expected-output "Runtime MCP smoke" \
-  --provision-full-profile \
-  --write \
-  --run-id generated-mcp-adapter-full-profile-YYYYMMDD \
-  --timeout-sec 300
-```
-
-The first local proof is recorded at
-`evals/results/wordpress-skill-candidate-eval/generated-mcp-adapter-artifact-cert-20260621/`
-and
-`evals/results/wordpress-skill-candidate-eval/generated-mcp-adapter-full-profile-20260621/`.
-It proves plugin activation, `wp-env`, MCP Adapter installation, STDIO
-`tools/list`, `mcp-adapter-discover-abilities`,
-`mcp-adapter-execute-ability`, WPCS/PHPCS, and Plugin Check for the generated
-artifact. It does not prove AI Client provider calls, browser/editor behavior,
-PHPUnit behavior, long-run model variance, broad integration coverage, or
-release readiness. The first pass emitted upstream PHP deprecation notices from
-MCP Adapter internals under the local PHP runtime; keep those as adapter/runtime
-risk instead of treating the proof as release readiness.
-
-For generated AI Client provider-call plugins, add `--ai-client-smoke`. The
-harness calls a generated helper through `wp --user=admin eval`, requires
-`wp_ai_client_prompt()`, checks the AI Client provider registry, confirms
-provider registration/configuration, confirms connector registration when
-`wp_is_connector_registered()` exists, and requires expected provider output:
+For an external generated plugin, use the canonical digest/evidence-bearing
+command in `evals/harness/README.md`. The supported isolated profile is plugin
+activation, Plugin Check, the container browser, optional artifact-local
+PHPUnit, and the strict full profile. The historical external-artifact Abilities,
+MCP Adapter, and AI Client special modes are rejected before isolated runtime
+preparation; their historical `wp-env` result directories do not establish
+current support.
 
 ### Repair-loop evidence freshness
 
@@ -638,7 +517,7 @@ line and a terminating newline.
 Runtime repair calls pass the same evidence ID and expected artifact digest.
 The runtime harness copies the execution closure into its fresh runtime lease,
 independently digests that staged destination, and compares it before starting
-`wp-env`. It executes only the staged destination, then writes only to the explicit
+the isolated no-egress runtime. It executes only the staged destination, then writes only to the explicit
 `--results-root/<run-id>/runtime-smoke.json`. The repair loop reads that exact
 file; it does not search global results or similarly named runs. Green requires
 process exit code 0, matching identities and digests, top-level `status:
@@ -653,35 +532,6 @@ root. Read `runtime_root` in the JSON summary to locate the unique child;
 `--keep-running` retains the child. Without either flag, sentinel-verified
 cleanup removes only the child.
 
-```bash
-python3 evals/harness/run_wordpress_runtime_smoke.py \
-  --workdir /tmp/wp-ai-client-runtime-smoke-YYYYMMDD \
-  --artifact-path <generated-plugin-dir>/<plugin-slug> \
-  --ai-client-smoke \
-  --ai-client-provider-id acme-ai-client-smoke \
-  --ai-client-model-id acme-deterministic-text \
-  --ai-client-helper-function 'AcmeAIClientSmoke\generate_summary' \
-  --ai-client-prompt "Runtime AI Client smoke" \
-  --ai-client-expected-output "AI Client smoke: deterministic provider response" \
-  --provision-full-profile \
-  --write \
-  --run-id generated-ai-client-provider-full-profile-YYYYMMDD \
-  --timeout-sec 300
-```
-
-The first local proof is recorded at
-`evals/results/wordpress-skill-candidate-eval/generated-ai-client-provider-artifact-cert-20260621/`
-and
-`evals/results/wordpress-skill-candidate-eval/generated-ai-client-provider-full-profile-20260621/`.
-It proves plugin activation, `wp-env`, deterministic no-auth AI Client provider
-registration/configuration, connector registration, model preference selection,
-`generate_text()` output, WPCS/PHPCS, and Plugin Check for the generated
-artifact. It does not prove credentialed OpenAI/Anthropic/Google provider
-behavior, browser/editor behavior, PHPUnit behavior, long-run model variance,
-broad integration coverage, or release readiness. A supplied `--workdir`
-still receives a Docker-safe unique child name; callers must not rely on files
-being written at the parent root.
-
 To provision and require the full disposable plugin runtime profile, including Composer-installed WPCS and Plugin Check inside `wp-env`, run:
 
 ```bash
@@ -692,7 +542,9 @@ python3 evals/harness/run_wordpress_runtime_smoke.py \
   --timeout-sec 300
 ```
 
-`--provision-full-profile` can also be combined with `--artifact-path`. In the 2026-06-20 generated Abilities run, the artifact passed Plugin Check and the Abilities execution smoke, but failed WPCS/PHPCS. The static artifact gate now catches the same obvious failure class earlier through `php_wpcs_shape_heuristics`; that is a valid failed gate and should drive executor repair before another release-readiness claim.
+For an external `--artifact-path`, use the canonical command above and include
+the exact digest, evidence ID, and strict full-profile flag. Historical runs
+without the current isolated contract are not current runtime evidence.
 
 Use `--strict-full-profile` when PHPCS/WPCS and WP-CLI Plugin Check have already been provisioned separately and full plugin runtime certification is the intended gate.
 

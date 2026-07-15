@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import runtime_image_provision as transport
+import isolated_runtime_contract as contract
 import wp_runtime_inspection as inspection
 import wp_runtime_oracles as oracles
 import wp_runtime_topology as topology
@@ -77,29 +78,38 @@ def execute_runtime(
     block_assertion=None,
 ):
     if not isinstance(deadline,RuntimeDeadline): deadline=RuntimeDeadline.start(deadline)
+    runtime_profile=contract.profile_for_requested(tuple(requested))
+    block_post_id=(
+        contract.BLOCK_CANARY_POST_ID if runtime_profile==contract.BLOCK_PROFILE else 0
+    )
     compose=work/"compose.json"; spec=topology.write_compose(
-        compose,runtime.images,runtime.identities,artifact_image,slug
+        compose,runtime.images,runtime.identities,artifact_image,slug,
+        runtime_profile,block_post_id,
     )
     base=["docker","compose","-p",project,"-f",str(compose)]
     primary=None; phase="normalize"; evidence={}; checks=()
     try:
         evidence["normalized"]=inspection.inspect_normalized(
-            base,runtime.images,runtime.identities,artifact_image,slug,deadline
+            base,runtime.images,runtime.identities,artifact_image,slug,deadline,
+            runtime_profile,block_post_id,
         )
         phase="create"; _run(base+["create","--pull","never","--no-build"],deadline,180)
         evidence["created"]=inspection.inspect_live(
             base,runtime.images,runtime.identities,artifact_image,project,slug,deadline,
-            require_running=False,
+            require_running=False,runtime_profile=runtime_profile,
+            block_post_id=block_post_id,
         )
         phase="start"; _run(base+["start"],deadline,120)
         evidence["started"]=inspection.inspect_live(
-            base,runtime.images,runtime.identities,artifact_image,project,slug,deadline
+            base,runtime.images,runtime.identities,artifact_image,project,slug,deadline,
+            runtime_profile=runtime_profile,block_post_id=block_post_id,
         )
         phase="oracles"; checks=oracles.run_oracles(
             base,slug,deadline,requested,artifact_digest,block_assertion,
         )
         evidence["post_oracle"]=inspection.inspect_live(
-            base,runtime.images,runtime.identities,artifact_image,project,slug,deadline
+            base,runtime.images,runtime.identities,artifact_image,project,slug,deadline,
+            runtime_profile=runtime_profile,block_post_id=block_post_id,
         )
     except Exception as exc:
         primary=exc

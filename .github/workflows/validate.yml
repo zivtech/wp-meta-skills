@@ -34,14 +34,15 @@ jobs:
           git -c protocol.version=2 fetch --no-tags --depth=1 origin "$CANARY_COMMIT_SHA"
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "$CANARY_COMMIT_SHA"
-      - name: Install test dependency without cache credentials
-        run: python -m pip install --no-cache-dir pytest==8.4.2
+      - name: Install test dependencies without cache credentials
+        run: python -m pip install --no-cache-dir pytest==8.4.2 PyYAML==6.0.3
       - name: Verify committed locks, inventory, and topology policy
         run: |
           python -m pytest \
             evals/harness/tests/test_runtime_image_provision.py \
             evals/harness/tests/test_wp_env_network_guard.py \
             evals/harness/tests/test_runtime_assertions.py \
+            evals/harness/tests/test_runtime_request_policy.py \
             evals/harness/tests/test_isolated_runtime_contract.py \
             evals/harness/tests/test_wp_staged_runtime.py \
             -m 'not docker_boundary' -q
@@ -230,8 +231,8 @@ jobs:
           git -c protocol.version=2 fetch --no-tags --depth=1 origin "$CANARY_COMMIT_SHA"
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "$CANARY_COMMIT_SHA"
-      - name: Install test dependency without cache credentials
-        run: python -m pip install --no-cache-dir pytest==8.4.2
+      - name: Install test dependencies without cache credentials
+        run: python -m pip install --no-cache-dir pytest==8.4.2 PyYAML==6.0.3
       - name: Install pinned PHP tools for the block full profile
         run: >-
           composer install --no-interaction --no-progress --no-scripts
@@ -351,6 +352,7 @@ jobs:
             evals/harness/tests/test_runtime_image_provision.py \
             evals/harness/tests/test_wp_env_network_guard.py \
             evals/harness/tests/test_runtime_assertions.py \
+            evals/harness/tests/test_runtime_request_policy.py \
             evals/harness/tests/test_isolated_runtime_contract.py \
             evals/harness/tests/test_wp_staged_runtime.py \
             evals/harness/tests/test_executor_repair_loop.py \

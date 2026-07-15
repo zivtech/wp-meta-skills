@@ -193,7 +193,8 @@ def _persisted_artifact_gate():
 def _persisted_errors(data: dict, expected: str | None = EXECUTION_DIGEST) -> list[str]:
     return contract.persisted_runtime_errors(
         data, run_id="run", evidence_id="evidence", artifact_kind=data["artifact_kind"],
-        input_digest=INPUT_DIGEST, execution_proof_digest=expected,
+        input_digest=INPUT_DIGEST, expected_profile=data["runtime_profile_id"],
+        execution_proof_digest=expected,
         block_assertion=BLOCK_ASSERTION if data["artifact_kind"] == "block" else None,
     )
 

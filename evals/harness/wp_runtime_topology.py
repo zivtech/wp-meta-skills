@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import re
 
+import isolated_runtime_contract as contract
+
 SERVICE_NETWORKS = {
     "database": ["backend"],
     "wordpress": ["backend", "application"],
@@ -65,9 +67,22 @@ def _tmpfs(path: str, identity: str, size: int, inodes: int) -> str:
     return f"{path}:uid={uid},gid={gid},mode=0700,size={size},nr_inodes={inodes},nosuid,nodev,noexec"
 
 
-def build_compose(images: dict, identities: dict, artifact_image:str, plugin_slug:str="runtime-plugin") -> dict:
+def _gateway_command(plugin_slug: str, runtime_profile: str, block_post_id: int) -> list[str]:
     if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?",plugin_slug):
         raise ValueError("gateway plugin slug is unsafe")
+    if runtime_profile not in contract.REQUIRED_CHECKS_BY_PROFILE:
+        raise ValueError("gateway runtime profile is unsafe")
+    expected = contract.BLOCK_CANARY_POST_ID if runtime_profile == contract.BLOCK_PROFILE else 0
+    if block_post_id != expected:
+        raise ValueError("gateway block post identity is unsafe")
+    return ["/opt/wp-runtime/gateway-policy.js",plugin_slug,runtime_profile,str(block_post_id)]
+
+
+def build_compose(
+    images: dict, identities: dict, artifact_image:str, plugin_slug:str="runtime-plugin",
+    runtime_profile:str=contract.STANDARD_PROFILE, block_post_id:int=0,
+) -> dict:
+    gateway_command = _gateway_command(plugin_slug, runtime_profile, block_post_id)
     services = {
         "database": {**_limits(), "image": images["database"], "user": identities["database"],
             "networks": ["backend"], "tmpfs": [
@@ -94,7 +109,7 @@ def build_compose(images: dict, identities: dict, artifact_image:str, plugin_slu
                 "application": {"aliases": ["gateway-application"]},
                 "frontend": {"aliases": ["gateway-frontend"]},
             }, "entrypoint": ["node"],
-            "command": ["/opt/wp-runtime/gateway-policy.js",plugin_slug],
+            "command": gateway_command,
             "tmpfs": [_tmpfs("/tmp", identities["browser"], 16777216, 1024),
                       _tmpfs("/dev/shm", identities["browser"], 16777216, 1024)]},
         "browser": {**_limits(), "image": images["browser"], "user": identities["browser"],
@@ -156,16 +171,19 @@ def _validate_service_storage(name,service,artifact_image):
         raise ValueError(f"{name} did not receive the exact derived artifact image")
 
 
-def _validate_service_command(name,service,plugin_slug):
+def _validate_service_command(name,service,plugin_slug,runtime_profile,block_post_id):
     sleepers={"cli","browser"}
     if name in sleepers and (service["entrypoint"]!=["sleep"] or service["command"]!=["infinity"]):
         raise ValueError(f"{name} command drift")
-    expected=["/opt/wp-runtime/gateway-policy.js",plugin_slug]
+    expected=_gateway_command(plugin_slug,runtime_profile,block_post_id)
     if name=="gateway" and (service["entrypoint"]!=["node"] or service["command"]!=expected):
         raise ValueError("gateway command drift")
 
 
-def validate_compose(spec: dict, artifact_image:str, plugin_slug:str="runtime-plugin") -> bool:
+def validate_compose(
+    spec: dict, artifact_image:str, plugin_slug:str="runtime-plugin",
+    runtime_profile:str=contract.STANDARD_PROFILE, block_post_id:int=0,
+) -> bool:
     networks={name:{"driver":"bridge","driver_opts":dict(ISOLATED_BRIDGE_OPTIONS),
                     "internal":True}
               for name in ("backend","application","frontend")}
@@ -177,12 +195,19 @@ def validate_compose(spec: dict, artifact_image:str, plugin_slug:str="runtime-pl
         _validate_service_schema(name,service)
         _validate_service_limits(name,service)
         _validate_service_storage(name,service,artifact_image)
-        _validate_service_command(name,service,plugin_slug)
+        _validate_service_command(name,service,plugin_slug,runtime_profile,block_post_id)
     return True
 
 
-def write_compose(path, images: dict, identities: dict, artifact_image:str, plugin_slug:str) -> dict:
-    spec = build_compose(images, identities, artifact_image,plugin_slug)
-    validate_compose(spec, artifact_image,plugin_slug)
+def write_compose(
+    path, images: dict, identities: dict, artifact_image:str, plugin_slug:str,
+    runtime_profile:str, block_post_id:int,
+) -> dict:
+    spec = build_compose(
+        images, identities, artifact_image,plugin_slug,runtime_profile,block_post_id,
+    )
+    validate_compose(
+        spec, artifact_image,plugin_slug,runtime_profile,block_post_id,
+    )
     path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
     return spec

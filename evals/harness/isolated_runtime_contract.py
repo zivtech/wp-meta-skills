@@ -15,6 +15,7 @@ VALID_STATUSES = frozenset({"pass", "fail", "blocked"})
 STANDARD_PROFILE = "standard"
 BLOCK_PROFILE = "block-runtime"
 ADVERSARIAL_PROFILE = "adversarial-test"
+BLOCK_CANARY_POST_ID = 910011
 STANDARD_REQUESTED_ORACLES = ("activation", "browser")
 BLOCK_REQUESTED_ORACLES = ("activation", "browser", "block_frontend")
 # RuntimeRequest currently exposes only the two reviewed oracle capabilities.
@@ -673,9 +674,38 @@ def _persisted_full_profile_errors(data):
     return errors
 
 
+def _persisted_check_errors(data: dict[str, Any], expected_profile: str) -> list[str]:
+    errors = []
+    raw_checks = data.get("checks")
+    checks = tuple(raw_checks) if isinstance(raw_checks, list) else ()
+    if data.get("runtime_profile_id") != expected_profile:
+        errors.append("runtime profile mismatch")
+    expected_checks = REQUIRED_CHECKS_BY_PROFILE.get(expected_profile)
+    if expected_checks is None:
+        errors.append("expected runtime profile is unknown")
+        expected_checks = REQUIRED_ORACLE_CHECKS
+    required_result = (*expected_checks, "runtime_identity")
+    for check_id in required_result:
+        matches = [
+            check for check in checks
+            if isinstance(check, dict) and check.get("id") == check_id
+        ]
+        if len(matches) != 1 or matches[0].get("status") != "pass":
+            errors.append(f"{check_id} did not pass")
+    errors.extend(_persisted_timing_errors(checks, expected_checks))
+    malformed = not isinstance(raw_checks, list) or any(
+        not isinstance(check, dict) or not isinstance(check.get("id"), str)
+        for check in checks
+    )
+    if malformed or _check_ids(checks) != required_result:
+        errors.append("runtime check inventory mismatch")
+    return errors
+
+
 def persisted_runtime_errors(
     data: dict[str, Any], *, run_id: str, evidence_id: str,
-    artifact_kind: str, input_digest: str, execution_proof_digest: str | None = None,
+    artifact_kind: str, input_digest: str, expected_profile: str,
+    execution_proof_digest: str | None = None,
     block_assertion: BlockRuntimeAssertion | None = None,
 ) -> list[str]:
     """Return exact-result contract errors for the repair-loop consumer."""
@@ -696,24 +726,7 @@ def persisted_runtime_errors(
     post = data.get("post_command_manifest_digest")
     if not isinstance(pre, str) or not DIGEST.fullmatch(pre) or post != pre:
         errors.append("post-command manifest digest mismatch")
-    raw_checks = data.get("checks")
-    checks = tuple(raw_checks) if isinstance(raw_checks, list) else ()
-    profile = data.get("runtime_profile_id", STANDARD_PROFILE)
-    expected_checks = REQUIRED_CHECKS_BY_PROFILE.get(profile)
-    if expected_checks is None:
-        errors.append("runtime profile is unknown")
-        expected_checks = REQUIRED_ORACLE_CHECKS
-    required_result = (*expected_checks, "runtime_identity")
-    actual_ids = _check_ids(checks)
-    for check_id in required_result:
-        matches = [check for check in checks if isinstance(check, dict) and check.get("id") == check_id]
-        if len(matches) != 1 or matches[0].get("status") != "pass":
-            errors.append(f"{check_id} did not pass")
-    errors.extend(_persisted_timing_errors(checks, expected_checks))
-    extras = set(actual_ids) - set(required_result)
-    duplicates = len(actual_ids) != len(set(actual_ids))
-    if extras or duplicates:
-        errors.append("runtime check inventory mismatch")
+    errors.extend(_persisted_check_errors(data,expected_profile))
     if data.get("status") != "pass" or data.get("pass") is not True:
         errors.append("top-level runtime status did not pass")
     errors.extend(_persisted_topology_errors(data))

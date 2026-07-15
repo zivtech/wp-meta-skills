@@ -1,21 +1,11 @@
 #!/usr/bin/env python3
-"""Automated executor repair loop: generate -> certify -> (repair -> regenerate -> re-certify)* until green or k.
+"""Bounded generate, certify, repair, and re-certify loop for WordPress executors.
 
-The deterministic gate (Plugin Check / WPCS / wp-env activation) emits machine-readable
-failures; this loop feeds those failures back to the model and re-certifies, up to a bound.
-The 2026-06-22 gate-pass experiment showed this loop is the model-agnostic lever (it took
-both a gpt-5.5 baseline and a sonnet+skill packet from fail -> green in one iteration), so
-this turns that manual handoff into a standing capability.
-
-Design mirrors run_pairwise_pilot.py: the core `orchestrate(generate_fn, certify_fn, ...)`
-takes injectable callables and is fully unit-tested with stubs
-(tests/test_executor_repair_loop.py). `main()` wires the real single-shot generation
-(invoke.py: claude for skill lanes, codex for baseline-* lanes) and the real gate
-(certify_wordpress_executor_artifact.py static + run_wordpress_runtime_smoke.py runtime).
-
-Internal-only measurement harness. It reports pass@1, pass@k-with-repair, iterations-to-green,
-and per-iteration gate vectors. It makes no skill-superiority claim. Failed generations (model
-timeouts / empty output) are retried and never discard the last-good packet.
+The injectable orchestration core is unit-tested without models or Docker. The
+CLI wires provider generation to static artifact certification and the exact
+executor-aware isolated runtime adapters. It reports repair measurements, not
+skill superiority, and never discards the last certified packet after a failed
+or empty generation.
 """
 from __future__ import annotations
 
@@ -43,6 +33,7 @@ import artifact_staging  # noqa: E402
 import isolated_runtime_contract  # noqa: E402
 import runtime_assertions  # noqa: E402
 from artifact_staging import digest_regular_tree  # noqa: E402
+from wp_runtime_evidence import RuntimeDeadline  # noqa: E402
 from wp_runtime_types import BlockRuntimeAssertion  # noqa: E402
 from workspace_lease import WorkspacePurpose, create_named  # noqa: E402
 
@@ -331,6 +322,29 @@ def _isolated_runtime_command(
     return command
 
 
+def _isolated_runtime_process_timeout(timeout: int) -> int:
+    """Cover child preparation, runtime, protected cleanup, and process exit."""
+    cleanup = int(RuntimeDeadline.cleanup_seconds)
+    return (timeout * 2) + cleanup + 30
+
+
+def _run_isolated_runtime_process(
+    command: list[str], timeout: int,
+) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+    budget = _isolated_runtime_process_timeout(timeout)
+    try:
+        process = subprocess.run(
+            command, capture_output=True, text=True, timeout=budget, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        detail = (
+            f"isolated runtime exceeded its reviewed {budget}-second preparation, "
+            "execution, cleanup, and exit budget"
+        )
+        return None, detail
+    return process, None
+
+
 def _isolated_runtime_verdict(
     data: dict[str, Any], *, adapter: RuntimeAdapter, run_id: str,
     evidence_id: str, expected_digest: str,
@@ -340,6 +354,7 @@ def _isolated_runtime_verdict(
     errors = isolated_runtime_contract.persisted_runtime_errors(
         data, run_id=run_id, evidence_id=evidence_id,
         artifact_kind=adapter.artifact_kind, input_digest=expected_digest,
+        expected_profile=adapter.profile_id,
         block_assertion=assertion,
     )
     if errors:
@@ -664,13 +679,19 @@ def make_certify(
         run_id = f"{run_dir.name}-iter{iteration}"
         runtime_root = res / "runtime"
         runtime_root.mkdir(exist_ok=False)
-        runtime_proc = subprocess.run(
+        runtime_proc, runtime_timeout_error = _run_isolated_runtime_process(
             _isolated_runtime_command(
                 adapter, runtime_artifact, runtime_root, run_id, evidence_id,
                 expected_digest, timeout, block_assertion,
-            ),
-            capture_output=True, text=True, timeout=timeout + 120, check=False,
+            ), timeout,
         )
+        if runtime_timeout_error is not None:
+            return _stage_failure("runtime_timeout", runtime_timeout_error, [{
+                "id": "runtime_command", "status": "blocked",
+                "detail": runtime_timeout_error,
+            }])
+        if runtime_proc is None:
+            return _stage_failure("runtime_timeout", "isolated runtime did not return")
         rj = runtime_root / run_id / "runtime-smoke.json"
         data = _load_json_object(rj)
         if runtime_proc.returncode != 0:

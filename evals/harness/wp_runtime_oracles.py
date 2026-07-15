@@ -149,11 +149,12 @@ def _block_registration(base, assertion, deadline):
 def _create_disposable_block_post(base, deadline):
     result=_run(base+["exec","-T","cli","wp","post","create",
         "--path=/var/www/html","--post_type=post","--post_status=draft",
-        "--post_title=Runtime Block Smoke","--porcelain"],deadline,30)
+        "--post_title=Runtime Block Smoke",
+        f"--import_id={contract.BLOCK_CANARY_POST_ID}","--porcelain"],deadline,30)
     value=result["stdout"].strip()
-    if re.fullmatch(r"[1-9][0-9]{0,9}",value) is None:
-        raise RuntimeError("disposable block post ID is malformed")
-    return int(value)
+    if value != str(contract.BLOCK_CANARY_POST_ID):
+        raise RuntimeError("disposable block post ID did not match the reviewed identity")
+    return contract.BLOCK_CANARY_POST_ID
 
 
 def _container_manifest(base, slug, expected, deadline):
@@ -815,7 +816,10 @@ def _block_oracles(base, slug, deadline, assertion):
         ("plugin_check",lambda:(_plugin_check(base,slug,deadline),)),
         ("block_registration",lambda:(_block_registration(base,assertion,deadline),)),
     ))
-    post_id=_create_disposable_block_post(base,deadline)
+    try:
+        post_id=_create_disposable_block_post(base,deadline)
+    except Exception as exc:
+        raise OracleFailure("block_post_create",exc,list(first)) from exc
     browser=_run_steps((("container_browser",lambda:_browser_policy(
         base,deadline,contract.BLOCK_PROFILE,slug,assertion,post_id,
     )),))

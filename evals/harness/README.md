@@ -151,39 +151,32 @@ python3 evals/harness/run_wordpress_runtime_smoke.py --provision-full-profile --
 To prove a generated plugin artifact that includes a PHPUnit suite, first certify and materialize the packet, then run the generated plugin through the disposable runtime harness:
 
 ```bash
-python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-plugin-dir>/<plugin-slug> --phpunit-smoke --provision-full-profile --write --run-id generated-plugin-phpunit-full-profile-YYYYMMDD --timeout-sec 300
+artifact="<generated-plugin-dir>/<plugin-slug>"
+digest="$(PYTHONPATH=evals/harness python3 - "$artifact" <<'PY'
+import sys
+from pathlib import Path
+from artifact_staging import digest_regular_tree
+print(digest_regular_tree(Path(sys.argv[1])))
+PY
+)"
+python3 evals/harness/run_wordpress_runtime_smoke.py \
+  --artifact-path "$artifact" \
+  --expected-artifact-digest "$digest" \
+  --evidence-id generated-plugin-phpunit-full-profile-YYYYMMDD \
+  --phpunit-smoke \
+  --provision-full-profile \
+  --strict-full-profile \
+  --write \
+  --run-id generated-plugin-phpunit-full-profile-YYYYMMDD \
+  --timeout-sec 300
 ```
 
-When the copied plugin artifact contains `composer.json`, the harness runs `composer install` inside the disposable copy before activating the plugin and running `phpunit`. With `--provision-full-profile`, the same run also requires WPCS/PHPCS and Plugin Check. This proves plugin activation, artifact-local PHPUnit, WPCS/PHPCS, Plugin Check, and `wp-env`; it does not prove block/editor/browser behavior, MCP Adapter exposure, AI Client provider calls, or broad integration coverage.
+When the copied plugin artifact contains `composer.json`, the harness runs `composer install` inside the disposable copy before activating the plugin and running `phpunit`. With `--provision-full-profile`, the same run also requires WPCS/PHPCS and Plugin Check. This proves plugin activation, artifact-local PHPUnit, WPCS/PHPCS, Plugin Check, and the isolated container browser; it does not prove block/editor behavior, MCP Adapter exposure, AI Client provider calls, or broad integration coverage.
 
-To prove a generated MCP-public Abilities API plugin through the WordPress MCP Adapter, add `--mcp-adapter-smoke`:
-
-```bash
-python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-plugin-dir>/<plugin-slug> --ability-name vendor/ability-name --mcp-adapter-smoke --mcp-adapter-execute-args-json '{"marker":"Runtime MCP smoke"}' --mcp-adapter-expected-output "Runtime MCP smoke" --provision-full-profile --write --run-id generated-mcp-adapter-full-profile-YYYYMMDD --timeout-sec 300
-```
-
-This installs the MCP Adapter plugin in disposable `wp-env`, lists the default
-adapter server, calls `tools/list` through `wp mcp-adapter serve`, discovers the
-named public ability, executes it through `mcp-adapter-execute-ability`, and
-requires WPCS/PHPCS plus Plugin Check. The first local proof is
-`evals/results/wordpress-skill-candidate-eval/generated-mcp-adapter-full-profile-20260621/`.
-It does not prove AI Client provider calls, browser/editor behavior, PHPUnit
-behavior, broad integration coverage, or release readiness.
-
-To prove a generated deterministic AI Client provider call, add `--ai-client-smoke`:
-
-```bash
-python3 evals/harness/run_wordpress_runtime_smoke.py --workdir /tmp/wp-ai-client-runtime-smoke-YYYYMMDD --artifact-path <generated-plugin-dir>/<plugin-slug> --ai-client-smoke --ai-client-provider-id acme-ai-client-smoke --ai-client-model-id acme-deterministic-text --ai-client-helper-function 'AcmeAIClientSmoke\generate_summary' --ai-client-prompt "Runtime AI Client smoke" --ai-client-expected-output "AI Client smoke: deterministic provider response" --provision-full-profile --write --run-id generated-ai-client-provider-full-profile-YYYYMMDD --timeout-sec 300
-```
-
-This activates the generated plugin in disposable `wp-env`, calls the generated
-helper as `admin`, requires `wp_ai_client_prompt()`, confirms AI Client provider
-registration/configuration, confirms connector registration, matches expected
-provider output, and requires WPCS/PHPCS plus Plugin Check. The first local
-proof is
-`evals/results/wordpress-skill-candidate-eval/generated-ai-client-provider-full-profile-20260621/`.
-It does not prove credentialed external-provider behavior, browser/editor
-behavior, PHPUnit behavior, broad integration coverage, or release readiness.
+The isolated external-artifact path does not support the historical MCP Adapter
+or AI Client special modes. Those built-in-fixture modes remain diagnostic-only;
+historical result directories do not establish current external-artifact
+support and cannot substitute for the standard isolated runtime contract.
 
 To prove a disposable block is visible to both server-side and editor-side block registries, run:
 
@@ -200,7 +193,29 @@ python3 evals/harness/run_wordpress_runtime_smoke.py --fixture-kind block --bloc
 To prove a generated block executor artifact through build, full profile, and editor insert/render paths, first materialize/certify the packet, then let the runtime harness wrap the block-only artifact in a disposable plugin:
 
 ```bash
-python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --block-build-smoke --block-name vendor/block-name --editor-insert-render-smoke --expected-frontend-selector .wp-block-vendor-block-name --expected-frontend-text "Exact fixture-owned text" --provision-full-profile --strict-full-profile --write --run-id generated-block-full-profile-YYYYMMDD --timeout-sec 300
+artifact="<generated-block-dir>"
+digest="$(PYTHONPATH=evals/harness python3 - "$artifact" <<'PY'
+import sys
+from pathlib import Path
+from artifact_staging import digest_regular_tree
+print(digest_regular_tree(Path(sys.argv[1])))
+PY
+)"
+python3 evals/harness/run_wordpress_runtime_smoke.py \
+  --artifact-path "$artifact" \
+  --artifact-kind block \
+  --expected-artifact-digest "$digest" \
+  --evidence-id generated-block-full-profile-YYYYMMDD \
+  --block-build-smoke \
+  --block-name vendor/block-name \
+  --editor-insert-render-smoke \
+  --expected-frontend-selector .wp-block-vendor-block-name \
+  --expected-frontend-text "Exact fixture-owned text" \
+  --provision-full-profile \
+  --strict-full-profile \
+  --write \
+  --run-id generated-block-full-profile-YYYYMMDD \
+  --timeout-sec 300
 ```
 
 For an external artifact, all three assertion values are required and the declared

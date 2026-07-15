@@ -2,80 +2,19 @@
 const crypto = require('crypto');
 const net = require('net');
 const { chromium } = require('playwright');
+const requestPolicy = require('./request-policy');
 
-const ORIGIN = 'http://gateway-frontend:8081';
-const REST_CANARY = '/wp-runtime-canary/v1/output';
+const ORIGIN = requestPolicy.ORIGIN;
 const NORMALIZATION = 'unicode-nfc-whitespace-collapse-trim';
-const ASSET_PREFIXES = ['/wp-includes/', '/wp-admin/css/', '/wp-admin/js/', '/wp-admin/images/',
-  '/wp-content/themes/'];
 
-function exactQuery(url, expected) {
-  if (url.searchParams.size !== Object.keys(expected).length) return false;
-  return Object.entries(expected).every(([key, value]) => url.searchParams.get(key) === value);
-}
-
-function staticAsset(url, slug) {
-  const prefixes = [...ASSET_PREFIXES, `/wp-content/plugins/${slug}/`];
-  if (!prefixes.some(prefix => url.pathname.startsWith(prefix))) return false;
-  if (!/[.](?:css|js|mjs|svg|png|gif|jpe?g|webp|woff2?|ttf)$/i.test(url.pathname)) return false;
-  return [...url.searchParams.keys()].every(key => key === 'ver');
-}
-
-function loaderAsset(url) {
-  if (!['/wp-admin/load-styles.php', '/wp-admin/load-scripts.php'].includes(url.pathname)) return false;
-  const allowed = key => ['c', 'dir', 'ver'].includes(key) || /^load(?:\[chunk_[0-9]+\])?$/.test(key);
-  return url.searchParams.size > 0 && [...url.searchParams].every(([key, value]) => (
-    allowed(key) && value.length > 0 && value.length <= 4096
-  ));
-}
-
-function exactRead(url, slug) {
-  if (url.pathname === '/' && url.search === '') return true;
-  if (url.pathname === '/' && exactQuery(url, {rest_route: REST_CANARY})) return true;
-  if (url.pathname === '/' && url.searchParams.size === 1
-      && /^[1-9][0-9]{0,9}$/.test(url.searchParams.get('p') || '')) return true;
-  if (url.pathname === '/wp-login.php' && url.search === '') return true;
-  if (url.pathname === '/wp-admin/' && url.search === '') return true;
-  if (url.pathname === '/wp-admin/post-new.php' && url.search === '') return true;
-  if (url.pathname === '/wp-admin/post.php') {
-    return url.searchParams.size === 2 && url.searchParams.get('action') === 'edit'
-      && /^[1-9][0-9]{0,9}$/.test(url.searchParams.get('post') || '');
-  }
-  return staticAsset(url, slug) || loaderAsset(url);
-}
-
-function exactJsonWrite(request, url, postId) {
-  if (url.pathname !== `/wp-json/wp/v2/posts/${postId}`
-      || !(url.search === '' || exactQuery(url, {_locale: 'user'}))) return false;
-  const headers = request.headers();
-  const contentType = headers['content-type'] || '';
-  const body = request.postDataBuffer();
-  if (!contentType.startsWith('application/json') || !headers['x-wp-nonce']
-      || !headers.cookie || !body || body.length < 2 || body.length > 65536) return false;
-  try {
-    const payload = JSON.parse(body.toString('utf8'));
-    return Object.keys(payload).sort().join('|') === 'content|status'
-      && typeof payload.content === 'string' && payload.content.length <= 32768
-      && payload.status === 'publish';
-  } catch (_) { return false; }
-}
-
-function exactLogin(request, url) {
-  const type = request.headers()['content-type'] || '';
-  const body = request.postDataBuffer();
-  return url.pathname === '/wp-login.php' && url.search === ''
-    && type.startsWith('application/x-www-form-urlencoded')
-    && body && body.length > 0 && body.length <= 8192;
-}
-
-function allowedRequest(request, origin, slug, profile, postId) {
-  const url = new URL(request.url());
-  if (url.origin !== origin || !['http:', 'https:'].includes(url.protocol)) return false;
-  if (request.method() === 'POST' && url.pathname === '/wp-login.php') return exactLogin(request, url);
-  if (request.method() === 'POST' && profile === 'block-runtime') {
-    return exactJsonWrite(request, url, postId);
-  }
-  return ['GET', 'HEAD'].includes(request.method()) && exactRead(url, slug);
+async function allowedRequest(request, context) {
+  const normalized = {
+    url: request.url(), method: request.method(), headers: await request.allHeaders(),
+  };
+  const kind = requestPolicy.classifyRequest(normalized, context);
+  if (!kind) return false;
+  if (kind === 'read') return true;
+  return requestPolicy.validateBody(kind, request.postDataBuffer(), context);
 }
 
 function normalizeText(value) {
@@ -143,9 +82,11 @@ async function blockFrontendProof(page, origin, assertion) {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(slug || '')) throw new Error('unreviewed plugin slug');
   if (assertion && (!/^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*$/.test(assertion.blockName || '')
       || assertion.selector !== `.wp-block-${assertion.blockName.replace('/', '-')}`
-      || !assertion.expectedText || !Number.isSafeInteger(assertion.postId) || assertion.postId < 1)) {
+      || !assertion.expectedText || assertion.postId !== requestPolicy.BLOCK_CANARY_POST_ID)) {
     throw new Error('unreviewed block assertion');
   }
+  const policyContext = {origin, slug, profile, postId: assertion?.postId || 0};
+  if (!requestPolicy.validContext(policyContext)) throw new Error('unreviewed browser request context');
   const listenerUrl = hostListener ? new URL(hostListener) : null;
   if (profile === 'adversarial-test' && (!listenerUrl || listenerUrl.protocol !== 'http:'
       || net.isIP(listenerUrl.hostname) !== 4 || !listenerUrl.port
@@ -176,7 +117,7 @@ async function blockFrontendProof(page, origin, assertion) {
   await context.routeWebSocket('**/*', async socket => { denied += 1; socket.close({code: 1008, reason: 'websocket blocked'}); });
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
-    if (allowedRequest(route.request(), origin, slug, profile, assertion?.postId)) await route.continue();
+    if (await allowedRequest(route.request(), policyContext)) await route.continue();
     else { if (url.hostname === 'example.com' && url.pathname.startsWith('/generated-navigation-')) generatedNavigationDenials.add(url.pathname); denied += 1; await route.abort('blockedbyclient'); }
   });
   let page = await context.newPage(); let download = false; let popup = false;

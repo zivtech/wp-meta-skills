@@ -156,6 +156,7 @@ def _persisted():
     return {
         "schema_version": 1, "run_id": "run", "evidence_id": "evidence",
         "artifact_kind": "plugin", "input_artifact_digest": DIGEST,
+        "runtime_profile_id": contract.STANDARD_PROFILE,
         "runtime_pre_command_manifest_digest": MANIFEST,
         "post_command_manifest_digest": MANIFEST, "status": "pass", "pass": True,
         "checks": [dict(check) for check in PERSISTED_CHECKS],
@@ -205,7 +206,8 @@ def _persisted():
 
 
 def test_repair_consumer_requires_exact_identity_manifest_and_oracles():
-    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="plugin", input_digest=DIGEST)
+    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="plugin",
+                    input_digest=DIGEST, expected_profile=contract.STANDARD_PROFILE)
     assert contract.persisted_runtime_errors(_persisted(), **expected) == []
     for field, bad in (
         ("evidence_id", "stale"), ("input_artifact_digest", "0" * 64),
@@ -236,8 +238,34 @@ def test_producer_and_persisted_consumer_reject_check_inventory_drift():
     data = _persisted()
     data["runtime_profile_id"] = contract.STANDARD_PROFILE
     data["checks"].append({"id": "unregistered", "status": "pass", "required": True})
-    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="plugin", input_digest=DIGEST)
+    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="plugin",
+                    input_digest=DIGEST, expected_profile=contract.STANDARD_PROFILE)
     assert "runtime check inventory mismatch" in contract.persisted_runtime_errors(data, **expected)
+
+
+@pytest.mark.parametrize("profile", [None, contract.ADVERSARIAL_PROFILE, contract.BLOCK_PROFILE])
+def test_repair_consumer_rejects_missing_or_substituted_profile(profile):
+    data = _persisted()
+    if profile is None:
+        data.pop("runtime_profile_id")
+    else:
+        data["runtime_profile_id"] = profile
+    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="plugin",
+                    input_digest=DIGEST, expected_profile=contract.STANDARD_PROFILE)
+    assert "runtime profile mismatch" in contract.persisted_runtime_errors(data, **expected)
+
+
+def test_repair_consumer_rejects_anonymous_duplicate_and_reordered_checks():
+    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="plugin",
+                    input_digest=DIGEST, expected_profile=contract.STANDARD_PROFILE)
+    mutations = []
+    anonymous = _persisted(); anonymous["checks"].append({"status": "pass"}); mutations.append(anonymous)
+    duplicate = _persisted(); duplicate["checks"].append(copy.deepcopy(duplicate["checks"][0])); mutations.append(duplicate)
+    reordered = _persisted(); reordered["checks"] = list(reversed(reordered["checks"])); mutations.append(reordered)
+    for data in mutations:
+        assert "runtime check inventory mismatch" in contract.persisted_runtime_errors(
+            data, **expected,
+        )
 
 
 def test_producer_adapter_and_consumer_require_finite_nonnegative_durations():
@@ -248,7 +276,8 @@ def test_producer_adapter_and_consumer_require_finite_nonnegative_durations():
     assert _adapt(_runtime(checks=missing))["status"] == "blocked"
     data = _persisted()
     data["checks"][0]["duration_sec"] = float("nan")
-    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="plugin", input_digest=DIGEST)
+    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="plugin",
+                    input_digest=DIGEST, expected_profile=contract.STANDARD_PROFILE)
     assert "runtime check timing evidence invalid" in contract.persisted_runtime_errors(
         data, **expected,
     )
@@ -262,7 +291,8 @@ def test_adversarial_persisted_profile_requires_every_named_check():
     data = _persisted()
     data["runtime_profile_id"] = contract.ADVERSARIAL_PROFILE
     data["checks"] = [*checks, {"id": "runtime_identity", "status": "pass", "required": True}]
-    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="plugin", input_digest=DIGEST)
+    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="plugin",
+                    input_digest=DIGEST, expected_profile=contract.ADVERSARIAL_PROFILE)
     assert contract.persisted_runtime_errors(data, **expected) == []
     data["checks"] = data["checks"][:-2] + data["checks"][-1:]
     missing = contract.REQUIRED_CHECKS_BY_PROFILE[contract.ADVERSARIAL_PROFILE][-1]
@@ -342,7 +372,8 @@ def _block_persisted():
 def test_block_persisted_consumer_requires_exact_profile_proof_and_cleanup():
     data, assertion = _block_persisted()
     expected = dict(run_id="run", evidence_id="evidence", artifact_kind="block",
-                    input_digest=DIGEST, block_assertion=assertion)
+                    input_digest=DIGEST, expected_profile=contract.BLOCK_PROFILE,
+                    block_assertion=assertion)
     assert contract.persisted_runtime_errors(data, **expected) == []
     mutations = []
     for key, value in (("match_count", 2), ("visible", False),
@@ -365,7 +396,8 @@ def test_block_persisted_consumer_never_certifies_nonpass(status):
     data["status"] = status
     data["pass"] = False
     expected = dict(run_id="run", evidence_id="evidence", artifact_kind="block",
-                    input_digest=DIGEST, block_assertion=assertion)
+                    input_digest=DIGEST, expected_profile=contract.BLOCK_PROFILE,
+                    block_assertion=assertion)
     assert "top-level runtime status did not pass" in contract.persisted_runtime_errors(
         data, **expected,
     )
@@ -374,7 +406,8 @@ def test_block_persisted_consumer_never_certifies_nonpass(status):
 def test_block_persisted_consumer_requires_topology_posture_digest_and_cleanup():
     data, assertion = _block_persisted()
     expected = dict(run_id="run", evidence_id="evidence", artifact_kind="block",
-                    input_digest=DIGEST, block_assertion=assertion)
+                    input_digest=DIGEST, expected_profile=contract.BLOCK_PROFILE,
+                    block_assertion=assertion)
     mutations = []
     changed = copy.deepcopy(data); changed["inspection"].pop("post_oracle"); mutations.append(changed)
     changed = copy.deepcopy(data); changed["sandbox_posture"]["host_fallback"] = True; mutations.append(changed)

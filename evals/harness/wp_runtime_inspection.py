@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import runtime_image_provision as transport
+import isolated_runtime_contract as contract
 import wp_runtime_topology as topology
 from wp_runtime_evidence import RuntimeDeadline, scrub_tail
 
@@ -80,7 +81,11 @@ def _normalized_service(name,service,image,identity,expected_service):
     _normalized_mounts(name,service.get("volumes",[]))
 
 
-def inspect_normalized(base: list[str], images: dict[str, str], identities:dict[str,str], artifact_image:str,plugin_slug:str,deadline=None) -> dict:
+def inspect_normalized(
+    base: list[str], images: dict[str, str], identities:dict[str,str],
+    artifact_image:str, plugin_slug:str, deadline=None,
+    runtime_profile:str=contract.STANDARD_PROFILE, block_post_id:int=0,
+) -> dict:
     payload = _run(base + ["config", "--format", "json"],deadline=deadline)["stdout"]
     config = json.loads(payload)
     if set(config)!={"name","services","networks"} or not isinstance(config["name"],str):
@@ -100,7 +105,9 @@ def inspect_normalized(base: list[str], images: dict[str, str], identities:dict[
                 "cli": artifact_image,"gateway":images["browser"],"browser": images["browser"]}
     if observed != expected:
         raise RuntimeError("normalized Compose image identity drift")
-    expected_spec=topology.build_compose(images,identities,artifact_image,plugin_slug)
+    expected_spec=topology.build_compose(
+        images,identities,artifact_image,plugin_slug,runtime_profile,block_post_id,
+    )
     for name,service in config["services"].items():
         identity=identities["wordpress"] if name=="cli" else identities["browser"] if name=="gateway" else identities[name]
         _normalized_service(name,service,expected[name],identity,expected_spec["services"][name])
@@ -196,10 +203,14 @@ def _inspect_networks(evidence,project,deadline=None):
 
 
 def inspect_live(base: list[str], images: dict, identities:dict[str,str], artifact_image:str,
-                 project:str,plugin_slug:str,deadline=None,require_running:bool=True) -> dict:
+                 project:str,plugin_slug:str,deadline=None,require_running:bool=True,
+                 runtime_profile:str=contract.STANDARD_PROFILE,
+                 block_post_id:int=0) -> dict:
     expected = {"database": images["database"], "wordpress": artifact_image,
                 "cli": artifact_image,"gateway":images["browser"],"browser": images["browser"]}
-    expected_spec=topology.build_compose(images,identities,artifact_image,plugin_slug)
+    expected_spec=topology.build_compose(
+        images,identities,artifact_image,plugin_slug,runtime_profile,block_post_id,
+    )
     evidence = {}
     for service, image in expected.items():
         container = _run(

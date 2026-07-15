@@ -186,9 +186,10 @@ def test_contradictory_enclosing_pass_cannot_hide_blocked_or_failed_checks():
 
 def test_repair_runtime_contract_rejects_legacy_profile_without_isolated_oracles():
     data = {
-        "schema_version": 1, "run_id": "run", "evidence_id": "evidence",
-        "artifact_kind": "plugin", "input_artifact_digest": "a" * 64,
-        "runtime_pre_command_manifest_digest": "b" * 64,
+            "schema_version": 1, "run_id": "run", "evidence_id": "evidence",
+            "artifact_kind": "plugin", "input_artifact_digest": "a" * 64,
+            "runtime_profile_id": isolated_runtime_contract.STANDARD_PROFILE,
+            "runtime_pre_command_manifest_digest": "b" * 64,
         "post_command_manifest_digest": "b" * 64,
         "status": "pass", "pass": True,
         "full_plugin_runtime_profile": {"status": "pass", "checks": [
@@ -200,6 +201,7 @@ def test_repair_runtime_contract_rejects_legacy_profile_without_isolated_oracles
     errors = isolated_runtime_contract.persisted_runtime_errors(
         data, run_id="run", evidence_id="evidence",
         artifact_kind="plugin", input_digest="a" * 64,
+        expected_profile=isolated_runtime_contract.STANDARD_PROFILE,
     )
     assert {
         "wp_cli_activation did not pass", "plugin_check did not pass",
@@ -221,6 +223,21 @@ def test_repair_runtime_command_uses_exact_isolated_contract_only(tmp_path):
     assert command[command.index("--evidence-id") + 1] == "evidence"
     assert command[command.index("--expected-artifact-digest") + 1] == "a" * 64
     assert command[command.index("--results-root") + 1] == str(tmp_path / "results")
+
+
+def test_runtime_parent_preserves_child_cleanup_budget(monkeypatch):
+    timeout = 300
+    expected = (timeout * 2) + 180 + 30
+    observed = []
+
+    def expire(_command, **kwargs):
+        observed.append(kwargs["timeout"])
+        raise loop.subprocess.TimeoutExpired(["runtime"], kwargs["timeout"])
+
+    monkeypatch.setattr(loop.subprocess, "run", expire)
+    process, detail = loop._run_isolated_runtime_process(["runtime"], timeout)
+    assert process is None and observed == [expected]
+    assert str(expected) in detail and "cleanup" in detail
 
 
 def _block_assertion():
@@ -353,6 +370,7 @@ def test_repair_runtime_verdict_requires_exact_isolated_checks():
     data = {
         "schema_version": 1, "run_id": "run", "evidence_id": "evidence",
         "artifact_kind": "plugin", "input_artifact_digest": "a" * 64,
+        "runtime_profile_id": isolated_runtime_contract.STANDARD_PROFILE,
         "runtime_pre_command_manifest_digest": "b" * 64,
         "post_command_manifest_digest": "b" * 64, "status": "pass", "pass": True,
         "checks": [

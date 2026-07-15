@@ -169,6 +169,9 @@ def test_topology_uses_exact_artifact_image_and_has_zero_mounts():
     assert all(service["logging"] == {"driver": "none"} for service in spec["services"].values())
     assert all(network=={"driver":"bridge","driver_opts":topology.ISOLATED_BRIDGE_OPTIONS,
                          "internal":True} for network in spec["networks"].values())
+    assert spec["services"]["gateway"]["command"][-2:] == [
+        runtime_contract.STANDARD_PROFILE, "0",
+    ]
     mutated = json.loads(json.dumps(spec))
     mutated["services"]["wordpress"]["ports"] = ["8080:8080"]
     with pytest.raises(ValueError, match="field"):
@@ -568,22 +571,6 @@ def test_php_output_canary_targets_process_stderr():
     assert "fwrite(STDERR, $payload)" in source
 
 
-def test_plain_permalink_rest_canary_is_query_bounded():
-    browser = Path(HARNESS / "runtime-images/browser/browser-policy.js").read_text()
-    gateway = Path(HARNESS / "runtime-images/browser/gateway-policy.js").read_text()
-    expected = "url.searchParams.size === 1"
-    assert expected in browser and expected in gateway
-    assert "rest_route" in browser and "rest_route" in gateway
-    assert "/wp-json/wp-runtime-canary/v1/" not in browser + gateway
-
-
-def test_generated_browser_fixture_attempts_the_controlled_host_listener():
-    fixture=Path(HARNESS/"tests/fixtures/adversarial-runtime-plugin.js").read_text(encoding="utf-8")
-    policy=Path(HARNESS/"runtime-images/browser/browser-policy.js").read_text(encoding="utf-8")
-    assert "__WP_RUNTIME_HOST_LISTENER_URL__" in fixture and "host_listener:" in fixture
-    assert "controlledHostListener" in policy and "host_listener" in policy
-
-
 def test_daemon_log_stress_script_is_valid_javascript():
     node = shutil.which("node")
     if node is None:
@@ -622,67 +609,6 @@ def test_memory_ceiling_requires_the_exact_oom_exit(monkeypatch):
         wp_runtime_oracles._expect_exit_code(
             ["command"],RuntimeDeadline.start(60),10,"memory",137,
         )
-
-
-def test_standard_browser_profile_does_not_require_fixture_markers(monkeypatch):
-    common={name:True for name in {"same_origin","external_http","external_navigation",
-        "websocket","webrtc","service_worker","download","popup"}}
-    monkeypatch.setattr(wp_runtime_oracles,"_run",lambda *_args:{"returncode":0,
-        "stdout":json.dumps({"profile":runtime_contract.STANDARD_PROFILE,"canaries":common})+"\n",
-        "stderr":""})
-    checks=wp_runtime_oracles._browser_policy(
-        ["docker","compose"],RuntimeDeadline.start(60),runtime_contract.STANDARD_PROFILE,
-        "safe-plugin",
-    )
-    assert tuple(item["id"] for item in checks)==("container_browser",)
-    assert "generated_frontend_js" not in checks[0]["canaries"]
-    source=Path(HARNESS/"runtime-images/browser/browser-policy.js").read_text(encoding="utf-8")
-    assert "gateway-frontend:8081" in source and "profile === 'adversarial-test'" in source
-
-
-def test_block_browser_profile_requires_exact_selector_scoped_proof(monkeypatch):
-    assertion = BlockRuntimeAssertion(
-        "acme/runtime-card", ".wp-block-acme-runtime-card", "Exact runtime text"
-    )
-    digest = hashlib.sha256(assertion.expected_frontend_text.encode()).hexdigest()
-    common = {name: True for name in {"same_origin", "external_http", "external_navigation",
-        "websocket", "webrtc", "service_worker", "download", "popup"}}
-    proof = {"status": "pass", "block_name": assertion.block_name,
-        "frontend_selector": assertion.frontend_selector, "expected_text_sha256": digest,
-        "observed_text_sha256": digest, "match_count": 1, "visible": True,
-        "normalization": "unicode-nfc-whitespace-collapse-trim"}
-    monkeypatch.setattr(wp_runtime_oracles, "_run", lambda *_args: {"returncode": 0,
-        "stdout": json.dumps({"profile": runtime_contract.BLOCK_PROFILE,
-                              "canaries": common, "block_editor_frontend": proof}) + "\n",
-        "stderr": ""})
-    checks = wp_runtime_oracles._browser_policy(
-        ["docker", "compose"], RuntimeDeadline.start(60), runtime_contract.BLOCK_PROFILE,
-        "safe-plugin", assertion, 42,
-    )
-    assert tuple(item["id"] for item in checks) == (
-        "container_browser", "block_editor_frontend",
-    )
-    assert checks[1]["proof"] == proof
-    malformed = dict(proof, match_count=2)
-    with pytest.raises(RuntimeError, match="malformed or mismatched"):
-        wp_runtime_oracles._block_frontend_check(
-            {"block_editor_frontend": malformed}, assertion,
-        )
-
-
-def test_browser_and_gateway_freeze_same_block_write_surface():
-    browser = Path(HARNESS / "runtime-images/browser/browser-policy.js").read_text()
-    gateway = Path(HARNESS / "runtime-images/browser/gateway-policy.js").read_text()
-    for fragment in (
-        "/wp-json/wp/v2/posts/", "content|status", "application/json",
-        "x-wp-nonce", "65536", "32768", "application/x-www-form-urlencoded",
-        "8192", "/wp-admin/post.php", "rest_route",
-    ):
-        assert fragment in browser and fragment in gateway
-    combined = browser + gateway
-    assert "/wp-json/*" not in combined and "rest_route=/" not in combined
-    assert "admin-ajax.php" not in combined and "/wp-json/wp/v2/users" not in combined
-    assert "/wp-json/wp/v2/settings" not in combined and "/wp-json/wp/v2/media" not in combined
 
 
 def test_provisioning_api_cannot_receive_an_artifact():
