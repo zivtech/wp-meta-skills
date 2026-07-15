@@ -14,6 +14,7 @@ from wp_runtime_evidence import scrub_tail
 
 DIAGNOSTIC_PREFIX = "generated command diagnostic: "
 DIAGNOSTIC_TAIL_LIMIT = 1000
+GENERATED_ENVIRONMENT = (("HOME", "/home/sandbox"),)
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,15 @@ def _diagnostic_detail(result) -> str:
     return sandbox_evidence.finalize(result.detail, error=diagnostic)
 
 
+def _generated_environment(
+    environment: tuple[tuple[str, str], ...] | None = None,
+) -> tuple[tuple[str, str], ...]:
+    candidate = GENERATED_ENVIRONMENT if environment is None else environment
+    if candidate != (("HOME", "/home/sandbox"),):
+        raise ValueError("generated environment contract drift")
+    return candidate
+
+
 def run_generated(
     staged: artifact_staging.StagedTree,
     phase: str,
@@ -81,6 +91,7 @@ def run_generated(
         workspace_inodes=100000,
         timeout=min(max(1, timeout), 900),
         acquisition=profile,
+        environment=_generated_environment(),
     )
     try:
         result = sandboxed_package_runner.run_sandbox(request)

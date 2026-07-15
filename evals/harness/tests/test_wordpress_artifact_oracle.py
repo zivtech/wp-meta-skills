@@ -7,6 +7,8 @@ import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import artifact_staging
 import artifact_execution
 import materialize_wordpress_executor_packet as materializer
@@ -132,7 +134,54 @@ def test_approved_npm_build_routes_exact_staged_capability_to_sandbox(tmp_path, 
         outcome=artifact_execution.run_generated(staged,"npm-build",5)
         assert outcome.status=="blocked" and seen["request"].staged is staged
         assert seen["request"].argv==("npm","run","build") and seen["request"].acquisition=="block-scripts-32.4.1-smoke"
+        assert seen["request"].environment==(("HOME","/home/sandbox"),)
     finally: workspace_lease.cleanup(staged.lease)
+
+
+@pytest.mark.parametrize(
+    "phase,image,argv",
+    [
+        ("npm-build", "node", ("npm", "run", "build")),
+        ("phpunit", "composer", ("php", "vendor/bin/phpunit")),
+    ],
+)
+def test_generated_phases_bind_exact_private_home(
+    tmp_path, monkeypatch, phase, image, argv
+):
+    source=tmp_path/"source"; source.mkdir(); (source/"manifest.json").write_text("{}")
+    staged=artifact_staging.stage_tree(source); seen={}
+    monkeypatch.setattr(artifact_execution,"_profile",lambda *_args:"approved")
+    monkeypatch.setattr(
+        artifact_execution,"_image",lambda kind:f"{image}@sha256:"+"a"*64
+    )
+    def run(request):
+        seen["request"]=request
+        return sandboxed_package_runner.SandboxResult(
+            "blocked",None,"","",None,"bounded","container"
+        )
+    monkeypatch.setattr(artifact_execution.sandboxed_package_runner,"run_sandbox",run)
+    try:
+        outcome=artifact_execution.run_generated(staged,phase,5)
+        assert outcome.status=="blocked"
+        assert seen["request"].argv==argv
+        assert seen["request"].environment==(("HOME","/home/sandbox"),)
+    finally: workspace_lease.cleanup(staged.lease)
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        (),
+        (("HOME","/tmp"),),
+        (("HOME","/home/sandbox/child"),),
+        (("HOME","/home/sandbox"),("HOME","/home/sandbox")),
+        (("HOME","/home/sandbox"),("TMPDIR","/tmp")),
+        (("HOME","/home/sandbox"),("XDG_CACHE_HOME","/cache")),
+    ],
+)
+def test_generated_adapter_rejects_private_home_contract_drift(environment):
+    with pytest.raises(ValueError,match="generated environment contract drift"):
+        artifact_execution._generated_environment(environment)
 
 
 def test_oracle_retains_typed_sandbox_import_cleanup_evidence_end_to_end(tmp_path,monkeypatch):
