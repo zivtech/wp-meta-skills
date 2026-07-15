@@ -24,14 +24,40 @@ from wp_runtime_evidence import scrub_tail
 from wp_runtime_types import RuntimeRequest
 
 BLOCK_DIAGNOSTIC_FIELD_LIMIT = 20
-BLOCK_DIAGNOSTIC_REASON_LIMIT = 500
-BLOCK_DIAGNOSTIC_FAILURE_LIMIT = 500
+BLOCK_DIAGNOSTIC_REASON_LIMIT = 300
+BLOCK_DIAGNOSTIC_FAILURE_LIMIT = 300
+BLOCK_DIAGNOSTIC_PROFILE_FAILURE_LIMIT = 250
 BLOCK_DIAGNOSTIC_TOTAL_LIMIT = 1100
+BLOCK_DIAGNOSTIC_CHECK_SCAN_LIMIT = 20
+BLOCK_DIAGNOSTIC_FAILED_CHECK_LIMIT = 3
 
 
 def _diagnostic_tail(value, limit):
     raw = str(value or "")
     return scrub_tail(raw, len(raw))[-limit:] if raw else ""
+
+
+def _failed_check_diagnostics(checks):
+    failed = []
+    for index, item in enumerate(checks or ()):
+        if (
+            index >= BLOCK_DIAGNOSTIC_CHECK_SCAN_LIMIT
+            or len(failed) >= BLOCK_DIAGNOSTIC_FAILED_CHECK_LIMIT
+        ):
+            break
+        if item.get("status") == "pass":
+            continue
+        detail = str(item.get("detail") or "")
+        try:
+            errors = json.loads(detail).get("errors") or []
+        except (json.JSONDecodeError, AttributeError):
+            errors = []
+        rendered = " | ".join(_diagnostic_tail(value, 180) for value in errors[:3])
+        failed.append(
+            f"{item.get('id')}:{item.get('status')}:"
+            f"{rendered or _diagnostic_tail(detail, 180)}"
+        )
+    return failed
 
 
 def _synthesized(tmp_path, slug="safe-plugin"):
@@ -63,32 +89,29 @@ def _request(synthesized, digest, parent):
 
 
 def _block_failure_diagnostic(result):
-    failed = []
-    for item in result.get("checks", ()):
-        if item.get("status") != "pass":
-            detail = str(item.get("detail") or "")
-            try:
-                errors = json.loads(detail).get("errors") or []
-            except (json.JSONDecodeError, AttributeError):
-                errors = []
-            rendered = " | ".join(_diagnostic_tail(value, 180) for value in errors[:3])
-            failed.append(
-                f"{item.get('id')}:{item.get('status')}:"
-                f"{rendered or _diagnostic_tail(detail, 180)}"
-            )
+    failed = _failed_check_diagnostics(result.get("checks"))
+    profile = result.get("full_plugin_runtime_profile") or {}
+    profile_failed = _failed_check_diagnostics(profile.get("checks"))
+    status = _diagnostic_tail(result.get("status"), BLOCK_DIAGNOSTIC_FIELD_LIMIT)
     build = _diagnostic_tail(
         result.get("block_build_smoke_status"), BLOCK_DIAGNOSTIC_FIELD_LIMIT,
     )
     artifact = _diagnostic_tail(
         result.get("block_runtime_artifact_gate_status"), BLOCK_DIAGNOSTIC_FIELD_LIMIT,
     )
+    profile_status = _diagnostic_tail(
+        profile.get("status"), BLOCK_DIAGNOSTIC_FIELD_LIMIT,
+    )
     reason = _diagnostic_tail(result.get("reason"), BLOCK_DIAGNOSTIC_REASON_LIMIT)
     failures = _diagnostic_tail(
-        " | ".join(failed[:3]), BLOCK_DIAGNOSTIC_FAILURE_LIMIT,
+        " | ".join(failed), BLOCK_DIAGNOSTIC_FAILURE_LIMIT,
+    )
+    profile_failures = _diagnostic_tail(
+        " | ".join(profile_failed), BLOCK_DIAGNOSTIC_PROFILE_FAILURE_LIMIT,
     )
     return (
-        f"build={build};artifact={artifact};reason={reason};"
-        f"failures={failures}"
+        f"status={status};build={build};artifact={artifact};profile={profile_status};"
+        f"reason={reason};failures={failures};profile_failures={profile_failures}"
     )
 
 
@@ -105,10 +128,15 @@ def test_block_failure_diagnostic_surfaces_bounded_redacted_runtime_reason():
         for index in range(3)
     ]
     result = {
+        "status": "fail",
         "reason": "x" * 1200 + "\npassword=topsecret\nruntime final marker",
         "checks": failed,
         "block_build_smoke_status": "pass" * 20,
         "block_runtime_artifact_gate_status": "pass" * 20,
+        "full_plugin_runtime_profile": {
+            "status": "fail",
+            "checks": [{"id": "phpcs_wpcs", "status": "fail"}],
+        },
     }
 
     diagnostic = _block_failure_diagnostic(result)
@@ -119,8 +147,35 @@ def test_block_failure_diagnostic_surfaces_bounded_redacted_runtime_reason():
     assert "errorsecret" not in diagnostic
     assert "runtime final marker" in diagnostic
     assert "failure final marker" in diagnostic
-    assert all(field in diagnostic for field in ("build=", "artifact=", "failures="))
+    assert all(field in diagnostic for field in (
+        "status=fail", "build=", "artifact=", "profile=fail",
+        "failures=", "profile_failures=phpcs_wpcs:fail",
+    ))
     assert len(diagnostic) <= BLOCK_DIAGNOSTIC_TOTAL_LIMIT
+
+
+def test_block_failure_diagnostic_redacts_full_profile_http_credentials():
+    result = {
+        "status": "fail",
+        "checks": [],
+        "full_plugin_runtime_profile": {
+            "status": "fail",
+            "checks": [{
+                "id": "phpcs_wpcs",
+                "status": "fail",
+                "detail": json.dumps({"errors": [
+                    "Authorization=Bearer PROFILE-BEARER-CANARY",
+                    "Proxy-Authorization = Basic PROFILE-BASIC-CANARY",
+                    "Cookie=first=value; second=PROFILE-COOKIE-CANARY",
+                ]}),
+            }],
+        },
+    }
+
+    diagnostic = _block_failure_diagnostic(result)
+
+    assert "CANARY" not in diagnostic
+    assert "[REDACTED]" in diagnostic
 
 
 @pytest.fixture(scope="module")

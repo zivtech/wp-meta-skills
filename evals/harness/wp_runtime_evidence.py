@@ -9,6 +9,9 @@ SECRET=re.compile(r"(?i)(authorization|cookie|password|passwd|secret|token|api[_
 QUOTED_SECRET=re.compile(
     r'''(?i)(["'](?:authorization|cookie|password|passwd|secret|token|api[_-]?key)["']\s*:\s*["'])([^"']*)(["'])'''
 )
+HTTP_CREDENTIAL_HEADER=re.compile(
+    r'''(?im)(?<![\w"'-])((?:proxy-)?authorization|(?:set-)?cookie)(\s*[:=]\s*)[^\r\n]*'''
+)
 URL_CREDENTIAL=re.compile(r"(https?://)[^/@\s]+@")
 
 
@@ -40,10 +43,12 @@ class RuntimeDeadline:
 
 
 def scrub_tail(value:str|None,limit:int=2000)->str:
-    text=(value or "").replace("\x00","")[-limit:]
+    text=(value or "").replace("\x00","")
     text=QUOTED_SECRET.sub(r"\1[REDACTED]\3",text)
+    text=HTTP_CREDENTIAL_HEADER.sub(r"\1\2[REDACTED]",text)
     text=SECRET.sub(lambda match:match.group(1)+match.group(2)+"[REDACTED]",text)
-    return URL_CREDENTIAL.sub(r"\1[REDACTED]@",text)
+    text=URL_CREDENTIAL.sub(r"\1[REDACTED]@",text)
+    return text[-limit:]
 
 
 def docker_absence_proved(result: dict, kind: str) -> bool:

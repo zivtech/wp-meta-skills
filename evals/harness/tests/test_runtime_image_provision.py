@@ -231,6 +231,33 @@ def test_runtime_diagnostics_scrub_quoted_and_unquoted_credentials():
     assert scrubbed.count("[REDACTED]")==3
 
 
+@pytest.mark.parametrize("header", [
+    "Authorization: Bearer BEARER-CANARY-123",
+    "Authorization: Basic BASIC-CANARY-456",
+    "Proxy-Authorization: Basic PROXY-CANARY-789",
+    "Cookie: first=value; second=COOKIE-CANARY-123",
+    "Set-Cookie: session=SET-COOKIE-CANARY-456; HttpOnly",
+    "Authorization=Bearer EQUALS-BEARER-CANARY-123",
+    "Proxy-Authorization = Basic EQUALS-PROXY-CANARY-456",
+    "Cookie=first=value; second=EQUALS-COOKIE-CANARY-789",
+])
+def test_runtime_diagnostics_scrub_complete_http_credential_headers(header):
+    scrubbed = scrub_tail(f"before\n{header}\nafter")
+
+    assert "CANARY" not in scrubbed
+    assert "after" in scrubbed
+    assert "[REDACTED]" in scrubbed
+
+
+def test_runtime_diagnostics_redact_before_taking_the_final_tail():
+    credential = "x" * 500 + "LONG-CREDENTIAL-CANARY"
+
+    scrubbed = scrub_tail(f"Authorization: Bearer {credential}", limit=40)
+
+    assert "CANARY" not in scrubbed
+    assert "[REDACTED]" in scrubbed
+
+
 def test_runtime_cleanup_uses_a_separate_bounded_deadline(monkeypatch):
     now=[100.0]
     monkeypatch.setattr(wp_runtime_evidence.time,"monotonic",lambda:now[0])
