@@ -5,7 +5,6 @@ import copy
 import dataclasses
 import io
 import json
-import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -62,13 +61,19 @@ def _output(tmp_path: Path, files: dict[str, bytes] | None = None):
     return artifact_staging.import_tar_stream(_tar(files or _files()), tmp_path / "output")
 
 
-def _stub_external(monkeypatch, *, syntax_failure: str | None = None, mutate_api: bool = False):
+def _stub_external(
+    monkeypatch, *, syntax_failure: str | bool | None = None,
+    mutate_api: bool = False,
+):
     calls = {"php": [], "api": [], "security": []}
     monkeypatch.setattr(gate.shutil, "which", lambda name: "/usr/bin/php" if name == "php" else None)
 
     def run(command, **_kwargs):
         calls["php"].append(tuple(command))
-        failed = syntax_failure is not None and str(command[-1]).endswith(syntax_failure)
+        failed = syntax_failure is True or (
+            isinstance(syntax_failure, str)
+            and str(command[-1]).endswith(syntax_failure)
+        )
         return SimpleNamespace(returncode=1 if failed else 0, stdout="", stderr="syntax error" if failed else "")
 
     def api(_root, **kwargs):
@@ -82,7 +87,7 @@ def _stub_external(monkeypatch, *, syntax_failure: str | None = None, mutate_api
         calls["security"].append(list(kwargs["explicit_files"]))
         return {"status": "pass"}
 
-    monkeypatch.setattr(gate.subprocess, "run", run)
+    monkeypatch.setattr(gate, "run_bounded", run)
     monkeypatch.setattr(gate.wp_api_lint, "run_api_lint", api)
     monkeypatch.setattr(gate.wp_api_lint, "summarize_report", lambda _report: "API pass")
     monkeypatch.setattr(gate.wp_security_gate, "run_security_gate", security)
@@ -159,6 +164,24 @@ def test_bad_built_php_fails_artifact_without_rewriting_build_result(tmp_path, m
     assert "block_build_gate" not in validation.gate
 
 
+def test_php_syntax_stops_after_the_reported_failure_cap(tmp_path, monkeypatch):
+    calls = _stub_external(monkeypatch, syntax_failure=True)
+    files = _files()
+    for index in range(gate.MAX_REPORTED_HITS + 4):
+        files[f"blocks/card/build/failure-{index}.php"] = b"<?php broken("
+    output = _output(tmp_path, files)
+    try:
+        validation = gate.validate_block_execution_artifact(
+            output, _source_layout(), 30
+        )
+    finally:
+        artifact_staging.cleanup_staged_tree(output)
+
+    assert validation.gate["status"] == "fail"
+    assert len(calls["php"]) == gate.MAX_REPORTED_HITS
+    assert calls["api"] and calls["security"]
+
+
 @pytest.mark.parametrize(
     "payload,check_id",
     [
@@ -181,10 +204,98 @@ def test_bounded_text_scan_fails_secret_and_destructive_bait(
     checks = {item["id"]: item for item in validation.gate["checks"]}
     assert validation.gate["status"] == "fail"
     assert checks[check_id]["status"] == "fail"
+    assert checks["metadata_json"]["status"] == "pass"
+    assert checks["structural"]["status"] == "pass"
+
+
+def test_missing_required_built_metadata_fails_before_scanners(tmp_path, monkeypatch):
+    calls = _stub_external(monkeypatch)
+    files = _files()
+    files["blocks/card/build/block.json"] = b'{"name":"test/card"}'
+    output = _output(tmp_path, files)
+    try:
+        validation = gate.validate_block_execution_artifact(
+            output, _source_layout(), 30
+        )
+    finally:
+        artifact_staging.cleanup_staged_tree(output)
+
+    checks = {item["id"]: item for item in validation.gate["checks"]}
+    assert validation.gate["status"] == "fail"
+    assert checks["execution_graph"]["status"] == "fail"
+    assert "title, category" in checks["execution_graph"]["detail"]
+    assert calls == {"php": [], "api": [], "security": []}
+
+
+def test_static_block_without_php_candidates_passes_with_explicit_skips(tmp_path):
+    metadata = _metadata(editorScript="file:./index.js")
+    files = {
+        "blocks/card/block.json": _metadata(),
+        "blocks/card/build/block.json": metadata,
+        "blocks/card/build/index.js": b"export const card = true;",
+    }
+    output = _output(tmp_path, files)
+    try:
+        validation = gate.validate_block_execution_artifact(
+            output, _source_layout(), 30
+        )
+    finally:
+        artifact_staging.cleanup_staged_tree(output)
+
+    checks = {item["id"]: item for item in validation.gate["checks"]}
+    assert validation.gate["status"] == "pass"
+    assert checks["wp_api"]["status"] == "pass"
+    assert checks["wp_security"]["status"] == "pass"
+    assert validation.gate["scanner_aliases"] == []
+
+
+def test_gate_persists_bound_alias_mapping_and_scanner_evidence(tmp_path, monkeypatch):
+    _stub_external(monkeypatch)
+    output = _output(tmp_path)
+    try:
+        validation = gate.validate_block_execution_artifact(
+            output, _source_layout(), 30
+        )
+    finally:
+        artifact_staging.cleanup_staged_tree(output)
+
+    aliases = list(graph.scanner_aliases(validation.proof))
+    assert validation.gate["scanner_aliases"] == aliases
+    assert validation.gate["component_digests"]["scanner_aliases"] == (
+        graph.scanner_alias_digest(validation.proof)
+    )
+    assert set(validation.gate["scanner_evidence"]) == {"wp_api", "wp_security"}
+
+
+def test_security_runtime_evidence_prioritizes_enforced_and_suppressed_items():
+    findings = [
+        {"rule_id": f"advisory-{index}", "enforced": False}
+        for index in range(gate.MAX_REPORTED_HITS + 2)
+    ] + [{"rule_id": "enforced", "enforced": True}]
+    suppressed = [
+        {"suppressed_rules": [f"advisory-{index}"], "security_relevant": False}
+        for index in range(gate.MAX_REPORTED_HITS + 2)
+    ] + [{"suppressed_rules": ["security"], "security_relevant": True}]
+
+    evidence = gate._security_runtime_evidence({
+        "status": "fail", "findings": findings,
+        "suppressed_annotations": suppressed,
+    })
+
+    assert evidence["finding_count"] == len(findings)
+    assert evidence["suppressed_annotation_count"] == len(suppressed)
+    assert evidence["findings"][0]["rule_id"] == "enforced"
+    assert evidence["suppressed_annotations"][0]["suppressed_rules"] == ["security"]
 
 
 def test_text_bound_blocks_before_any_external_scanner(tmp_path, monkeypatch):
     calls = _stub_external(monkeypatch)
+    handoffs = []
+    monkeypatch.setattr(
+        gate.artifact_staging,
+        "stage_scan_handoff",
+        lambda *args, **kwargs: handoffs.append((args, kwargs)),
+    )
     monkeypatch.setattr(gate, "MAX_TEXT_SCAN_BYTES", 1)
     output = _output(tmp_path)
     try:
@@ -196,6 +307,7 @@ def test_text_bound_blocks_before_any_external_scanner(tmp_path, monkeypatch):
 
     assert validation.gate["status"] == "blocked"
     assert calls == {"php": [], "api": [], "security": []}
+    assert handoffs == []
 
 
 def test_mutation_between_scanner_and_reproof_blocks_and_cleans(tmp_path, monkeypatch):
@@ -221,8 +333,15 @@ def test_bind_runtime_gate_copies_and_checks_artifact_digest(tmp_path, monkeypat
         validation = gate.validate_block_execution_artifact(output, _source_layout(), 30)
     finally:
         artifact_staging.cleanup_staged_tree(output)
+    wrapper = graph.block_runtime_wrapper.build(
+        "test-card", validation.proof.selected_block_json
+    )
+    wrapper_validation = graph.build_wrapper_validation(
+        wrapper, validation.proof.selected_block_json, php_syntax_passed=True
+    )
     runtime = graph.bind_runtime_proof(
-        validation.proof, "plugin/block-wrapper.php", b"<?php register_block_type('x');", "a" * 64
+        validation.proof, "plugin/block-wrapper.php", wrapper, "a" * 64,
+        wrapper_validation,
     )
     before = copy.deepcopy(validation.gate)
 
@@ -232,11 +351,16 @@ def test_bind_runtime_gate_copies_and_checks_artifact_digest(tmp_path, monkeypat
     assert validation.gate == before
     assert bound["artifact_proof_digest"] == validation.proof.artifact_proof_digest
     assert bound["wrapper_sha256"] == runtime.wrapper_sha256
+    assert bound["wrapper_validation_digest"] == runtime.wrapper_validation_digest
+    assert bound["wrapper_checks"] == [
+        {"id": "bootstrap_exact", "status": "pass"},
+        {"id": "php_syntax", "status": "pass"},
+    ]
     assert bound["synthesized_manifest_sha256"] == runtime.synthesized_manifest_sha256
     assert bound["execution_proof_digest"] == runtime.execution_proof_digest
     forged = dataclasses.replace(
         runtime,
         artifact=dataclasses.replace(runtime.artifact, artifact_proof_digest="0" * 64),
     )
-    with pytest.raises(ValueError, match="artifact digest"):
+    with pytest.raises(ValueError, match="digest"):
         gate.bind_runtime_gate(validation, forged)

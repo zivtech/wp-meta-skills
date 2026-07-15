@@ -55,6 +55,8 @@ python3 -m pytest \
   evals/harness/tests/test_artifact_layout.py \
   evals/harness/tests/test_artifact_execution_graph.py \
   evals/harness/tests/test_artifact_execution_gate.py \
+  evals/harness/tests/test_bounded_subprocess.py \
+  evals/harness/tests/test_php_scanner_aliases.py \
   evals/harness/tests/test_artifact_explicit_scanners.py \
   evals/harness/tests/test_artifact_traversal.py \
   evals/harness/tests/test_runtime_artifact_pipeline.py \
@@ -75,8 +77,26 @@ python3 -m pytest \
   evals/harness/tests/test_wordpress_candidate_pilot_generation.py \
   evals/harness/tests/test_wp_api_lint.py \
   evals/harness/tests/test_wp_security_gate.py \
+  evals/harness/tests/test_plan010_artifact_measurement.py \
   -m 'not docker_boundary' -q
 ```
+
+Plan 010 also requires the two-profile artifact-certification measurement after
+the pinned Composer toolchain is installed:
+
+```bash
+python3 scripts/measure-plan010-artifact-path.py \
+  --profile ci \
+  --output tmp/plan010-artifact-measurement.json
+```
+
+The aggregate profile reaches the reviewed file, byte, metadata-edge, PHP-set,
+and runtime-closure limits. The separate maximum-member profile reaches the
+8 MiB runtime-member limit, which cannot coexist with 64 nonempty PHP files
+inside the 8 MiB aggregate PHP limit. This is certification-path evidence, not
+a WordPress frontend, database, production-throughput, or concurrency claim.
+The record includes both authenticated PHP scanner-alias copy passes so unusual
+suffix candidates cannot disappear behind PHPStan or PHPCS extension filters.
 
 ## Reuse And Provenance
 

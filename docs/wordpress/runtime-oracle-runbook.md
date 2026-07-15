@@ -1,6 +1,6 @@
 # WordPress Runtime Oracle Runbook
 
-Updated: 2026-07-13.
+Updated: 2026-07-15.
 
 The WordPress executor evidence stack has three deterministic layers before any LLM judge or critic review:
 
@@ -407,22 +407,69 @@ For built block runtime, a full artifact proof means all of the following pass:
 - the isolated build command completes and returns an authenticated sandbox-output capability;
 - one source-anchored metadata layout selects either the exact child
   `build/block.json` or the source fallback, with ambiguity rejected;
+- the selected metadata is strict bounded JSON with nonempty string `name`,
+  `title`, and `category` values;
 - WordPress 7.0.1 metadata references and optional `.asset.php`/RTL companions
   resolve against the pinned core rule table and authenticated manifest;
 - every executable-PHP candidate outside excluded namespaces is scanned with
   syntax, secret, API, and security gates, including PHP-tagged files without a
-  `.php` suffix; candidates inside excluded namespaces are rejected;
+  `.php` suffix; PHPStan and PHPCS receive bounded authenticated `.php` aliases
+  whose original path, size, and hash mapping is bound into the artifact proof,
+  and findings are remapped to original paths; candidates inside excluded
+  namespaces are rejected;
 - one minimal no-follow scanner handoff is re-proved around each path-required
   tool and removed afterward;
-- the wrapper registers the exact selected `block.json` with one safely encoded
-  literal path; and
+- the runtime closure contains every non-excluded file under the selected root,
+  every present metadata edge outside that root, and every conservative PHP
+  candidate outside excluded dependency namespaces;
+- source-only synthesis accepts an authenticated caller-input capability only
+  when the proof selects the source `block.json` and binds the exact source
+  manifest; built synthesis requires authenticated sandbox output;
+- the wrapper byte-for-byte matches the shared canonical generator, including
+  exactly one executable registration bootstrap for the selected `block.json`,
+  passes an independent bounded `php -l`, and binds both checks into
+  `wrapper_validation_digest`; and
 - the output manifest, graph, candidate set, scan file table, wrapper bytes,
   synthesized manifest, core rule identity, and final
   `execution_proof_digest` remain bound in runtime JSON.
 
+The reviewed admission limits are 1,024 post-build files, 32 MiB of post-build
+output, 1 MiB per selected `block.json`, 512 metadata edges, 64 PHP candidates,
+JSON depth 32, 8 MiB across the PHP set, 8 MiB per runtime member, and 16 MiB
+across the proven runtime closure. A limit breach fails before the scan-handoff copy. PHP lint,
+PHPStan, both PHPCS suppression-differential passes, synthesis, closure proof,
+and wrapper lint share the runtime preparation deadline; subprocess output is
+bounded, scanner result parsing has per-file and aggregate message caps, source
+excerpts are read once per file, and a timeout or overflow is `blocked`, never
+a partial pass.
+
+The CI boundary measurement runs both combinations that cannot honestly be one
+fixture:
+
+```bash
+python3 scripts/measure-plan010-artifact-path.py \
+  --profile ci \
+  --output tmp/plan010-artifact-measurement.json
+```
+
+The aggregate profile reaches 1,024 files, 32 MiB output, 1 MiB metadata, 512
+edges, 64 PHP candidates/8 MiB, and a 16 MiB closure, including PHP outside the
+selected root. The maximum-member profile sends one exact 8 MiB member through
+the same public gate, synthesis, and digest-binding path. CI requires each
+profile to finish certification within 180 seconds and end to end within 210
+seconds, with the maximum observed parent-or-child `ru_maxrss` at or below
+1.5 GiB. The JSON records exact top-level bounded tool invocations, proof holds,
+streamed copy counts/bytes, digests, toolchain lock identity, and cleanup
+receipts, including both PHP scanner-alias copy passes. It does not count
+descendants a tool may create and does not claim a
+simultaneous process-tree RSS total. These are precommitted CI admission
+ceilings, not a production-capacity or performance claim.
+
 This is deliberately conservative, not an exact dynamic-include graph. It does
 not prove JavaScript import reachability, `eval()` or runtime-generated code,
-runtime-specific PHP short-tag behavior, authorization, or release readiness.
+runtime-specific PHP short-tag behavior, authorization, Docker/`wp-env`,
+WordPress boot, database behavior, browser rendering, concurrency, production
+throughput, or release readiness.
 
 For a generated block deprecation proof, use a block packet that includes a
 legacy serialized-content fixture plus `deprecation-smoke.json`, then add

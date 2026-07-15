@@ -1,6 +1,6 @@
 # MANIFEST.sha256 — Integrity checksums for skill and agent files
-# Generated: 2026-07-14T06:20:37Z
-# Commit: 8bc642c
+# Generated: 2026-07-15T16:31:02Z
+# Commit: a6aae06
 #
 # Verify with: shasum -a 256 -c MANIFEST.sha256
 # Or run: ./install.sh --verify

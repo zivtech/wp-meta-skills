@@ -52,7 +52,12 @@ def _held_proof(tmp_path: Path, files: dict[str, bytes]):
 
 
 def _metadata(**overrides) -> bytes:
-    payload = {"name": "test/card", **overrides}
+    payload = {
+        "name": "test/card",
+        "title": "Card",
+        "category": "widgets",
+        **overrides,
+    }
     return json.dumps(payload, separators=(",", ":")).encode()
 
 
@@ -76,7 +81,9 @@ def _valid_files(metadata: bytes | None = None) -> dict[str, bytes]:
         "blocks/card/build/view.asset.php": b"<?php return [];",
         "blocks/card/build/style.css": b".card{}",
         "blocks/card/build/style-rtl.css": b".card{}",
+        "blocks/card/build/chunk.js": b"export const chunk = true;",
         "blocks/card/shared.css": b".shared{}",
+        "blocks/card/notes.txt": b"not part of the selected runtime closure",
         "blocks/card/generated.PHP": b"short-tag negative space",
         "blocks/card/payload.txt": b"prefix <?Php echo 'found'; suffix",
     }
@@ -84,6 +91,19 @@ def _valid_files(metadata: bytes | None = None) -> dict[str, bytes]:
 
 def _edges(proof, field: str):
     return tuple(edge for edge in proof.edges if edge.field == field)
+
+
+def _wrapper_bytes(selected_block_json: str, suffix: bytes = b"") -> bytes:
+    return graph.block_runtime_wrapper.build("test-card", selected_block_json) + suffix
+
+
+def _bind_runtime(proof, wrapper_bytes: bytes, manifest: str = "a" * 64):
+    validation = graph.build_wrapper_validation(
+        wrapper_bytes, proof.selected_block_json, php_syntax_passed=True
+    )
+    return graph.bind_runtime_proof(
+        proof, "plugin/block-wrapper.php", wrapper_bytes, manifest, validation
+    )
 
 
 def test_builds_frozen_canonical_proof_from_held_output(tmp_path):
@@ -127,6 +147,11 @@ def test_builds_frozen_canonical_proof_from_held_output(tmp_path):
         scan for scan in proof.scan_files if scan.path == "blocks/card/payload.txt"
     )
     assert payload_scan.scan_ids == graph.PHP_SCAN_IDS
+    chunk = next(
+        item for item in proof.files if item.path == "blocks/card/build/chunk.js"
+    )
+    assert "runtime_asset" in chunk.classifications
+    assert "blocks/card/notes.txt" not in {item.path for item in proof.files}
     with pytest.raises(dataclasses.FrozenInstanceError):
         proof.selected_root = "changed"
 
@@ -164,6 +189,13 @@ def test_rejects_metadata_over_one_mib(tmp_path):
     metadata = b'{"name":"test/card","padding":"' + b"x" * (1024 * 1024) + b'"}'
     with _held_proof(tmp_path, _valid_files(metadata)) as (held, layout):
         with pytest.raises(ValueError, match="1 MiB"):
+            graph.build_execution_proof(held, layout)
+
+
+def test_rejects_missing_required_block_metadata(tmp_path):
+    metadata = b'{"name":"test/card"}'
+    with _held_proof(tmp_path, _valid_files(metadata)) as (held, layout):
+        with pytest.raises(ValueError, match="title, category"):
             graph.build_execution_proof(held, layout)
 
 
@@ -271,6 +303,29 @@ def test_rejects_executable_php_candidates_in_excluded_roots(tmp_path):
             graph.build_execution_proof(held, layout)
 
 
+def test_selected_root_non_php_excluded_namespaces_stay_out_of_proof(tmp_path):
+    files = _valid_files()
+    excluded = {
+        "blocks/card/build/coverage/report.js",
+        "blocks/card/build/.git/config",
+        "blocks/card/build/.wp-env/state.json",
+    }
+    files.update({path: b"not executable" for path in excluded})
+    with _held_proof(tmp_path, files) as (held, layout):
+        proof = graph.build_execution_proof(held, layout)
+
+    assert excluded.isdisjoint(item.path for item in proof.files)
+    assert excluded.isdisjoint(item.path for item in proof.scan_files)
+
+
+def test_rejects_unsupported_executable_php_candidate_names(tmp_path):
+    files = _valid_files()
+    files["blocks/card/bad\nname.php"] = b"<?php echo 'unsafe';"
+    with _held_proof(tmp_path, files) as (held, layout):
+        with pytest.raises(ValueError, match="candidate path"):
+            graph.build_execution_proof(held, layout)
+
+
 def test_candidate_and_edge_caps_are_fail_closed(tmp_path, monkeypatch):
     files = _valid_files(_metadata())
     with _held_proof(tmp_path, files) as (held, layout):
@@ -289,6 +344,36 @@ def test_candidate_byte_cap_is_fail_closed(tmp_path, monkeypatch):
     with _held_proof(tmp_path, _valid_files(_metadata())) as (held, layout):
         monkeypatch.setattr(graph, "MAX_PHP_BYTES", 1)
         with pytest.raises(ValueError, match="candidate bytes"):
+            graph.build_execution_proof(held, layout)
+
+
+def test_block_output_byte_cap_is_fail_closed(tmp_path, monkeypatch):
+    with _held_proof(tmp_path, _valid_files()) as (held, layout):
+        monkeypatch.setattr(graph, "MAX_BLOCK_OUTPUT_BYTES", 1)
+        with pytest.raises(ValueError, match="block output"):
+            graph.build_execution_proof(held, layout)
+
+
+def test_block_output_entry_cap_is_fail_closed(tmp_path, monkeypatch):
+    with _held_proof(tmp_path, _valid_files()) as (held, layout):
+        monkeypatch.setattr(graph, "MAX_BLOCK_ENTRIES", 1)
+        with pytest.raises(ValueError, match="1024-file"):
+            graph.build_execution_proof(held, layout)
+
+
+@pytest.mark.parametrize(
+    "limit_name,match",
+    [
+        ("MAX_RUNTIME_FILE_BYTES", "runtime closure member"),
+        ("MAX_RUNTIME_CLOSURE_BYTES", "runtime closure exceeds"),
+    ],
+)
+def test_runtime_closure_byte_caps_are_fail_closed(
+    tmp_path, monkeypatch, limit_name, match
+):
+    with _held_proof(tmp_path, _valid_files()) as (held, layout):
+        monkeypatch.setattr(graph, limit_name, 1)
+        with pytest.raises(ValueError, match=match):
             graph.build_execution_proof(held, layout)
 
 
@@ -313,31 +398,41 @@ def test_bind_runtime_proof_binds_wrapper_and_synthesized_manifest(tmp_path):
     with _held_proof(tmp_path, _valid_files()) as (held, layout):
         proof = graph.build_execution_proof(held, layout)
 
-    bound = graph.bind_runtime_proof(
-        proof,
-        "plugin/block-wrapper.php",
-        b"<?php register_block_type(__DIR__ . '/generated/block.json');",
-        "a" * 64,
-    )
-    changed = graph.bind_runtime_proof(
-        proof,
-        "plugin/block-wrapper.php",
-        b"<?php register_block_type(__DIR__ . '/generated/other.json');",
-        "a" * 64,
-    )
+    wrapper = _wrapper_bytes(proof.selected_block_json)
+    bound = _bind_runtime(proof, wrapper)
+    changed = _bind_runtime(proof, wrapper, "b" * 64)
     assert bound.artifact == proof
-    assert bound.wrapper_sha256 != changed.wrapper_sha256
+    assert bound.wrapper_sha256 == changed.wrapper_sha256
     assert bound.execution_proof_digest != changed.execution_proof_digest
     assert bound.synthesized_manifest_sha256 == "a" * 64
+    graph.validate_runtime_proof(bound)
     with pytest.raises(dataclasses.FrozenInstanceError):
         bound.wrapper_path = "changed"
     with pytest.raises(ValueError, match="wrapper path"):
-        graph.bind_runtime_proof(proof, "../wrapper.php", b"<?php", "a" * 64)
+        graph.bind_runtime_proof(
+            proof, "../wrapper.php", wrapper, "a" * 64,
+            graph.build_wrapper_validation(
+                wrapper, proof.selected_block_json, php_syntax_passed=True
+            ),
+        )
     with pytest.raises(ValueError, match="manifest digest"):
-        graph.bind_runtime_proof(proof, "wrapper.php", b"<?php", "bad")
+        graph.bind_runtime_proof(
+            proof, "wrapper.php", wrapper, "bad",
+            graph.build_wrapper_validation(
+                wrapper, proof.selected_block_json, php_syntax_passed=True
+            ),
+        )
     forged = dataclasses.replace(proof, artifact_proof_digest="0" * 64)
     with pytest.raises(ValueError, match="digest binding"):
-        graph.bind_runtime_proof(forged, "wrapper.php", b"<?php", "a" * 64)
+        graph.bind_runtime_proof(
+            forged, "wrapper.php", wrapper, "a" * 64,
+            graph.build_wrapper_validation(
+                wrapper, proof.selected_block_json, php_syntax_passed=True
+            ),
+        )
+    forged_runtime = dataclasses.replace(bound, execution_proof_digest="0" * 64)
+    with pytest.raises(ValueError, match="execution proof digest"):
+        graph.validate_runtime_proof(forged_runtime)
 
 
 def test_rule_digest_is_a_reviewed_literal():
@@ -348,3 +443,43 @@ def test_rule_digest_is_a_reviewed_literal():
     assert graph.WORDPRESS_7_0_1_RULE_DIGEST == (
         "3e139b0744e41a23dd9638724d5d9c68238187770953765da98786ce6c674207"
     )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        b"register_block_type ( 'other' );\n",
+        b"\\register_block_type( 'other' );\n",
+        b"/* register_block_type ( 'other' ); */\n",
+        b"$text = 'register_block_type ( other )';\n",
+        b"REGISTER_BLOCK_TYPE( 'other' );\n",
+        b"Register_Block_Type ( 'other' );\n",
+        b"register_block_type/**/( 'other' );\n",
+        b"register_block_type /* drift */ ( 'other' );\n",
+    ],
+)
+def test_wrapper_contract_rejects_extra_or_ambiguous_bootstraps(extra):
+    selected = "blocks/card/build/block.json"
+    with pytest.raises(ValueError, match="exact registration bootstrap"):
+        graph.build_wrapper_validation(
+            _wrapper_bytes(selected, extra), selected, php_syntax_passed=True
+        )
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        b"REGISTER_BLOCK_TYPE(",
+        b"Register_Block_Type (",
+        b"register_block_type/**/(",
+        b"register_block_type /* drift */ (",
+        b"// register_block_type(",
+    ],
+)
+def test_wrapper_contract_requires_the_canonical_executable_call(replacement):
+    selected = "blocks/card/build/block.json"
+    wrapper = _wrapper_bytes(selected).replace(b"register_block_type(", replacement)
+    with pytest.raises(ValueError, match="exact registration bootstrap"):
+        graph.build_wrapper_validation(
+            wrapper, selected, php_syntax_passed=True
+        )

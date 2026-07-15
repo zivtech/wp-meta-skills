@@ -6,6 +6,7 @@ on:
     paths:
       - "evals/harness/**"
       - "evals/suites/wordpress-*/**"
+      - "scripts/**"
       - ".github/workflows/validate.yml"
       - "pytest.ini"
       - "CONTRIBUTING.md"
@@ -283,10 +284,20 @@ jobs:
           exit "$cleanup_status"
   validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      REVIEWED_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ env.REVIEWED_COMMIT_SHA }}
+          persist-credentials: false
+
+      - name: Verify exact reviewed commit
+        run: test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -340,6 +351,8 @@ jobs:
             evals/harness/tests/test_artifact_layout.py \
             evals/harness/tests/test_artifact_execution_graph.py \
             evals/harness/tests/test_artifact_execution_gate.py \
+            evals/harness/tests/test_bounded_subprocess.py \
+            evals/harness/tests/test_php_scanner_aliases.py \
             evals/harness/tests/test_artifact_explicit_scanners.py \
             evals/harness/tests/test_artifact_traversal.py \
             evals/harness/tests/test_runtime_artifact_pipeline.py \
@@ -360,4 +373,41 @@ jobs:
             evals/harness/tests/test_wordpress_candidate_pilot_generation.py \
             evals/harness/tests/test_wp_api_lint.py \
             evals/harness/tests/test_wp_security_gate.py \
+            evals/harness/tests/test_plan010_artifact_measurement.py \
             -m 'not docker_boundary' -q
+
+      - name: Measure Plan 010 artifact certification boundary
+        run: |
+          record="$RUNNER_TEMP/plan010-artifact-measurement.json"
+          set +e
+          python scripts/measure-plan010-artifact-path.py \
+            --profile ci \
+            --output "$record" \
+            > "$RUNNER_TEMP/plan010-artifact-measurement.log"
+          measurement_status=$?
+          set -e
+          python - "$record" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import sys
+          record=json.load(open(sys.argv[1], encoding="utf-8"))
+          print("## Plan 010 artifact certification measurement")
+          print(f"Commit: `{record['toolchain']['commit_sha']}`")
+          print("| Profile | Status | Certification seconds | Max observed process RSS MiB | Bounded invocations |")
+          print("|---|---:|---:|---:|---:|")
+          for name, item in record["profiles"].items():
+              metrics=item.get("metrics", {})
+              seconds=metrics.get("certification_wall_seconds", "missing")
+              rss=metrics.get("max_observed_process_rss_bytes")
+              rss_mib=f"{rss / 1048576:.1f}" if isinstance(rss, (int, float)) else "missing"
+              invocations=metrics.get("bounded_invocation_count", "missing")
+              print(f"| {name} | {item['status']} | {seconds} | {rss_mib} | {invocations} |")
+          PY
+          exit "$measurement_status"
+
+      - name: Upload Plan 010 measurement evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: plan010-artifact-measurement-${{ env.REVIEWED_COMMIT_SHA }}
+          path: ${{ runner.temp }}/plan010-artifact-measurement.json
+          if-no-files-found: error

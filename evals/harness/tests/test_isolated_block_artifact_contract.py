@@ -36,10 +36,13 @@ def _runtime() -> RuntimeResult:
     )
 
 
-def _gate(status: str, check_id: str) -> dict:
-    return {"status": status, "pass": status == "pass", "checks": [
+def _gate(status: str, check_id: str, digest: str | None = None) -> dict:
+    gate = {"status": status, "pass": status == "pass", "checks": [
         {"id": check_id, "status": status, "required": True},
     ]}
+    if digest is not None:
+        gate["execution_proof_digest"] = digest
+    return gate
 
 
 def _adapt_block(**changes) -> dict:
@@ -49,7 +52,9 @@ def _adapt_block(**changes) -> dict:
         "block_build_requested": True,
         "block_build_gate": _gate("pass", "npm_build"),
         "block_runtime_artifact_requested": True,
-        "block_runtime_artifact_gate": _gate("pass", "runtime_artifact"),
+        "block_runtime_artifact_gate": _gate(
+            "pass", "runtime_artifact", EXECUTION_DIGEST,
+        ),
         "execution_proof_digest": EXECUTION_DIGEST,
         "phpunit_requested": False,
     }
@@ -69,7 +74,9 @@ def _persisted_block() -> dict:
         "status": "pass", "pass": True, "checks": checks,
         "block_runtime_artifact_requested": True,
         "block_runtime_artifact_gate_status": "pass",
-        "block_runtime_artifact_gate": _gate("pass", "runtime_artifact"),
+        "block_runtime_artifact_gate": _gate(
+            "pass", "runtime_artifact", EXECUTION_DIGEST,
+        ),
         "execution_proof_digest": EXECUTION_DIGEST,
         "full_plugin_runtime_profile": {"status": "pass", "pass": True, "checks": [
             {"id": "phpcs_wpcs", "status": "pass", "required": True},
@@ -102,16 +109,35 @@ def test_dual_gate_status_preserves_blocked_over_fail_precedence():
     )
     failed = _adapt_block(
         block_build_gate=_gate("fail", "npm_build"),
-        block_runtime_artifact_gate=_gate("pass", "runtime_artifact"),
+        block_runtime_artifact_gate=_gate(
+            "pass", "runtime_artifact", EXECUTION_DIGEST,
+        ),
+    )
+    artifact_failed = _adapt_block(
+        block_runtime_artifact_gate=_gate("fail", "runtime_artifact"),
     )
     assert blocked["status"] == "blocked" and blocked["pass"] is False
     assert failed["status"] == "fail" and failed["pass"] is False
+    assert artifact_failed["status"] == "fail" and artifact_failed["pass"] is False
 
 
 def test_missing_or_non_lowercase_execution_digest_blocks_green():
     assert _adapt_block(execution_proof_digest=None)["status"] == "blocked"
     uppercase = _adapt_block(execution_proof_digest="C" * 64)
     assert uppercase["status"] == "blocked" and uppercase["pass"] is False
+
+
+def test_live_contract_requires_gate_and_result_digest_equality():
+    missing = _adapt_block(
+        block_runtime_artifact_gate=_gate("pass", "runtime_artifact")
+    )
+    mismatch = _adapt_block(
+        block_runtime_artifact_gate=_gate(
+            "pass", "runtime_artifact", "d" * 64,
+        )
+    )
+    assert missing["status"] == "blocked" and missing["pass"] is False
+    assert mismatch["status"] == "blocked" and mismatch["pass"] is False
 
 
 def test_artifact_request_without_build_request_is_inconsistent_and_blocked():
@@ -158,6 +184,16 @@ def test_persisted_block_requires_exact_digest_and_passing_artifact_gate():
     mismatch["execution_proof_digest"] = "d" * 64
     assert "execution proof digest mismatch" in _persisted_errors(mismatch)
 
+    missing_gate_digest = _persisted_block()
+    missing_gate_digest["block_runtime_artifact_gate"].pop("execution_proof_digest")
+    assert "execution proof digest mismatch" in _persisted_errors(missing_gate_digest)
+
+    mismatched_gate_digest = _persisted_block()
+    mismatched_gate_digest["block_runtime_artifact_gate"][
+        "execution_proof_digest"
+    ] = "d" * 64
+    assert "execution proof digest mismatch" in _persisted_errors(mismatched_gate_digest)
+
     failed = _persisted_block()
     failed["block_runtime_artifact_gate"] = _gate("fail", "runtime_artifact")
     assert "block runtime artifact gate did not pass" in _persisted_errors(failed)
@@ -173,6 +209,16 @@ def test_plugin_and_nonbuilt_results_do_not_require_artifact_proof():
     assert adapted["block_runtime_artifact_requested"] is False
     assert adapted["block_runtime_artifact_gate_status"] == "not_run"
     assert adapted["execution_proof_digest"] is None
+
+    nonbuilt_block = contract.adapt_runtime_result(
+        _runtime(), _request(), artifact_kind="block",
+        expected_manifest_digest=MANIFEST_DIGEST, block_build_requested=False,
+        block_build_gate=None, phpunit_requested=False,
+    )
+    assert nonbuilt_block["status"] == "pass"
+    assert nonbuilt_block["block_runtime_artifact_requested"] is False
+    assert nonbuilt_block["block_runtime_artifact_gate_status"] == "not_run"
+    assert nonbuilt_block["execution_proof_digest"] is None
 
     persisted = _persisted_block()
     persisted["artifact_kind"] = "plugin"

@@ -5,7 +5,6 @@ import copy
 import dataclasses
 import re
 import shutil
-import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,13 +16,20 @@ import artifact_snapshot_scan
 import artifact_staging
 import wp_api_lint
 import wp_security_gate
+from bounded_subprocess import (
+    BoundedProcessError,
+    BoundedProcessOverflow,
+    BoundedProcessTimeout,
+    run_bounded,
+)
 
 
 GATE_SCHEMA = "wp-meta-skills/block-execution-artifact-gate"
 GATE_SCHEMA_VERSION = 1
 MAX_DETAIL_BYTES = 500
 MAX_REPORTED_HITS = 8
-MAX_TEXT_SCAN_BYTES = 64 * 1024 * 1024
+MAX_TEXT_SCAN_BYTES = artifact_execution_graph.MAX_RUNTIME_CLOSURE_BYTES
+PHP_LINT_OUTPUT_LIMIT = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,7 @@ def _dominant_status(checks: list[dict[str, str]]) -> str:
 def _gate_payload(
     proof: artifact_execution_graph.BlockExecutionProof | None,
     checks: list[dict[str, str]],
+    scanner_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     blocked = next((item["detail"] for item in checks if item["status"] == "blocked"), None)
     payload: dict[str, Any] = {
@@ -79,6 +86,8 @@ def _gate_payload(
         "edges": [],
         "files": [],
         "scan_files": [],
+        "scanner_aliases": [],
+        "scanner_evidence": copy.deepcopy(scanner_evidence or {}),
         "component_digests": {},
         "artifact_proof_digest": None,
     }
@@ -96,9 +105,11 @@ def _gate_payload(
             "edges": [dataclasses.asdict(item) for item in proof.edges],
             "files": [dataclasses.asdict(item) for item in proof.files],
             "scan_files": [dataclasses.asdict(item) for item in proof.scan_files],
+            "scanner_aliases": list(artifact_execution_graph.scanner_aliases(proof)),
             "component_digests": {
                 "metadata_graph": proof.metadata_graph_digest,
                 "php_set": proof.php_set_digest,
+                "scanner_aliases": artifact_execution_graph.scanner_alias_digest(proof),
                 "artifact": proof.artifact_proof_digest,
             },
             "artifact_proof_digest": proof.artifact_proof_digest,
@@ -111,6 +122,20 @@ def _scan_paths(proof, scan_id: str, root: Path) -> list[Path]:
     return [root / item.path for item in proof.scan_files if scan_id in item.scan_ids]
 
 
+def _alias_names(proof, root: Path) -> dict[Path, str]:
+    return {
+        root / item["source_path"]: item["alias_name"]
+        for item in artifact_execution_graph.scanner_aliases(proof)
+    }
+
+
+def _alias_members(proof, root: Path) -> dict[Path, tuple[int, str]]:
+    return {
+        root / item["source_path"]: (item["size"], item["sha256"])
+        for item in artifact_execution_graph.scanner_aliases(proof)
+    }
+
+
 def _text_bound_failure(detail: str) -> list[dict[str, str]]:
     return [
         _check("unsafe_commands", "blocked", detail),
@@ -118,14 +143,28 @@ def _text_bound_failure(detail: str) -> list[dict[str, str]]:
     ]
 
 
+def _text_bound_reason(entries) -> str | None:
+    if any(item.size > artifact_staging.MAX_TARGET_MEMBER_BYTES for item in entries):
+        return "exact text scan file exceeds the 8 MiB targeted-read bound"
+    if sum(item.size for item in entries) > MAX_TEXT_SCAN_BYTES:
+        return "exact text scan exceeds the 16 MiB aggregate bound"
+    return None
+
+
+def _proof_text_bound_failure(proof) -> list[dict[str, str]]:
+    selected = {item.path for item in proof.scan_files if "secret" in item.scan_ids}
+    entries = [item for item in proof.files if item.path in selected]
+    reason = _text_bound_reason(entries)
+    return _text_bound_failure(reason) if reason else []
+
+
 def _bounded_text_checks(handoff, proof, deadline: float) -> list[dict[str, str]]:
     selected = {item.path for item in proof.scan_files if "secret" in item.scan_ids}
     manifest = {item.path: item for item in handoff.manifest}
     entries = [manifest[path] for path in sorted(selected)]
-    if any(item.size > artifact_staging.MAX_TARGET_MEMBER_BYTES for item in entries):
-        return _text_bound_failure("exact text scan file exceeds the 8 MiB targeted-read bound")
-    if sum(item.size for item in entries) > MAX_TEXT_SCAN_BYTES:
-        return _text_bound_failure("exact text scan exceeds the 64 MiB aggregate bound")
+    reason = _text_bound_reason(entries)
+    if reason:
+        return _text_bound_failure(reason)
     unsafe: list[str] = []
     secrets: list[str] = []
     with artifact_staging.hold_staged_tree(handoff, proof_deadline=deadline) as held:
@@ -149,17 +188,9 @@ def _bounded_text_checks(handoff, proof, deadline: float) -> list[dict[str, str]
     ]
 
 
-def _reprove(handoff, deadline: float) -> None:
-    with artifact_staging.hold_staged_tree(handoff, proof_deadline=deadline):
-        pass
-
-
 def _reproved(handoff, deadline: float, scanner: Callable[[], Any]) -> Any:
-    _reprove(handoff, deadline)
-    try:
+    with artifact_staging.hold_staged_tree(handoff, proof_deadline=deadline):
         return scanner()
-    finally:
-        _reprove(handoff, deadline)
 
 
 def _php_syntax_check(handoff, proof, deadline: float) -> dict[str, str]:
@@ -170,64 +201,135 @@ def _php_syntax_check(handoff, proof, deadline: float) -> dict[str, str]:
     for candidate in proof.php_candidates:
         path = handoff.root / candidate.path
         try:
-            result = subprocess.run(
-                [php, "-l", str(path)], text=True, capture_output=True,
-                timeout=_remaining(deadline),
+            result = run_bounded(
+                [php, "-l", str(path)],
+                deadline_monotonic=deadline,
+                stdout_limit=PHP_LINT_OUTPUT_LIMIT,
+                stderr_limit=PHP_LINT_OUTPUT_LIMIT,
             )
-        except subprocess.TimeoutExpired:
+        except BoundedProcessTimeout:
             return _check("php_syntax", "blocked", f"global deadline expired while linting {candidate.path}")
+        except BoundedProcessOverflow as exc:
+            return _check("php_syntax", "blocked", f"php -l output blocked: {exc}")
+        except BoundedProcessError as exc:
+            return _check("php_syntax", "blocked", f"php -l execution blocked: {exc}")
         except OSError as exc:
             return _check("php_syntax", "blocked", f"php -l could not run: {type(exc).__name__}")
-        if result.returncode != 0 and len(failures) < MAX_REPORTED_HITS:
+        if result.returncode != 0:
             output = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
             failures.append(f"{candidate.path}: {_detail(output)}")
+            if len(failures) >= MAX_REPORTED_HITS:
+                break
     if failures:
         return _check("php_syntax", "fail", "; ".join(failures))
     return _check("php_syntax", "pass", f"php -l passed for {len(proof.php_candidates)} exact candidate(s)")
 
 
-def _api_check(handoff, proof, deadline: float, php_tools_root) -> dict[str, str]:
+def _api_check(handoff, proof, deadline: float, php_tools_root):
     selected = _scan_paths(proof, "wp_api", handoff.root)
     report = wp_api_lint.run_api_lint(
         handoff.root,
         timeout_sec=_remaining(deadline),
+        deadline_monotonic=deadline,
         php_tools_root=php_tools_root,
         explicit_files=selected,
+        explicit_alias_names=_alias_names(proof, handoff.root),
+        explicit_alias_members=_alias_members(proof, handoff.root),
     )
     status = report.get("status")
     if status not in {"pass", "fail", "blocked"}:
         status = "pass" if status == "skip" and not selected else "blocked"
-    return _check("wp_api", status, wp_api_lint.summarize_report(report))
+    evidence = {
+        "status": report.get("status"),
+        "analysis_usage": copy.deepcopy(report.get("analysis_usage") or {}),
+        "scanner_aliases": copy.deepcopy(report.get("scanner_aliases") or []),
+        "finding_count": len(report.get("findings") or []),
+        "analysis_error_count": len(report.get("analysis_errors") or []),
+        "findings": copy.deepcopy((report.get("findings") or [])[:MAX_REPORTED_HITS]),
+        "analysis_errors": copy.deepcopy(
+            (report.get("analysis_errors") or [])[:MAX_REPORTED_HITS]
+        ),
+    }
+    return _check("wp_api", status, wp_api_lint.summarize_report(report)), evidence
 
 
-def _security_check(handoff, proof, deadline: float, php_tools_root) -> dict[str, str]:
+def _security_runtime_evidence(report):
+    findings = report.get("findings") or []
+    suppressed = report.get("suppressed_annotations") or []
+    prioritized_findings = sorted(
+        enumerate(findings), key=lambda item: (not item[1].get("enforced"), item[0])
+    )
+    prioritized_suppressions = sorted(
+        enumerate(suppressed),
+        key=lambda item: (
+            not item[1].get("security_relevant"),
+            not bool(item[1].get("reviewed_safe_api")),
+            item[0],
+        ),
+    )
+    return {
+        "status": report.get("status"),
+        "summary": copy.deepcopy(report.get("summary") or {}),
+        "analysis_usage": copy.deepcopy(report.get("analysis_usage") or {}),
+        "scanner_aliases": copy.deepcopy(report.get("scanner_aliases") or []),
+        "finding_count": len(findings),
+        "suppressed_annotation_count": len(suppressed),
+        "findings": copy.deepcopy(
+            [item for _index, item in prioritized_findings[:MAX_REPORTED_HITS]]
+        ),
+        "suppressed_annotations": copy.deepcopy(
+            [item for _index, item in prioritized_suppressions[:MAX_REPORTED_HITS]]
+        ),
+    }
+
+
+def _security_check(handoff, proof, deadline: float, php_tools_root):
     selected = _scan_paths(proof, "wp_security", handoff.root)
     report = wp_security_gate.run_security_gate(
         handoff.root,
         timeout_sec=_remaining(deadline),
+        deadline_monotonic=deadline,
         php_tools_root=php_tools_root,
         explicit_files=selected,
+        explicit_alias_names=_alias_names(proof, handoff.root),
+        explicit_alias_members=_alias_members(proof, handoff.root),
     )
     status = report.get("status")
     if status not in {"pass", "fail", "blocked"}:
         status = "pass" if status == "skip" and not selected else "blocked"
-    return _check("wp_security", status, wp_security_gate.summarize_report(report))
+    evidence = _security_runtime_evidence(report)
+    return _check("wp_security", status, wp_security_gate.summarize_report(report)), evidence
 
 
-def _run_scanners(handoff, proof, deadline: float, php_tools_root) -> list[dict[str, str]]:
-    checks = _bounded_text_checks(handoff, proof, deadline)
+def _run_scanners(handoff, proof, deadline: float, php_tools_root):
+    checks = [
+        _check(
+            "metadata_json",
+            "pass",
+            "selected block.json is strict bounded JSON with required metadata",
+        ),
+        _check(
+            "structural",
+            "pass",
+            "all exact graph files are verified regular manifest members",
+        ),
+    ]
+    checks.extend(_bounded_text_checks(handoff, proof, deadline))
     if any(item["status"] == "blocked" for item in checks):
-        return checks
+        return checks, {}
     checks.append(_reproved(
         handoff, deadline, lambda: _php_syntax_check(handoff, proof, deadline)
     ))
-    checks.append(_reproved(
+    api_check, api_evidence = _reproved(
         handoff, deadline, lambda: _api_check(handoff, proof, deadline, php_tools_root)
-    ))
-    checks.append(_reproved(
-        handoff, deadline, lambda: _security_check(handoff, proof, deadline, php_tools_root)
-    ))
-    return checks
+    )
+    checks.append(api_check)
+    security_check, security_evidence = _reproved(
+        handoff, deadline,
+        lambda: _security_check(handoff, proof, deadline, php_tools_root),
+    )
+    checks.append(security_check)
+    return checks, {"wp_api": api_evidence, "wp_security": security_evidence}
 
 
 def _cleanup_handoff(handoff, checks, receipts) -> None:
@@ -247,6 +349,30 @@ def _build_proof(held, source_layout):
     return artifact_execution_graph.build_execution_proof(held, layout)
 
 
+def _validate_proof_scanners(
+    held, proof, parent, deadline, php_tools_root, checks, receipts
+):
+    checks.append(_check(
+        "execution_graph", "pass", "authenticated execution graph built"
+    ))
+    bound_failure = _proof_text_bound_failure(proof)
+    if bound_failure:
+        checks.extend(bound_failure)
+        return {}
+    handoff = None
+    try:
+        members = tuple(item.path for item in proof.scan_files)
+        handoff = artifact_staging.stage_scan_handoff(held, parent, members)
+        scanner_checks, evidence = _run_scanners(
+            handoff, proof, deadline, php_tools_root
+        )
+        checks.extend(scanner_checks)
+        return evidence
+    finally:
+        if handoff is not None:
+            _cleanup_handoff(handoff, checks, receipts)
+
+
 def validate_block_execution_artifact(
     output,
     source_layout,
@@ -264,9 +390,9 @@ def validate_block_execution_artifact(
         return BlockExecutionValidation(None, _gate_payload(None, checks), ())
     deadline = time.monotonic() + timeout_sec
     proof = None
-    handoff = None
     checks: list[dict[str, str]] = []
     receipts: list[artifact_staging.StagingCleanupReceipt] = []
+    scanner_evidence: dict[str, Any] = {}
     try:
         with artifact_staging.hold_staged_tree(output, proof_deadline=deadline) as held:
             try:
@@ -274,21 +400,18 @@ def validate_block_execution_artifact(
             except ValueError as exc:
                 checks.append(_check("execution_graph", "fail", exc))
             if proof is not None:
-                checks.append(_check("execution_graph", "pass", "authenticated execution graph built"))
-                try:
-                    members = tuple(item.path for item in proof.scan_files)
-                    handoff = artifact_staging.stage_scan_handoff(held, parent, members)
-                    checks.extend(_run_scanners(handoff, proof, deadline, php_tools_root))
-                finally:
-                    if handoff is not None:
-                        _cleanup_handoff(handoff, checks, receipts)
+                scanner_evidence = _validate_proof_scanners(
+                    held, proof, parent, deadline, php_tools_root, checks, receipts
+                )
         checks.append(_check("output_reproof", "pass", "held sandbox output remained unchanged"))
     except artifact_staging.StagingCleanupError as exc:
         receipts.append(exc.receipt)
         checks.append(_check("artifact_orchestration", "blocked", exc))
     except Exception as exc:
         checks.append(_check("artifact_orchestration", "blocked", f"{type(exc).__name__}: {exc}"))
-    return BlockExecutionValidation(proof, _gate_payload(proof, checks), tuple(receipts))
+    return BlockExecutionValidation(
+        proof, _gate_payload(proof, checks, scanner_evidence), tuple(receipts)
+    )
 
 
 def _valid_digest(value: object) -> bool:
@@ -302,6 +425,7 @@ def bind_runtime_gate(validation, runtime_proof) -> dict[str, Any]:
         raise TypeError("validation must be a BlockExecutionValidation")
     if not isinstance(runtime_proof, artifact_execution_graph.RuntimeExecutionProof):
         raise TypeError("runtime proof must be a RuntimeExecutionProof")
+    artifact_execution_graph.validate_runtime_proof(runtime_proof)
     proof = validation.proof
     if proof is None or validation.gate.get("status") != "pass":
         raise ValueError("only a passing artifact validation can be runtime-bound")
@@ -314,6 +438,7 @@ def bind_runtime_gate(validation, runtime_proof) -> dict[str, Any]:
         raise ValueError("runtime proof artifact does not match validation proof")
     digests = (
         runtime_proof.wrapper_sha256,
+        runtime_proof.wrapper_validation_digest,
         runtime_proof.synthesized_manifest_sha256,
         runtime_proof.execution_proof_digest,
     )
@@ -325,6 +450,11 @@ def bind_runtime_gate(validation, runtime_proof) -> dict[str, Any]:
             "wrapper_path": runtime_proof.wrapper_path,
             "wrapper_size": runtime_proof.wrapper_size,
             "wrapper_sha256": runtime_proof.wrapper_sha256,
+            "wrapper_validation_digest": runtime_proof.wrapper_validation_digest,
+            "wrapper_checks": [
+                {"id": "bootstrap_exact", "status": "pass"},
+                {"id": "php_syntax", "status": "pass"},
+            ],
             "synthesized_manifest_sha256": runtime_proof.synthesized_manifest_sha256,
             "execution_proof_digest": runtime_proof.execution_proof_digest,
         }

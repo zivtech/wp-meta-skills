@@ -132,10 +132,21 @@ def _gate_status(requested: bool, gate: dict[str, Any] | None) -> str:
     return _normalized_status(gate.get("status"))
 
 
-def _execution_proof_status(requested: bool, digest: str | None) -> str:
+def _execution_proof_status(
+    requested: bool, digest: str | None, gate: dict[str, Any] | None,
+) -> str:
     if not requested:
         return "not_run"
-    return "pass" if isinstance(digest, str) and DIGEST.fullmatch(digest) else "blocked"
+    gate_status = _gate_status(True, gate)
+    if gate_status != "pass":
+        return gate_status
+    gate_digest = gate.get("execution_proof_digest") if isinstance(gate, dict) else None
+    valid = (
+        isinstance(digest, str)
+        and DIGEST.fullmatch(digest) is not None
+        and gate_digest == digest
+    )
+    return "pass" if valid else "blocked"
 
 
 def _named_check_status(gate: dict[str, Any] | None, check_id: str) -> str:
@@ -183,7 +194,7 @@ def _required_gate_evidence(
     timing_status = _timing_status(runtime.checks)
     build_status = _gate_status(build_requested, build_gate)
     artifact_status = _gate_status(runtime_artifact_requested, runtime_artifact_gate)
-    proof_status = _execution_proof_status(runtime_artifact_requested, execution_proof_digest)
+    proof_status = _execution_proof_status(runtime_artifact_requested, execution_proof_digest, runtime_artifact_gate)
     artifact_request_status = (
         "pass" if not runtime_artifact_requested
         or (artifact_kind == "block" and build_requested) else "blocked"
@@ -310,7 +321,9 @@ def stopped_block_prerequisite_result(
     build_status = _gate_status(True, build_gate)
     artifact_required = runtime_artifact_requested and build_status == "pass"
     artifact_status = _gate_status(artifact_required, runtime_artifact_gate)
-    proof_status = _execution_proof_status(artifact_required, execution_proof_digest)
+    proof_status = _execution_proof_status(
+        artifact_required, execution_proof_digest, runtime_artifact_gate,
+    )
     phpunit_status = "blocked" if phpunit_requested else "not_run"
     required = [build_status]
     if artifact_required:
@@ -372,10 +385,11 @@ def _persisted_execution_proof_errors(
         return []
     actual = data.get("execution_proof_digest")
     errors = []
-    if (not isinstance(expected_digest, str) or not DIGEST.fullmatch(expected_digest)
-            or actual != expected_digest):
-        errors.append("execution proof digest mismatch")
     gate = data.get("block_runtime_artifact_gate")
+    gate_digest = gate.get("execution_proof_digest") if isinstance(gate, dict) else None
+    if (not isinstance(expected_digest, str) or not DIGEST.fullmatch(expected_digest)
+            or actual != expected_digest or gate_digest != expected_digest):
+        errors.append("execution proof digest mismatch")
     if (_gate_status(True, gate) != "pass"
             or data.get("block_runtime_artifact_gate_status") != "pass"
             or data.get("block_runtime_artifact_requested") is not True):

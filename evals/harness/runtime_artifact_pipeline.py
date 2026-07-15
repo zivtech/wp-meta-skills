@@ -2,15 +2,29 @@
 from __future__ import annotations
 
 import json
-import stat
+import time
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from types import SimpleNamespace
+from shutil import which as find_executable
 
 import artifact_execution
 import artifact_execution_graph
+import artifact_runtime_staging
 import artifact_staging
+import block_runtime_wrapper
 import workspace_lease
+from bounded_subprocess import BoundedProcessError, run_bounded
+
+
+WRAPPER_OUTPUT_LIMIT = 64 * 1024
+
+
+class BlockProofOrigin(str, Enum):
+    """Authenticated artifact origin accepted for block runtime synthesis."""
+
+    SOURCE_ONLY_CALLER_INPUT = "source-only-caller-input"
+    BUILT_SANDBOX_OUTPUT = "built-sandbox-output"
 
 
 @dataclass(frozen=True)
@@ -31,6 +45,7 @@ class SynthesizedRuntime:
     textdomain: str | None = None
     block_relative: Path | None = None
     execution_proof: artifact_execution_graph.RuntimeExecutionProof | None = None
+    block_proof_origin: BlockProofOrigin | None = None
 
     @property
     def plugin_dir(self) -> Path:
@@ -110,44 +125,25 @@ def _runtime_metadata(content: bytes) -> dict:
     return metadata
 
 
-def _regular_info(executable: bool = False):
-    return SimpleNamespace(st_mode=stat.S_IFREG | (0o700 if executable else 0o600))
-
-
 def _php_single_quoted_literal(value: str) -> str:
-    if not isinstance(value, str):
-        raise TypeError("PHP literal value must be a string")
-    if any(ord(character) < 32 or ord(character) == 127 for character in value):
-        raise ValueError("PHP literal path contains a control character")
-    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
-    return f"'{escaped}'"
+    return block_runtime_wrapper.php_single_quoted_literal(value)
 
 
 def _block_wrapper(textdomain: str, selected_block_json: str) -> bytes:
-    literal = _php_single_quoted_literal(f"/generated/{selected_block_json}")
-    return f"""<?php
-/**
- * Plugin Name: Generated Block Runtime Wrapper
- * Version: 0.1.0
- * Text Domain: {textdomain}
- * License: GPL-2.0-or-later
- */
-if ( ! defined( 'ABSPATH' ) ) {{ exit; }}
-add_action( 'init', 'generated_block_runtime_wrapper_register_block' );
-function generated_block_runtime_wrapper_register_block(): void {{
-\tregister_block_type( __DIR__ . {literal} );
-}}
-""".encode("utf-8")
+    return block_runtime_wrapper.build(textdomain, selected_block_json)
 
 
-def _block_snapshot(source_snapshot, proof, metadata: dict, textdomain: str):
-    generated = [(Path(textdomain) / "generated" / path, content, info) for path, content, info in source_snapshot]
+def _block_extras(proof, metadata: dict, textdomain: str):
     wrapper = Path(textdomain) / f"{textdomain}.php"
-    readme = Path(textdomain) / "readme.txt"
     wrapper_bytes = _block_wrapper(textdomain, proof.selected_block_json)
-    generated.append((wrapper, wrapper_bytes, _regular_info()))
-    generated.append((readme, f"Generated runtime wrapper for {metadata['name']}.\n".encode(), _regular_info()))
-    return generated, wrapper.as_posix(), wrapper_bytes
+    readme_bytes = f"Generated runtime wrapper for {metadata['name']}.\n".encode()
+    extras = (
+        artifact_runtime_staging.ExtraFile(wrapper.as_posix(), wrapper_bytes),
+        artifact_runtime_staging.ExtraFile(
+            (Path(textdomain) / "readme.txt").as_posix(), readme_bytes
+        ),
+    )
+    return extras, wrapper.as_posix(), wrapper_bytes
 
 
 def _owned_synthesized(staged, *args) -> SynthesizedRuntime:
@@ -166,25 +162,60 @@ def _stage_synthesized(snapshot, parent):
         raise RuntimePreparationError(error.primary,[receipt]) from error
 
 
-def _verify_block_proof(output, proof) -> None:
+def _verify_block_proof(output, proof) -> BlockProofOrigin:
     if not isinstance(proof, artifact_execution_graph.BlockExecutionProof):
         raise TypeError("block synthesis requires a BlockExecutionProof")
     artifact_execution_graph._validate_artifact_proof(proof)
-    if not _authentic_role(output, artifact_staging.StageRole.SANDBOX_OUTPUT):
-        raise ValueError("block synthesis requires an authentic sandbox output")
     digest = artifact_staging.manifest_sha256(output.manifest)
     if digest != proof.output_manifest_sha256:
-        raise ValueError("sandbox output manifest does not match execution proof")
+        raise ValueError("block synthesis input manifest does not match execution proof")
+    if _authentic_role(output, artifact_staging.StageRole.SANDBOX_OUTPUT):
+        return BlockProofOrigin.BUILT_SANDBOX_OUTPUT
+    if not _authentic_role(output, artifact_staging.StageRole.CALLER_INPUT):
+        raise ValueError("block synthesis requires an authentic caller input or sandbox output")
+    source_only = (
+        proof.selection_reason == "source_block_json"
+        and proof.output_manifest_sha256 == proof.source_manifest_sha256
+    )
+    if not source_only:
+        raise ValueError(
+            "caller-input block synthesis requires a source-only proof over the exact input manifest"
+        )
+    return BlockProofOrigin.SOURCE_ONLY_CALLER_INPUT
 
 
-def _read_proven_output(output, proof):
-    with artifact_staging.hold_staged_tree(output) as held:
-        digest = artifact_staging.manifest_sha256(held.proof.manifest)
-        if digest != proof.output_manifest_sha256:
-            raise ValueError("held output manifest does not match execution proof")
-        content = artifact_staging.read_held_member(held, proof.selected_block_json)
-        source_snapshot = artifact_staging.snapshot_held_tree(held)
-    return source_snapshot, _runtime_metadata(content)
+def _stream_proven_output(output, proof, parent, deadline=None):
+    staged = None
+    try:
+        with artifact_staging.hold_staged_tree(
+            output, proof_deadline=deadline
+        ) as held:
+            digest = artifact_staging.manifest_sha256(held.proof.manifest)
+            if digest != proof.output_manifest_sha256:
+                raise ValueError("held output manifest does not match execution proof")
+            content = artifact_staging.read_held_member(
+                held, proof.selected_block_json
+            )
+            metadata = _runtime_metadata(content)
+            slug = _safe_slug(
+                metadata.get("textdomain") or metadata["name"].split("/")[-1]
+            )
+            extras, wrapper_path, wrapper_bytes = _block_extras(
+                proof, metadata, slug
+            )
+            staged = artifact_runtime_staging.stage_prefixed_runtime(
+                held,
+                f"{slug}/generated",
+                (item.path for item in proof.files),
+                extras,
+                parent,
+            )
+    except Exception as primary:
+        if staged is None:
+            raise
+        receipt = cleanup_component("synthesized_runtime", staged)
+        raise RuntimePreparationError(primary, [receipt]) from primary
+    return staged, metadata, slug, wrapper_path, wrapper_bytes
 
 
 def _is_php_candidate(held, path: str) -> bool:
@@ -203,9 +234,13 @@ def _expected_runtime_php(proof, slug, wrapper_path, wrapper_bytes):
     return expected
 
 
-def _verify_synthesized_closure(staged, proof, slug, wrapper_path, wrapper_bytes):
+def _verify_synthesized_closure(
+    staged, proof, slug, wrapper_path, wrapper_bytes, deadline=None
+):
     expected = _expected_runtime_php(proof, slug, wrapper_path, wrapper_bytes)
-    with artifact_staging.hold_staged_tree(staged) as held:
+    with artifact_staging.hold_staged_tree(
+        staged, proof_deadline=deadline
+    ) as held:
         index = {item.path: item for item in held.proof.manifest}
         observed = {
             path for path in sorted(index) if _is_php_candidate(held, path)
@@ -216,18 +251,52 @@ def _verify_synthesized_closure(staged, proof, slug, wrapper_path, wrapper_bytes
             raise ValueError("synthesized executable-PHP closure hash mismatch")
 
 
-def _finish_block_runtime(staged, output, proof, metadata, slug, wrapper_path, wrapper_bytes):
+def _validate_wrapper(staged, proof, wrapper_path, wrapper_bytes, deadline=None):
+    php = find_executable("php")
+    if php is None:
+        raise ValueError("wrapper PHP syntax validation requires php")
+    process_deadline = deadline or time.monotonic() + 30
+    with artifact_staging.hold_staged_tree(
+        staged, proof_deadline=process_deadline
+    ) as held:
+        observed = artifact_staging.read_held_member(held, wrapper_path)
+        if observed != wrapper_bytes:
+            raise ValueError("synthesized wrapper bytes do not match proof input")
+        try:
+            result = run_bounded(
+                [php, "-l", str(staged.root / wrapper_path)],
+                deadline_monotonic=process_deadline,
+                stdout_limit=WRAPPER_OUTPUT_LIMIT,
+                stderr_limit=WRAPPER_OUTPUT_LIMIT,
+            )
+        except (BoundedProcessError, OSError) as exc:
+            raise ValueError(f"wrapper PHP syntax validation blocked: {exc}") from exc
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip()
+            raise ValueError(f"wrapper PHP syntax failed: {detail[:200]}")
+    return artifact_execution_graph.build_wrapper_validation(
+        wrapper_bytes, proof.selected_block_json, php_syntax_passed=True
+    )
+
+
+def _finish_block_runtime(
+    staged, output, proof, metadata, slug, wrapper_path, wrapper_bytes,
+    proof_origin, deadline=None,
+):
     try:
         _verify_synthesized_closure(
-            staged, proof, slug, wrapper_path, wrapper_bytes
+            staged, proof, slug, wrapper_path, wrapper_bytes, deadline
+        )
+        wrapper_validation = _validate_wrapper(
+            staged, proof, wrapper_path, wrapper_bytes, deadline
         )
         manifest = artifact_staging.manifest_sha256(staged.manifest)
         execution_proof = artifact_execution_graph.bind_runtime_proof(
-            proof, wrapper_path, wrapper_bytes, manifest
+            proof, wrapper_path, wrapper_bytes, manifest, wrapper_validation
         )
         return SynthesizedRuntime(
             staged, output.role, slug, metadata["name"], slug,
-            Path(proof.selected_root), execution_proof,
+            Path(proof.selected_root), execution_proof, proof_origin,
         )
     except Exception as primary:
         receipt = cleanup_component("synthesized_runtime", staged)
@@ -238,16 +307,21 @@ def synthesize_block_runtime(
     output: artifact_staging.StagedTree,
     proof: artifact_execution_graph.BlockExecutionProof,
     parent: Path | None = None,
+    deadline: float | None = None,
 ) -> SynthesizedRuntime:
-    _verify_block_proof(output, proof)
-    source_snapshot, metadata = _read_proven_output(output, proof)
-    slug = _safe_slug(metadata.get("textdomain") or metadata["name"].split("/")[-1])
-    snapshot, wrapper_path, wrapper_bytes = _block_snapshot(
-        source_snapshot, proof, metadata, slug
-    )
-    staged = _stage_synthesized(snapshot,parent)
+    proof_origin = _verify_block_proof(output, proof)
+    try:
+        staged, metadata, slug, wrapper_path, wrapper_bytes = _stream_proven_output(
+            output, proof, parent, deadline
+        )
+    except artifact_staging.StagingCleanupError as error:
+        receipt = cleanup_receipt_from_staging(
+            "synthesized_runtime", error.receipt
+        )
+        raise RuntimePreparationError(error.primary, [receipt]) from error
     return _finish_block_runtime(
-        staged, output, proof, metadata, slug, wrapper_path, wrapper_bytes
+        staged, output, proof, metadata, slug, wrapper_path, wrapper_bytes,
+        proof_origin, deadline,
     )
 
 

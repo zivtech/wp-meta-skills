@@ -726,7 +726,7 @@ def test_runtime_preparation_metadata_failure_cleans_sandbox_output(tmp_path,mon
             evidence_id="plan-010-metadata-failure",
         )
         receipt=result["artifact_retention"]["components"]["sandbox_output"]
-        assert result["status"]=="blocked"
+        assert result["status"] == ("blocked" if metadata is None else "fail")
         if metadata is None:
             assert receipt["state"]=="not_created" and output.lease.root.exists()
             check=next(item for item in result["checks"] if item["id"]=="artifact_preparation")

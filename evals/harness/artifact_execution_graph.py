@@ -11,13 +11,18 @@ from typing import Literal
 
 import artifact_layout
 import artifact_staging
+import block_runtime_wrapper
 
 
 MAX_METADATA_BYTES = 1024 * 1024
 MAX_JSON_DEPTH = 32
 MAX_METADATA_EDGES = 512
-MAX_PHP_CANDIDATES = 2048
-MAX_PHP_BYTES = 256 * 1024 * 1024
+MAX_BLOCK_ENTRIES = 1024
+MAX_BLOCK_OUTPUT_BYTES = 32 * 1024 * 1024
+MAX_PHP_CANDIDATES = 64
+MAX_PHP_BYTES = 8 * 1024 * 1024
+MAX_RUNTIME_FILE_BYTES = artifact_staging.MAX_TARGET_MEMBER_BYTES
+MAX_RUNTIME_CLOSURE_BYTES = 16 * 1024 * 1024
 MAX_WRAPPER_BYTES = 1024 * 1024
 PROOF_SCHEMA_VERSION = 1
 
@@ -97,8 +102,15 @@ class RuntimeExecutionProof:
     wrapper_path: str
     wrapper_size: int
     wrapper_sha256: str
+    wrapper_validation_digest: str
     synthesized_manifest_sha256: str
     execution_proof_digest: str
+
+
+@dataclass(frozen=True)
+class WrapperValidation:
+    checks: tuple[str, ...]
+    digest: str
 
 
 PINNED_WORDPRESS_CORE = CoreIdentity(
@@ -198,6 +210,15 @@ def _parse_metadata(content: bytes) -> dict:
     _check_depth(value)
     if not isinstance(value, dict):
         raise ValueError("block.json root must be an object")
+    invalid = [
+        key
+        for key in ("name", "title", "category")
+        if not isinstance(value.get(key), str) or not value[key].strip()
+    ]
+    if invalid:
+        raise ValueError(
+            "block.json missing non-empty string keys: " + ", ".join(invalid)
+        )
     return value
 
 
@@ -394,6 +415,11 @@ def _php_candidates(held, index) -> tuple[artifact_staging.ManifestEntry, ...]:
             is_candidate = artifact_staging.held_member_has_php_tag(held, path)
         if not is_candidate:
             continue
+        problem = _unsafe_text(path)
+        if problem:
+            raise ValueError(
+                f"executable PHP candidate path contains {problem}: {path!r}"
+            )
         if any(part in artifact_layout.EXCLUDED_ROOTS for part in PurePosixPath(path).parts):
             raise ValueError(f"executable PHP candidate is in excluded namespace: {path}")
         candidates.append(entry)
@@ -411,8 +437,17 @@ def _require_php_targets(edges, candidate_paths) -> None:
             raise ValueError(f"{edge.field} target is not PHP-capable")
 
 
-def _execution_files(index, edges, candidates, block_json) -> tuple[ExecutionFile, ...]:
+def _execution_files(
+    index, edges, candidates, block_json, selected_root
+) -> tuple[ExecutionFile, ...]:
     classes: dict[str, set[str]] = {block_json: {"metadata"}}
+    root_prefix = selected_root.as_posix().rstrip("/") + "/"
+    for path in index:
+        if path.startswith(root_prefix):
+            relative = PurePosixPath(path).relative_to(selected_root)
+            if any(part in artifact_layout.EXCLUDED_ROOTS for part in relative.parts):
+                continue
+            classes.setdefault(path, set()).add("runtime_asset")
     for edge in edges:
         if edge.target is not None and edge.state == "present":
             classes.setdefault(edge.target, set()).add(edge.kind)
@@ -439,6 +474,30 @@ def _scan_files(files: tuple[ExecutionFile, ...]) -> tuple[ScanFile, ...]:
             scan_ids = ASSET_SCAN_IDS
         result.append(ScanFile(item.path, scan_ids))
     return tuple(result)
+
+
+def _scanner_aliases(candidates) -> tuple[dict, ...]:
+    return tuple(
+        {
+            "source_path": item.path,
+            "alias_name": (
+                f"php-{index:04d}-{sha256_bytes(item.path.encode())[:16]}.php"
+            ),
+            "size": item.size,
+            "sha256": item.sha256,
+        }
+        for index, item in enumerate(candidates)
+    )
+
+
+def scanner_aliases(proof: BlockExecutionProof) -> tuple[dict, ...]:
+    if not isinstance(proof, BlockExecutionProof):
+        raise TypeError("scanner aliases require a BlockExecutionProof")
+    return _scanner_aliases(proof.php_candidates)
+
+
+def scanner_alias_digest(proof: BlockExecutionProof) -> str:
+    return _canonical_digest(scanner_aliases(proof))
 
 
 def _metadata_digest_payload(layout, core, rule_digest, edges, files):
@@ -477,6 +536,7 @@ def _build_digests(layout, core, rule_digest, edges, files, candidates, scans):
             "php_set_digest": php_digest,
             "files": [asdict(item) for item in files],
             "scan_files": [asdict(item) for item in scans],
+            "scanner_aliases": _scanner_aliases(candidates),
         }
     )
     return metadata_digest, php_digest, artifact_digest
@@ -520,6 +580,7 @@ def _validate_artifact_proof(proof: BlockExecutionProof) -> None:
             "php_set_digest": php_digest,
             "files": [asdict(item) for item in proof.files],
             "scan_files": [asdict(item) for item in proof.scan_files],
+            "scanner_aliases": _scanner_aliases(proof.php_candidates),
         }
     )
     if (metadata_digest, php_digest, artifact_digest) != (
@@ -537,6 +598,10 @@ def build_execution_proof(
     """Build a canonical proof without reopening an untrusted host path."""
     rules, rule_digest = _rules_for_core(core)
     _validate_layout(held, layout)
+    if len(held.proof.manifest) > MAX_BLOCK_ENTRIES:
+        raise ValueError("block output exceeds the 1024-file reviewed bound")
+    if held.proof.total_bytes > MAX_BLOCK_OUTPUT_BYTES:
+        raise ValueError("block output exceeds the 32 MiB reviewed bound")
     index = _manifest_index(held)
     path_kinds = dict(held.proof.path_kinds)
     block_path = layout.selected_block_json.as_posix()
@@ -548,7 +613,13 @@ def build_execution_proof(
     raw_candidates = _php_candidates(held, index)
     candidate_paths = {entry.path for entry in raw_candidates}
     _require_php_targets(edges, candidate_paths)
-    files = _execution_files(index, edges, raw_candidates, block_path)
+    files = _execution_files(
+        index, edges, raw_candidates, block_path, layout.selected_root
+    )
+    if any(item.size > MAX_RUNTIME_FILE_BYTES for item in files):
+        raise ValueError("runtime closure member exceeds the 8 MiB reviewed bound")
+    if sum(item.size for item in files) > MAX_RUNTIME_CLOSURE_BYTES:
+        raise ValueError("runtime closure exceeds the 16 MiB reviewed bound")
     candidates = tuple(item for item in files if "php_candidate" in item.classifications)
     scans = _scan_files(files)
     digests = _build_digests(
@@ -582,11 +653,37 @@ def _digest_string(value: str, label: str) -> str:
     return value
 
 
+def _wrapper_validation_digest(wrapper_sha: str, selected: str, checks) -> str:
+    return _canonical_digest(
+        {
+            "schema": PROOF_SCHEMA_VERSION,
+            "wrapper_sha256": wrapper_sha,
+            "selected_block_json": selected,
+            "checks": list(checks),
+        }
+    )
+
+
+def build_wrapper_validation(
+    wrapper_bytes: bytes, selected_block_json: str, *, php_syntax_passed: bool
+) -> WrapperValidation:
+    """Bind an exact generated bootstrap and an independently passing PHP lint."""
+    block_runtime_wrapper.validate(wrapper_bytes, selected_block_json)
+    if not php_syntax_passed:
+        raise ValueError("wrapper PHP syntax did not pass")
+    checks = ("bootstrap_exact", "php_syntax")
+    digest = _wrapper_validation_digest(
+        sha256_bytes(wrapper_bytes), selected_block_json, checks
+    )
+    return WrapperValidation(checks, digest)
+
+
 def bind_runtime_proof(
     proof: BlockExecutionProof,
     wrapper_path: str,
     wrapper_bytes: bytes,
     synthesized_manifest_digest: str,
+    wrapper_validation: WrapperValidation,
 ) -> RuntimeExecutionProof:
     """Bind generated wrapper bytes and synthesized runtime to the artifact proof."""
     if not isinstance(proof, BlockExecutionProof):
@@ -599,6 +696,13 @@ def bind_runtime_proof(
         raise ValueError("wrapper bytes are empty or exceed the reviewed limit")
     manifest = _digest_string(synthesized_manifest_digest, "manifest digest")
     wrapper_digest = sha256_bytes(wrapper_bytes)
+    if not isinstance(wrapper_validation, WrapperValidation):
+        raise TypeError("wrapper validation must be a WrapperValidation")
+    expected_validation = build_wrapper_validation(
+        wrapper_bytes, proof.selected_block_json, php_syntax_passed=True
+    )
+    if wrapper_validation != expected_validation:
+        raise ValueError("wrapper validation binding is invalid")
     digest = _canonical_digest(
         {
             "schema": PROOF_SCHEMA_VERSION,
@@ -606,10 +710,48 @@ def bind_runtime_proof(
             "wrapper_path": path,
             "wrapper_size": len(wrapper_bytes),
             "wrapper_sha256": wrapper_digest,
+            "wrapper_validation_digest": wrapper_validation.digest,
             "synthesized_manifest_sha256": manifest,
         }
     )
     return RuntimeExecutionProof(
         PROOF_SCHEMA_VERSION, proof, path, len(wrapper_bytes), wrapper_digest,
-        manifest, digest,
+        wrapper_validation.digest, manifest, digest,
     )
+
+
+def validate_runtime_proof(proof: RuntimeExecutionProof) -> None:
+    """Recompute every digest available in a persisted runtime proof value."""
+    if not isinstance(proof, RuntimeExecutionProof):
+        raise TypeError("runtime proof must be a RuntimeExecutionProof")
+    if proof.schema_version != PROOF_SCHEMA_VERSION:
+        raise ValueError("runtime proof schema version is invalid")
+    if proof.wrapper_size <= 0 or proof.wrapper_size > MAX_WRAPPER_BYTES:
+        raise ValueError("runtime wrapper size is invalid")
+    _validate_artifact_proof(proof.artifact)
+    _runtime_path(proof.wrapper_path)
+    _digest_string(proof.wrapper_sha256, "wrapper digest")
+    _digest_string(proof.wrapper_validation_digest, "wrapper validation digest")
+    manifest = _digest_string(
+        proof.synthesized_manifest_sha256, "manifest digest"
+    )
+    expected_validation = _wrapper_validation_digest(
+        proof.wrapper_sha256,
+        proof.artifact.selected_block_json,
+        ("bootstrap_exact", "php_syntax"),
+    )
+    if proof.wrapper_validation_digest != expected_validation:
+        raise ValueError("runtime wrapper validation digest is invalid")
+    expected = _canonical_digest(
+        {
+            "schema": proof.schema_version,
+            "artifact_proof_digest": proof.artifact.artifact_proof_digest,
+            "wrapper_path": proof.wrapper_path,
+            "wrapper_size": proof.wrapper_size,
+            "wrapper_sha256": proof.wrapper_sha256,
+            "wrapper_validation_digest": proof.wrapper_validation_digest,
+            "synthesized_manifest_sha256": manifest,
+        }
+    )
+    if proof.execution_proof_digest != expected:
+        raise ValueError("runtime execution proof digest is invalid")

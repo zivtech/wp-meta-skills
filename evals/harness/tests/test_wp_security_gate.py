@@ -267,6 +267,153 @@ def test_run_security_gate_skips_without_php_files(tmp_path):
     assert report["status"] == "skip"
 
 
+def _fake_toolchain(tmp_path):
+    return wp_security_gate.Toolchain(
+        php="php",
+        phpcs=tmp_path / "phpcs",
+        installed_paths="/wpcs,/utils,/extra",
+        root=tmp_path,
+    )
+
+
+def test_phpcs_pair_uses_file_list_and_one_absolute_deadline(monkeypatch, tmp_path):
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    php_file = artifact / "plugin.php"
+    php_file.write_text("<?php\n", encoding="utf-8")
+    toolchain = _fake_toolchain(tmp_path)
+    monkeypatch.setattr(wp_security_gate, "resolve_toolchain", lambda _root=None: (toolchain, None))
+    calls = []
+
+    def fake_run(command, **kwargs):
+        file_list_arg = next(arg for arg in command if arg.startswith("--file-list="))
+        listed = Path(file_list_arg.split("=", 1)[1]).read_text(encoding="utf-8").splitlines()
+        calls.append((command, kwargs, listed, [Path(item).read_bytes() for item in listed]))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"files": {}}), stderr="")
+
+    monkeypatch.setattr(wp_security_gate, "run_bounded", fake_run)
+    deadline = wp_security_gate.time.monotonic() + 100
+    report = wp_security_gate.run_security_gate(artifact, deadline_monotonic=deadline)
+
+    assert report["status"] == "pass"
+    assert len(calls) == 2
+    assert calls[0][1]["deadline_monotonic"] == calls[1][1]["deadline_monotonic"] == deadline
+    assert calls[0][2] == calls[1][2]
+    assert len(calls[0][2]) == 1
+    assert Path(calls[0][2][0]).suffix == ".php"
+    assert calls[0][3] == calls[1][3] == [php_file.read_bytes()]
+    assert calls[0][2] == [str(php_file)]
+    assert "scanner_aliases" not in report
+    assert str(php_file) not in calls[0][0]
+    assert any(arg.startswith("--file-list=") for arg in calls[0][0])
+    assert "--ignore-annotations" not in calls[0][0]
+    assert "--ignore-annotations" in calls[1][0]
+
+
+def test_phpcs_second_pass_rechecks_shared_deadline(monkeypatch, tmp_path):
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    (artifact / "plugin.php").write_text("<?php\n", encoding="utf-8")
+    toolchain = _fake_toolchain(tmp_path)
+    monkeypatch.setattr(wp_security_gate, "resolve_toolchain", lambda _root=None: (toolchain, None))
+    ticks = iter([0.0, 2.0])
+    monkeypatch.setattr(wp_security_gate.time, "monotonic", lambda: next(ticks))
+    launches = []
+
+    def fake_run(command, **_kwargs):
+        launches.append(command)
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"files": {}}), stderr="")
+
+    monkeypatch.setattr(wp_security_gate, "run_bounded", fake_run)
+    report = wp_security_gate.run_security_gate(artifact, deadline_monotonic=1.0)
+
+    assert report["status"] == "blocked"
+    assert "deadline elapsed before launch" in report["blocked_reason"]
+    assert len(launches) == 1
+    assert [tool["status"] for tool in report["tools"]] == ["pass", "blocked"]
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (wp_security_gate.BoundedProcessOverflow("stdout exceeded 32 bytes"), "output blocked"),
+        (wp_security_gate.BoundedProcessTimeout("process deadline elapsed"), "phpcs blocked"),
+    ],
+)
+def test_phpcs_transport_failure_is_blocked(monkeypatch, tmp_path, error, reason):
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    (artifact / "plugin.php").write_text("<?php\n", encoding="utf-8")
+    toolchain = _fake_toolchain(tmp_path)
+    monkeypatch.setattr(wp_security_gate, "resolve_toolchain", lambda _root=None: (toolchain, None))
+
+    def fail(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(wp_security_gate, "run_bounded", fail)
+    report = wp_security_gate.run_security_gate(
+        artifact, deadline_monotonic=wp_security_gate.time.monotonic() + 100
+    )
+
+    assert report["status"] == "blocked"
+    assert reason in report["blocked_reason"]
+    assert report["tools"][0]["status"] == "blocked"
+
+
+def test_phpcs_message_budget_is_fail_closed(tmp_path, monkeypatch):
+    source = tmp_path / "payload.php"
+    source.write_text("<?php\necho 1;\necho 2;\n", encoding="utf-8")
+    output = _phpcs_json(str(source), [ESCAPE_OUTPUT_ERROR, PREPARED_SQL_ERROR])
+    budget = wp_security_gate.SecurityParseBudget(wp_security_gate.time.monotonic() + 10)
+    monkeypatch.setattr(wp_security_gate, "MAX_TOOL_MESSAGES_PER_FILE", 1)
+
+    with pytest.raises(wp_security_gate.SecurityAnalysisBlocked, match="per-file"):
+        wp_security_gate.parse_phpcs_output(output, tmp_path, budget)
+
+
+def test_phpcs_source_is_read_once_across_both_result_passes(tmp_path, monkeypatch):
+    source = tmp_path / "payload.php"
+    source.write_text("<?php\necho 1;\n", encoding="utf-8")
+    message = dict(ESCAPE_OUTPUT_ERROR, line=2)
+    output = _phpcs_json(str(source), [message])
+    original = Path.read_text
+    reads = []
+
+    def tracked(path, *args, **kwargs):
+        if path == source:
+            reads.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", tracked)
+    budget = wp_security_gate.SecurityParseBudget(wp_security_gate.time.monotonic() + 10)
+    cache = {}
+    wp_security_gate.parse_phpcs_output(output, tmp_path, budget, cache)
+    wp_security_gate.parse_phpcs_output(output, tmp_path, budget, cache)
+
+    assert reads == [source]
+
+
+@pytest.mark.real_security_gate
+@needs_toolchain
+@pytest.mark.parametrize("name", ["payload.phtml", "payload.txt", "bootstrap"])
+def test_phpcs_analyzes_unusual_php_candidates_via_bound_alias(tmp_path, name):
+    root = tmp_path / "handoff"
+    root.mkdir()
+    candidate = root / name
+    candidate.write_text("<?php echo $_GET['unsafe'];\n", encoding="utf-8")
+
+    report = wp_security_gate.run_security_gate(root, explicit_files=[candidate])
+
+    assert report["status"] == "fail"
+    assert any(
+        item["file"] == name and item["rule_id"].startswith(
+            "WordPress.Security.EscapeOutput"
+        )
+        for item in report["findings"]
+    )
+    assert report["scanner_aliases"][0]["source_path"] == name
+
+
 @pytest.mark.real_security_gate
 def test_check_security_gate_skips_without_php_files(tmp_path):
     check, report = oracle.check_security_gate(tmp_path)

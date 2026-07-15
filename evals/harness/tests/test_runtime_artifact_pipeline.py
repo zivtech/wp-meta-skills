@@ -10,6 +10,7 @@ import artifact_execution
 import artifact_execution_graph
 import artifact_layout
 import artifact_staging
+import run_wordpress_runtime_smoke as runtime_smoke
 import runtime_artifact_pipeline as pipeline
 import workspace_lease
 
@@ -105,6 +106,7 @@ def test_synthesized_runtime_uses_exact_sandbox_output(tmp_path, monkeypatch):
         assert marker.read_text() == "fresh"
         assert synthesized.staged.role is artifact_staging.StageRole.SYNTHESIZED_RUNTIME
         assert synthesized.source_role is artifact_staging.StageRole.SANDBOX_OUTPUT
+        assert synthesized.block_proof_origin is pipeline.BlockProofOrigin.BUILT_SANDBOX_OUTPUT
         assert synthesized.execution_proof is not None
         wrapper = synthesized.plugin_dir / "acme-card.php"
         assert "file_exists" not in wrapper.read_text()
@@ -131,17 +133,34 @@ def test_held_exit_drift_prevents_synthesized_lease_creation(tmp_path, monkeypat
         else artifact_staging.stage_tree(source, tmp_path / "input")
     )
     live_before = set(workspace_lease._LIVE_LEASES)
-    original_snapshot = artifact_staging.snapshot_held_tree
+    if artifact_kind == "block":
+        original_copy = pipeline.artifact_runtime_staging._copy_member
 
-    def snapshot_then_drift(held):
-        snapshot = original_snapshot(held)
-        (staged.root / changed).write_text("drift")
-        return snapshot
+        def copy_then_drift(*args, **kwargs):
+            copied = original_copy(*args, **kwargs)
+            (staged.root / changed).write_text("drift")
+            return copied
 
-    monkeypatch.setattr(artifact_staging, "snapshot_held_tree", snapshot_then_drift)
+        monkeypatch.setattr(
+            pipeline.artifact_runtime_staging, "_copy_member", copy_then_drift
+        )
+    else:
+        original_snapshot = artifact_staging.snapshot_held_tree
+
+        def snapshot_then_drift(held):
+            snapshot = original_snapshot(held)
+            (staged.root / changed).write_text("drift")
+            return snapshot
+
+        monkeypatch.setattr(
+            artifact_staging, "snapshot_held_tree", snapshot_then_drift
+        )
     runtime_parent = tmp_path / "runtime"
     try:
-        with pytest.raises(ValueError, match="held staged tree changed"):
+        with pytest.raises(
+            (ValueError, pipeline.RuntimePreparationError),
+            match="held staged tree changed|changed while streaming|source manifest mismatch",
+        ):
             if artifact_kind == "block":
                 pipeline.synthesize_block_runtime(
                     staged, proof_for(staged), runtime_parent
@@ -201,7 +220,7 @@ def test_wrapper_literal_encoder_blocks_injection_and_preserves_exact_path(tmp_p
     block_dir = tmp_path / "source" / "blocks" / "odd'?>${bait}"
     block_dir.mkdir(parents=True)
     (block_dir / "block.json").write_text(
-        '{"name":"acme/odd","textdomain":"acme-odd"}'
+        '{"name":"acme/odd","title":"Odd","category":"widgets","textdomain":"acme-odd"}'
     )
     output = import_sandbox_output(tmp_path / "source", tmp_path / "output")
     synthesized = None
@@ -227,7 +246,9 @@ def test_php_single_quoted_literal_escapes_quote_and_backslash():
 def test_wrapper_literal_rejects_control_character_path_bait(tmp_path):
     block_dir = tmp_path / "source" / "blocks" / "bad\nname"
     block_dir.mkdir(parents=True)
-    (block_dir / "block.json").write_text('{"name":"acme/bad"}')
+    (block_dir / "block.json").write_text(
+        '{"name":"acme/bad","title":"Bad","category":"widgets"}'
+    )
     output = import_sandbox_output(tmp_path / "source", tmp_path / "output")
     try:
         with pytest.raises(ValueError, match="control"):
@@ -242,7 +263,7 @@ def test_source_fallback_registers_exact_source_block_json(tmp_path):
     source = tmp_path / "source" / "blocks" / "card"
     source.mkdir(parents=True)
     (source / "block.json").write_text(
-        '{"name":"acme/card","textdomain":"acme-card"}'
+        '{"name":"acme/card","title":"Card","category":"widgets","textdomain":"acme-card"}'
     )
     output = import_sandbox_output(tmp_path / "source", tmp_path / "output")
     synthesized = None
@@ -261,33 +282,92 @@ def test_source_fallback_registers_exact_source_block_json(tmp_path):
         workspace_lease.cleanup(output.lease)
 
 
-def test_synthesis_reads_only_selected_metadata_and_snapshots_output_once(
+def test_prepare_generated_runtime_accepts_authentic_source_only_caller_input(tmp_path):
+    block = tmp_path / "source" / "blocks" / "card"
+    block.mkdir(parents=True)
+    (block / "block.json").write_text(
+        '{"name":"acme/card","title":"Card","category":"widgets","textdomain":"acme-card"}'
+    )
+    (block / "render.php").write_text("<?php return '<p>Card</p>';", encoding="utf-8")
+    staged = artifact_staging.stage_tree(tmp_path / "source", tmp_path / "input")
+    prepared = None
+    try:
+        prepared = runtime_smoke._prepare_generated_runtime(
+            staged, "block", tmp_path / "source", False, False, False, 5,
+            tmp_path / "runtime", tmp_path / "temporary",
+        )
+        assert prepared.synthesized is not None
+        assert prepared.sandbox_output is None
+        assert prepared.block_runtime_artifact_gate is None
+        assert prepared.synthesized.source_role is artifact_staging.StageRole.CALLER_INPUT
+        assert (
+            prepared.synthesized.block_proof_origin
+            is pipeline.BlockProofOrigin.SOURCE_ONLY_CALLER_INPUT
+        )
+        wrapper = prepared.synthesized.plugin_dir / "acme-card.php"
+        assert "'/generated/blocks/card/block.json'" in wrapper.read_text()
+    finally:
+        if prepared is not None and prepared.synthesized is not None:
+            workspace_lease.cleanup(prepared.synthesized.staged.lease)
+        workspace_lease.cleanup(staged.lease)
+
+
+def test_caller_input_cannot_claim_built_or_partial_source_proof(tmp_path):
+    built_source = write_block(tmp_path / "built-source", "fresh")
+    built_input = artifact_staging.stage_tree(built_source, tmp_path / "built-input")
+    partial_source = tmp_path / "partial-source" / "blocks" / "card"
+    partial_source.mkdir(parents=True)
+    (partial_source / "block.json").write_text(
+        '{"name":"acme/card","title":"Card","category":"widgets"}'
+    )
+    (partial_source / "extra.js").write_text("extra")
+    partial_input = artifact_staging.stage_tree(
+        tmp_path / "partial-source", tmp_path / "partial-input"
+    )
+    try:
+        with pytest.raises(ValueError, match="source-only proof"):
+            pipeline.synthesize_block_runtime(
+                built_input, proof_for(built_input), tmp_path / "built-runtime"
+            )
+        with pytest.raises(ValueError, match="source-only proof"):
+            pipeline.synthesize_block_runtime(
+                partial_input, proof_for(partial_input), tmp_path / "partial-runtime"
+            )
+    finally:
+        workspace_lease.cleanup(built_input.lease)
+        workspace_lease.cleanup(partial_input.lease)
+
+
+def test_synthesis_streams_only_the_explicit_runtime_closure(
     tmp_path, monkeypatch
 ):
     root = write_block(tmp_path / "source", "fresh")
     source_json = root / "blocks/card/block.json"
     build_json = root / "blocks/card/build/block.json"
-    source_json.write_text('{"name":"acme/source","textdomain":"source"}')
-    build_json.write_text('{"name":"acme/built","textdomain":"built"}')
+    source_json.write_text(
+        '{"name":"acme/source","title":"Source","category":"widgets","textdomain":"source"}'
+    )
+    build_json.write_text(
+        '{"name":"acme/built","title":"Built","category":"widgets","textdomain":"built"}'
+    )
+    (root / "blocks/card/source-note.txt").write_text("must not enter runtime")
     output = import_sandbox_output(root, tmp_path / "output")
     proof = proof_for(output)
     synthesized = None
-    snapshots = 0
-    original = artifact_staging.snapshot_held_tree
-
-    def count_snapshot(held):
-        nonlocal snapshots
-        snapshots += 1
-        return original(held)
-
-    monkeypatch.setattr(artifact_staging, "snapshot_held_tree", count_snapshot)
+    monkeypatch.setattr(
+        artifact_staging,
+        "snapshot_held_tree",
+        lambda _held: (_ for _ in ()).throw(AssertionError("snapshot forbidden")),
+    )
     try:
         synthesized = pipeline.synthesize_block_runtime(
             output, proof, tmp_path / "runtime"
         )
         assert synthesized.plugin_slug == "built"
         assert synthesized.block_name == "acme/built"
-        assert snapshots == 1
+        generated = synthesized.plugin_dir / "generated"
+        assert (generated / "blocks/card/build/marker.js").read_text() == "fresh"
+        assert not (generated / "blocks/card/source-note.txt").exists()
     finally:
         if synthesized is not None:
             workspace_lease.cleanup(synthesized.staged.lease)
@@ -315,14 +395,18 @@ def test_synthesized_php_closure_drift_fails_and_cleans_stage(tmp_path, monkeypa
     source = write_block(tmp_path / "source", "fresh")
     output = import_sandbox_output(source, tmp_path / "output")
     proof = proof_for(output)
-    original = pipeline._block_snapshot
+    original = pipeline._block_extras
 
     def inject(*args, **kwargs):
-        snapshot, wrapper_path, wrapper_bytes = original(*args, **kwargs)
-        snapshot.append((Path("acme-card/extra.txt"), b"<?php echo 'drift';", pipeline._regular_info()))
-        return snapshot, wrapper_path, wrapper_bytes
+        extras, wrapper_path, wrapper_bytes = original(*args, **kwargs)
+        extras += (
+            pipeline.artifact_runtime_staging.ExtraFile(
+                "acme-card/extra.txt", b"<?php echo 'drift';"
+            ),
+        )
+        return extras, wrapper_path, wrapper_bytes
 
-    monkeypatch.setattr(pipeline, "_block_snapshot", inject)
+    monkeypatch.setattr(pipeline, "_block_extras", inject)
     try:
         with pytest.raises(pipeline.RuntimePreparationError, match="closure") as caught:
             pipeline.synthesize_block_runtime(output, proof, tmp_path / "runtime")
@@ -340,7 +424,8 @@ def test_runtime_digest_changes_with_wrapper_bytes(tmp_path, monkeypatch):
         first = pipeline.synthesize_block_runtime(output, proof, tmp_path / "runtime-a")
         original = pipeline._block_wrapper
         monkeypatch.setattr(
-            pipeline, "_block_wrapper", lambda *args: original(*args) + b"\n"
+            pipeline, "_block_wrapper",
+            lambda textdomain, selected: original(textdomain + "-changed", selected),
         )
         second = pipeline.synthesize_block_runtime(output, proof, tmp_path / "runtime-b")
         assert first.execution_proof.wrapper_sha256 != second.execution_proof.wrapper_sha256
@@ -348,6 +433,28 @@ def test_runtime_digest_changes_with_wrapper_bytes(tmp_path, monkeypatch):
     finally:
         if first is not None: workspace_lease.cleanup(first.staged.lease)
         if second is not None: workspace_lease.cleanup(second.staged.lease)
+        workspace_lease.cleanup(output.lease)
+
+
+def test_wrapper_verification_rejects_extra_bootstrap_and_cleans(tmp_path, monkeypatch):
+    source = write_block(tmp_path / "source", "fresh")
+    output = import_sandbox_output(source, tmp_path / "output")
+    proof = proof_for(output)
+    original = pipeline._block_wrapper
+    monkeypatch.setattr(
+        pipeline,
+        "_block_wrapper",
+        lambda *args: original(*args) + b"\nregister_block_type( 'other' );\n",
+    )
+    try:
+        with pytest.raises(
+            pipeline.RuntimePreparationError, match="exact registration bootstrap"
+        ) as caught:
+            pipeline.synthesize_block_runtime(
+                output, proof, tmp_path / "runtime"
+            )
+        assert caught.value.receipts[0].state == "removed"
+    finally:
         workspace_lease.cleanup(output.lease)
 
 

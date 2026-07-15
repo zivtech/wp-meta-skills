@@ -26,6 +26,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -1705,27 +1706,41 @@ def _prepare_phpunit(staged, artifact_kind, requested, timeout_sec):
     return gate,gate.pop("_artifact_retention_receipts", [])
 
 
-def _source_block_layout(staged):
-    with artifact_staging.hold_staged_tree(staged) as held:
+def _preparation_remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("artifact preparation deadline exceeded")
+    return remaining
+
+
+def _source_block_layout(staged, deadline=None):
+    with artifact_staging.hold_staged_tree(
+        staged, proof_deadline=deadline
+    ) as held:
         return artifact_layout.select_source_layout(held.proof.manifest)
 
 
-def _source_block_proof(staged, source_layout):
-    with artifact_staging.hold_staged_tree(staged) as held:
+def _source_block_proof(staged, source_layout, deadline=None):
+    with artifact_staging.hold_staged_tree(
+        staged, proof_deadline=deadline
+    ) as held:
         selected = artifact_layout.select_post_build_layout(
             held.proof.manifest, source_layout,
         )
         return artifact_execution_graph.build_execution_proof(held, selected)
 
 
-def _prepare_block_build(staged, artifact_kind, requested, timeout_sec):
+def _prepare_block_build(
+    staged, artifact_kind, requested, timeout_sec, deadline=None
+):
     if artifact_kind != "block":
         return staged,None,None,None,None,None,[]
-    source_layout=_source_block_layout(staged)
+    source_layout=_source_block_layout(staged, deadline)
     if not requested:
-        source_proof=_source_block_proof(staged,source_layout)
+        source_proof=_source_block_proof(staged,source_layout,deadline)
         return staged,None,None,None,source_proof,None,[]
-    build=runtime_artifact_pipeline.build_block(staged,timeout_sec)
+    build_timeout = _preparation_remaining(deadline) if deadline else timeout_sec
+    build=runtime_artifact_pipeline.build_block(staged,build_timeout)
     output=build.output; validation=None
     receipts=[
         runtime_artifact_pipeline.cleanup_receipt_from_staging("sandbox_output",receipt)
@@ -1733,7 +1748,9 @@ def _prepare_block_build(staged, artifact_kind, requested, timeout_sec):
     ]
     if build.status == "pass" and output is not None:
         validation=artifact_execution_gate.validate_block_execution_artifact(
-            output,source_layout,timeout_sec,php_tools_root=PHP_TOOLS_ROOT,
+            output,source_layout,
+            _preparation_remaining(deadline) if deadline else timeout_sec,
+            php_tools_root=PHP_TOOLS_ROOT,
         )
         receipts.extend(
             runtime_artifact_pipeline.cleanup_receipt_from_staging("scan_handoff",receipt)
@@ -1744,12 +1761,14 @@ def _prepare_block_build(staged, artifact_kind, requested, timeout_sec):
     return output or staged,output,_generated_build_gate(build),gate,proof,validation,receipts
 
 
-def _synthesize_runtime(staged,effective,artifact_kind,source_path,parent,block_proof):
+def _synthesize_runtime(
+    staged,effective,artifact_kind,source_path,parent,block_proof,deadline=None,
+):
     if artifact_kind == "block":
         if block_proof is None:
             raise ValueError("block synthesis requires an authenticated execution proof")
         synthesized=runtime_artifact_pipeline.synthesize_block_runtime(
-            effective,block_proof,parent,
+            effective,block_proof,parent,deadline,
         )
         return synthesized,_wrapped_runtime(synthesized,effective)
     claimed=source_path.name if source_path is not None else "generated-plugin"
@@ -1797,12 +1816,14 @@ def _prepare_generated_runtime(
     full_profile_requested, timeout_sec, parent, temp_root,
 ):
     output=None; synthesized=None; preparation_receipts=[]
+    preparation_deadline=time.monotonic()+timeout_sec
     try:
         phpunit_gate,receipts=_prepare_phpunit(
-            staged,artifact_kind,phpunit_requested,timeout_sec,
+            staged,artifact_kind,phpunit_requested,
+            _preparation_remaining(preparation_deadline),
         ); preparation_receipts.extend(receipts)
         effective,output,build_gate,artifact_gate,proof,validation,receipts=_prepare_block_build(
-            staged,artifact_kind,build_requested,timeout_sec,
+            staged,artifact_kind,build_requested,timeout_sec,preparation_deadline,
         ); preparation_receipts.extend(receipts)
         if artifact_kind=="block" and build_requested and proof is None:
             return PreparedRuntimeArtifact(
@@ -1811,6 +1832,7 @@ def _prepare_generated_runtime(
             )
         synthesized,wrapped=_synthesize_runtime(
             staged,effective,artifact_kind,source_path,parent,proof,
+            preparation_deadline,
         )
         artifact_gate=_bind_block_runtime_gate(validation,synthesized,artifact_gate)
         if build_requested and gate_status(artifact_gate)!="pass":
@@ -1819,7 +1841,8 @@ def _prepare_generated_runtime(
                 None,{},wrapped,tuple(preparation_receipts),
             )
         wpcs_gate,provisioning,receipts=_prepare_wpcs(
-            synthesized,full_profile_requested,timeout_sec,temp_root,
+            synthesized,full_profile_requested,
+            _preparation_remaining(preparation_deadline),temp_root,
         ); preparation_receipts.extend(receipts)
         return PreparedRuntimeArtifact(
             synthesized,effective if artifact_kind=="block" else None,output,build_gate,
