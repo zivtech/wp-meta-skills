@@ -120,7 +120,8 @@ def test_real_block_profile_proves_registration_editor_frontend_and_cleanup(
 ):
     passing, _near_miss, elapsed = live_block_runtime_results
     assert elapsed <= 1800
-    assert passing["status"] == "pass" and passing["runtime_profile_id"] == "block-runtime"
+    assert (passing["status"] == "pass"
+            and passing["runtime_profile_id"] == "block-runtime"), passing.get("reason")
     assert [item["id"] for item in passing["checks"]] == [
         "wp_cli_activation", "plugin_check", "block_registration",
         "container_browser", "block_editor_frontend", "runtime_identity",
