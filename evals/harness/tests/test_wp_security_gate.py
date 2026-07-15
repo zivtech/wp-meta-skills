@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import block_runtime_wrapper
 import certify_wordpress_executor_artifact as certifier
 import validate_wordpress_artifact as oracle
 import wp_security_gate
@@ -24,6 +25,27 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "wp_security_gate"
 
 TOOLCHAIN, TOOLCHAIN_ERROR = wp_security_gate.resolve_toolchain()
 needs_toolchain = pytest.mark.skipif(TOOLCHAIN is None, reason=f"pinned phpcs/WPCS toolchain unavailable: {TOOLCHAIN_ERROR}")
+
+
+@needs_toolchain
+@pytest.mark.real_security_gate
+def test_generated_block_runtime_wrapper_passes_wordpress_standard():
+    wrapper = block_runtime_wrapper.build(
+        "acme-runtime-card", "blocks/runtime-card/build/block.json"
+    )
+    command = [
+        TOOLCHAIN.php, str(TOOLCHAIN.phpcs), "--runtime-set", "installed_paths",
+        TOOLCHAIN.installed_paths, "--standard=WordPress", "--extensions=php",
+        "--stdin-path=acme-runtime-card.php", "-",
+    ]
+
+    result = subprocess.run(
+        command, input=wrapper, capture_output=True, check=False, timeout=120
+    )
+
+    assert result.returncode == 0, (result.stdout + result.stderr).decode(
+        "utf-8", errors="replace"
+    )
 
 
 def oracle_args():

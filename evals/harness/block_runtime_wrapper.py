@@ -49,9 +49,19 @@ def build(textdomain: str, selected_block_json: str) -> bytes:
  * Version: 0.1.0
  * Text Domain: {textdomain}
  * License: GPL-2.0-or-later
+ *
+ * @package GeneratedBlockRuntimeWrapper
  */
-if ( ! defined( 'ABSPATH' ) ) {{ exit; }}
+
+if ( ! defined( 'ABSPATH' ) ) {{
+\texit;
+}}
+
 add_action( 'init', 'generated_block_runtime_wrapper_register_block' );
+
+/**
+ * Register the generated block metadata directory.
+ */
 function generated_block_runtime_wrapper_register_block(): void {{
 \tregister_block_type( __DIR__ . {literal} );
 }}
