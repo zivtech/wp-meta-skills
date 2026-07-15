@@ -77,6 +77,27 @@ python3 evals/harness/validate_wordpress_skill_output.py \
 
 `--executor` accepts `plugin`, `block`, or `blueprint`. Static artifact passes are **not** runtime proof; reserve `--profile runtime` / `--provision-full-profile` for the real contract. The security gate catches deterministic WPCS security findings and suppression abuse; the security critic still owns reachability, authorization, and exploitability judgment.
 
+The repair loop uses one fail-closed executor/profile matrix:
+
+| Executor | Static | Runtime |
+|---|---|---|
+| Plugin | Supported | Supported by the isolated `standard` profile |
+| Block | Supported | Conditional: the selected fixture metadata must declare exact `block_name`, `frontend_selector`, and `expected_frontend_text` assertions |
+| Blueprint | Supported | Rejected |
+
+Block runtime carries those fixture-owned assertions through the same staged,
+inspected no-egress runtime used for activation. It requires the exact block
+registration plus selector-scoped editor/save/frontend proof; it never infers
+the assertion from generated output. Blueprint repair is static-only. The
+separate Blueprint launch preflight and browser smoke are not automated by the
+repair loop and are not a fallback for `--profile runtime`.
+
+No tracked block-executor fixture currently declares `runtime_assertions`, so
+the conditional block repair lane is implemented and integration-tested but no
+current repair fixture is runtime-eligible. Direct runtime-harness assertion
+flags are operator-supplied evidence inputs; only the repair-loop fixture loader
+establishes that they came from a canonical fixture pair.
+
 ## The skill lifecycle
 
 Planners → executors → critics produce the packets the gates verify — inputs to the pipeline above, not a substitute for it.

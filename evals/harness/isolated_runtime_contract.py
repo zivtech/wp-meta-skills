@@ -2,22 +2,31 @@
 from __future__ import annotations
 
 import math
+import hashlib
 import re
+import unicodedata
+from pathlib import PurePosixPath
 from typing import Any
 
-from wp_runtime_types import RuntimeRequest, RuntimeResult
+from wp_runtime_types import BlockRuntimeAssertion, RuntimeRequest, RuntimeResult
 
 
 VALID_STATUSES = frozenset({"pass", "fail", "blocked"})
 STANDARD_PROFILE = "standard"
+BLOCK_PROFILE = "block-runtime"
 ADVERSARIAL_PROFILE = "adversarial-test"
 STANDARD_REQUESTED_ORACLES = ("activation", "browser")
+BLOCK_REQUESTED_ORACLES = ("activation", "browser", "block_frontend")
 # RuntimeRequest currently exposes only the two reviewed oracle capabilities.
 # Reversing their exact requested order is the explicit test-only profile token;
 # it does not widen the production capability vocabulary.
 ADVERSARIAL_REQUESTED_ORACLES = ("browser", "activation")
 REQUIRED_CHECKS_BY_PROFILE = {
     STANDARD_PROFILE: ("wp_cli_activation", "plugin_check", "container_browser"),
+    BLOCK_PROFILE: (
+        "wp_cli_activation", "plugin_check", "block_registration",
+        "container_browser", "block_editor_frontend",
+    ),
     ADVERSARIAL_PROFILE: (
         "container_artifact_manifest", "wp_cli_activation", "php_route_denials",
         "browser_network_denials", "runtime_gateway_denials", "generated_php_canary",
@@ -33,6 +42,24 @@ REQUIRED_CHECKS_BY_PROFILE = {
 REQUIRED_ORACLE_CHECKS = REQUIRED_CHECKS_BY_PROFILE[STANDARD_PROFILE]
 REQUIRED_RESULT_CHECKS = (*REQUIRED_ORACLE_CHECKS, "runtime_identity")
 DIGEST = re.compile(r"[0-9a-f]{64}")
+RUNTIME_SERVICES = frozenset({"database", "wordpress", "cli", "gateway", "browser"})
+SERVICE_NETWORKS = {
+    "database": frozenset({"backend"}),
+    "wordpress": frozenset({"backend", "application"}),
+    "cli": frozenset({"backend"}),
+    "gateway": frozenset({"application", "frontend"}),
+    "browser": frozenset({"frontend"}),
+}
+RUNTIME_NETWORKS = frozenset({"backend", "application", "frontend"})
+BLOCK_GATE_KEYS = frozenset({
+    "schema", "schema_version", "id", "status", "blocked_reason", "checks",
+    "selected_root", "selected_block_json", "selection_reason", "edges", "files",
+    "scan_files", "scanner_aliases", "scanner_evidence", "component_digests",
+    "artifact_proof_digest", "output_manifest_sha256", "source_manifest_sha256",
+    "core", "rule_digest", "wrapper_path", "wrapper_size", "wrapper_sha256",
+    "wrapper_validation_digest", "wrapper_checks", "synthesized_manifest_sha256",
+    "execution_proof_digest",
+})
 
 
 def dominant_status(statuses: list[str]) -> str:
@@ -51,6 +78,7 @@ def _normalized_status(value: Any) -> str:
 def profile_for_requested(requested: tuple[str, ...]) -> str:
     mapping = {
         STANDARD_REQUESTED_ORACLES: STANDARD_PROFILE,
+        BLOCK_REQUESTED_ORACLES: BLOCK_PROFILE,
         ADVERSARIAL_REQUESTED_ORACLES: ADVERSARIAL_PROFILE,
     }
     try:
@@ -397,12 +425,265 @@ def _persisted_execution_proof_errors(
     return errors
 
 
+def _persisted_block_gate_errors(data):
+    gate=data.get("block_runtime_artifact_gate")
+    if not isinstance(gate,dict): return ["block execution gate is missing"]
+    digest=data.get("execution_proof_digest")
+    required_digests=("artifact_proof_digest","output_manifest_sha256",
+        "source_manifest_sha256","rule_digest","wrapper_sha256",
+        "wrapper_validation_digest","synthesized_manifest_sha256","execution_proof_digest")
+    errors=[]
+    if (set(gate)!=BLOCK_GATE_KEYS
+            or gate.get("schema")!="wp-meta-skills/block-execution-artifact-gate"
+            or gate.get("schema_version")!=1 or gate.get("id")!="block_runtime_artifact_gate"):
+        errors.append("block execution gate identity mismatch")
+    if (not all(isinstance(gate.get(key),str) and DIGEST.fullmatch(gate[key])
+                for key in required_digests) or gate.get("execution_proof_digest")!=digest):
+        errors.append("block execution proof object is incomplete")
+    root=gate.get("selected_root"); selected=gate.get("selected_block_json")
+    safe_root=(isinstance(root,str) and root and not PurePosixPath(root).is_absolute()
+               and PurePosixPath(root).as_posix()==root
+               and all(part not in {"", ".", ".."} for part in PurePosixPath(root).parts))
+    if (not safe_root or selected!=f"{root}/block.json"
+            or gate.get("selection_reason")!="built_block_json"
+            or not all(isinstance(gate.get(key),list)
+                       for key in ("edges","files","scan_files","scanner_aliases"))):
+        errors.append("block selected tree proof is incomplete")
+    errors.extend(_persisted_block_gate_detail_errors(gate))
+    if (data.get("block_build_smoke_requested") is not True
+            or data.get("block_build_smoke_status")!="pass"
+            or _gate_status(True,data.get("block_build_gate"))!="pass"):
+        errors.append("block build gate did not pass")
+    return errors
+
+
+def _persisted_block_gate_detail_errors(gate):
+    components=gate.get("component_digests")
+    core=gate.get("core")
+    checks=gate.get("checks")
+    wrapper=gate.get("wrapper_checks")
+    component_valid=(isinstance(components,dict)
+        and set(components)=={"metadata_graph","php_set","scanner_aliases","artifact"}
+        and all(isinstance(value,str) and DIGEST.fullmatch(value) for value in components.values())
+        and components.get("artifact")==gate.get("artifact_proof_digest"))
+    core_valid=(isinstance(core,dict) and set(core)=={"version","archive_sha256","blocks_php_sha256"}
+        and isinstance(core.get("version"),str) and bool(core["version"])
+        and all(isinstance(core.get(key),str) and DIGEST.fullmatch(core[key])
+                for key in ("archive_sha256","blocks_php_sha256")))
+    check_ids=[item.get("id") for item in checks] if isinstance(checks,list) else []
+    checks_valid=(bool(check_ids) and len(check_ids)==len(set(check_ids))
+        and all(isinstance(item,dict) and set(item)=={"id","status","detail"}
+                and isinstance(item["id"],str) and item["id"]
+                and item["status"]=="pass" and isinstance(item["detail"],str) for item in checks))
+    wrapper_valid=(wrapper==[{"id":"bootstrap_exact","status":"pass"},
+                              {"id":"php_syntax","status":"pass"}]
+        and isinstance(gate.get("wrapper_path"),str) and gate["wrapper_path"].endswith(".php")
+        and isinstance(gate.get("wrapper_size"),int) and 0<gate["wrapper_size"]<=1048576)
+    mapping_valid=isinstance(gate.get("scanner_evidence"),dict)
+    return [] if all((component_valid,core_valid,checks_valid,wrapper_valid,mapping_valid)) else [
+        "block execution gate details are malformed"
+    ]
+
+
+def _normalized_block_text(value):
+    return re.sub(r"\s+"," ",unicodedata.normalize("NFC",value)).strip()
+
+
+def _persisted_block_frontend_errors(data,assertion):
+    if not isinstance(assertion,BlockRuntimeAssertion):
+        return ["block runtime assertion is missing"]
+    checks=data.get("checks") if isinstance(data.get("checks"),list) else []
+    matches=[item for item in checks if isinstance(item,dict)
+             and item.get("id")=="block_editor_frontend"]
+    proof=matches[0].get("proof") if len(matches)==1 else None
+    keys={"status","block_name","frontend_selector","expected_text_sha256",
+          "observed_text_sha256","match_count","visible","normalization"}
+    digest=hashlib.sha256(
+        _normalized_block_text(assertion.expected_frontend_text).encode("utf-8")
+    ).hexdigest()
+    valid=(isinstance(proof,dict) and set(proof)==keys and proof.get("status")=="pass"
+        and proof.get("block_name")==assertion.block_name
+        and proof.get("frontend_selector")==assertion.frontend_selector
+        and proof.get("expected_text_sha256")==digest
+        and proof.get("observed_text_sha256")==digest
+        and proof.get("match_count")==1 and proof.get("visible") is True
+        and proof.get("normalization")=="unicode-nfc-whitespace-collapse-trim")
+    return [] if valid else ["block editor/frontend proof mismatch"]
+
+
+def _persisted_topology_errors(data):
+    inspection=data.get("inspection")
+    required={"normalized","created","started","post_oracle","artifact_seal"}
+    if not isinstance(inspection,dict) or set(inspection)!=required:
+        return ["runtime topology inspection inventory mismatch"]
+    errors=[]
+    normalized=inspection.get("normalized")
+    images=normalized.get("images") if isinstance(normalized,dict) else None
+    if (not isinstance(normalized,dict) or set(normalized)!={"services","images","networks"}
+            or set(normalized.get("services",[]))!=RUNTIME_SERVICES
+            or set(normalized.get("networks",[]))!=RUNTIME_NETWORKS
+            or not isinstance(images,dict) or set(images)!=RUNTIME_SERVICES
+            or not all(isinstance(value,str) and value for value in images.values())):
+        errors.append("normalized runtime topology inspection mismatch")
+    for phase,running in (("created",False),("started",True),("post_oracle",True)):
+        errors.extend(_persisted_live_topology_errors(phase,inspection.get(phase),images,running))
+    seal=inspection.get("artifact_seal")
+    valid_seal=(isinstance(seal,dict) and set(seal)=={
+        "component","state","seed_started","seed_removed","artifact_mounts",
+        "base_image","derived_image",
+    } and seal.get("component")=="runtime_artifact_image" and seal.get("state")=="sealed"
+        and seal.get("seed_started") is False and seal.get("seed_removed") is True
+        and seal.get("artifact_mounts")==0
+        and all(isinstance(seal.get(key),str) and seal[key]
+                for key in ("base_image","derived_image")))
+    if not valid_seal:
+        errors.append("runtime artifact seal inspection is missing")
+    return errors
+
+
+def _persisted_live_topology_errors(phase,item,images,running):
+    observed=item.get("services") if isinstance(item,dict) else None
+    networks=item.get("networks") if isinstance(item,dict) else None
+    valid=(isinstance(item,dict) and set(item)=={"services","networks","require_running"}
+        and isinstance(observed,dict) and set(observed)==RUNTIME_SERVICES
+        and item.get("require_running") is running)
+    if valid:
+        valid=all(_persisted_live_service_valid(name,value,images,running)
+                  for name,value in observed.items())
+    if valid:
+        valid=_persisted_live_networks_valid(networks,observed,running)
+    return [] if valid else [f"{phase} runtime topology inspection mismatch"]
+
+
+def _persisted_live_service_valid(name,value,images,running):
+    keys={"id","image","mounts","networks","addresses"}|({"seccomp"} if running else set())
+    if not isinstance(value,dict) or set(value)!=keys:
+        return False
+    names=value.get("networks"); addresses=value.get("addresses")
+    suffixes={item.rsplit("_",1)[-1] for item in names} if isinstance(names,list) else set()
+    addresses_valid=(isinstance(addresses,dict) and set(addresses)==set(names or [])
+        and all(isinstance(item,str) and (bool(item) is running) for item in addresses.values()))
+    return (isinstance(value.get("id"),str) and bool(value["id"])
+        and isinstance(images,dict) and value.get("image")==images.get(name)
+        and value.get("mounts")==[] and suffixes==SERVICE_NETWORKS[name]
+        and addresses_valid and (not running or value.get("seccomp")==2))
+
+
+def _persisted_live_networks_valid(networks,services,running):
+    if not running:
+        return networks=={}
+    if not isinstance(networks,dict):
+        return False
+    by_suffix={name.rsplit("_",1)[-1]:value for name,value in networks.items()}
+    if set(by_suffix)!=RUNTIME_NETWORKS or len(by_suffix)!=len(networks):
+        return False
+    for name,value in by_suffix.items():
+        members={service["id"] for service_name,service in services.items()
+                 if name in SERVICE_NETWORKS[service_name]}
+        if (not isinstance(value,dict) or set(value)!={
+                "id","internal","members","gateway","gateway_mode","subnet"}
+                or not isinstance(value.get("id"),str) or not value["id"]
+                or value.get("internal") is not True or set(value.get("members",[]))!=members
+                or value.get("gateway")!=[] or value.get("gateway_mode")!="isolated"
+                or not isinstance(value.get("subnet"),str) or not value["subnet"]):
+            return False
+    return True
+
+
+def _persisted_cleanup_errors(data,artifact_kind):
+    cleanup=data.get("cleanup")
+    errors=[]
+    if not isinstance(cleanup,dict) or set(cleanup)!={"compose","images","export","workspace"}:
+        errors.append("runtime cleanup inventory mismatch")
+    elif not _persisted_cleanup_values_valid(cleanup):
+        errors.append("runtime cleanup did not converge")
+    retention=data.get("artifact_retention")
+    resources=retention.get("resources") if isinstance(retention,dict) else None
+    required={"input_copy","synthesized_runtime"}
+    if artifact_kind=="block": required|={"sandbox_output","scan_handoff"}
+    valid=(isinstance(resources,list) and bool(resources) and retention.get("retained") is False
+           and all(_persisted_retention_resource_valid(item) for item in resources)
+           and required<={item["component"] for item in resources})
+    if not valid or data.get("artifact_execution_retained") is not False:
+        errors.append("artifact retention cleanup did not converge")
+    return errors
+
+
+def _persisted_cleanup_values_valid(cleanup):
+    compose=cleanup["compose"]; images=cleanup["images"]
+    export=cleanup["export"]; workspace=cleanup["workspace"]
+    remaining=compose.get("remaining") if isinstance(compose,dict) else None
+    compose_valid=(isinstance(compose,dict) and set(compose)=={
+        "component","state","errors","remaining","recovery"}
+        and compose.get("component")=="compose" and compose.get("state")=="removed"
+        and compose.get("errors")==[] and compose.get("recovery")==[]
+        and isinstance(remaining,dict) and set(remaining)=={"containers","networks","volumes"}
+        and all(value==[] for value in remaining.values()))
+    images_valid=(isinstance(images,dict) and set(images)=={
+        "component","state","error","remaining","recovery"}
+        and images.get("component")=="runtime_images" and images.get("state")=="removed"
+        and images.get("error") is None and images.get("remaining")==[]
+        and images.get("recovery")==[])
+    export_valid=(isinstance(export,dict) and set(export)=={"component","state","error","recovery"}
+        and export.get("component")=="runtime_artifact_image" and export.get("state")=="released"
+        and export.get("error") is None and export.get("recovery") is None)
+    workspace_valid=(isinstance(workspace,dict) and set(workspace)=={"component","state","error"}
+        and workspace.get("component")=="runtime_workspace" and workspace.get("state")=="removed"
+        and workspace.get("error") is None)
+    return all((compose_valid,images_valid,export_valid,workspace_valid))
+
+
+def _persisted_retention_resource_valid(item):
+    return (isinstance(item,dict) and set(item)=={
+        "component","state","exists","live","resource_path","recovery_path","error"}
+        and isinstance(item.get("component"),str) and bool(item["component"])
+        and item.get("state")=="removed" and item.get("exists") is False
+        and item.get("live") is False and isinstance(item.get("resource_path"),str)
+        and bool(item["resource_path"]) and item.get("recovery_path") is None
+        and item.get("error") is None)
+
+
+def _persisted_posture_errors(data,artifact_kind):
+    posture=data.get("sandbox_posture")
+    generated=posture.get("generated_execution") if isinstance(posture,dict) else None
+    required={"php":"pass","browser":"pass"}
+    if artifact_kind=="block": required.update({"npm_build":"pass","block_runtime_artifact":"pass"})
+    valid=(isinstance(posture,dict) and posture.get("host_fallback") is False
+           and posture.get("static_scan_root")=="staged_copy"
+           and isinstance(generated,dict)
+           and all(generated.get(key)==value for key,value in required.items()))
+    return [] if valid else ["sandbox posture did not pass"]
+
+
+def _persisted_full_profile_errors(data):
+    errors = []
+    if data.get("provision_full_profile") is not True or data.get("strict_full_profile") is not True:
+        errors.append("strict full profile was not requested")
+    full = data.get("full_plugin_runtime_profile")
+    full_checks = tuple((full or {}).get("checks") or ())
+    expected = ("phpcs_wpcs", "plugin_check", "wp_env_smoke")
+    if (not isinstance(full, dict) or full.get("status") != "pass"
+            or full.get("pass") is not True or _check_ids(full_checks) != expected):
+        errors.append("full plugin runtime profile did not pass")
+        return errors
+    errors.extend(
+        f"full profile {check_id} did not pass" for check_id in expected
+        if _named_check_status(full, check_id) != "pass"
+    )
+    return errors
+
+
 def persisted_runtime_errors(
     data: dict[str, Any], *, run_id: str, evidence_id: str,
     artifact_kind: str, input_digest: str, execution_proof_digest: str | None = None,
+    block_assertion: BlockRuntimeAssertion | None = None,
 ) -> list[str]:
     """Return exact-result contract errors for the repair-loop consumer."""
     errors = _persisted_execution_proof_errors(data, execution_proof_digest)
+    if artifact_kind=="block":
+        errors.extend(_persisted_execution_proof_errors(data,data.get("execution_proof_digest")))
+        errors.extend(_persisted_block_gate_errors(data))
+        errors.extend(_persisted_block_frontend_errors(data,block_assertion))
     expected = {
         "schema_version": 1,
         "run_id": run_id,
@@ -435,14 +716,8 @@ def persisted_runtime_errors(
         errors.append("runtime check inventory mismatch")
     if data.get("status") != "pass" or data.get("pass") is not True:
         errors.append("top-level runtime status did not pass")
-    full = data.get("full_plugin_runtime_profile")
-    full_checks = tuple((full or {}).get("checks") or ())
-    expected_full = ("phpcs_wpcs", "plugin_check", "wp_env_smoke")
-    if (not isinstance(full, dict) or full.get("status") != "pass"
-            or full.get("pass") is not True or _check_ids(full_checks) != expected_full):
-        errors.append("full plugin runtime profile did not pass")
-    else:
-        for check_id in expected_full:
-            if _named_check_status(full, check_id) != "pass":
-                errors.append(f"full profile {check_id} did not pass")
+    errors.extend(_persisted_topology_errors(data))
+    errors.extend(_persisted_cleanup_errors(data,artifact_kind))
+    errors.extend(_persisted_posture_errors(data,artifact_kind))
+    errors.extend(_persisted_full_profile_errors(data))
     return errors

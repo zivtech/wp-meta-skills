@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import ipaddress
+import hashlib
 import json
 import re
 import time
+import unicodedata
 
 import isolated_runtime_contract as contract
 import runtime_image_provision as transport
@@ -12,6 +14,7 @@ import wp_runtime_inspection as inspection
 import wp_runtime_network as runtime_network
 import wp_runtime_topology as topology
 from wp_runtime_evidence import RuntimeDeadline, docker_absence_proved, scrub_tail
+from wp_runtime_types import BlockRuntimeAssertion
 
 OUTPUT_LIMIT = 65536
 BROWSER_ORIGIN = "http://gateway-frontend:8081"
@@ -129,6 +132,28 @@ def _plugin_check(base, slug, deadline):
     _run(base + ["exec", "-T", "cli", "sh", "-c", command], deadline, 120)
     return {"id": "plugin_check", "status": "pass", "required": True,
             "version": "2.0.0"}
+
+
+def _block_registration(base, assertion, deadline):
+    encoded=json.dumps(assertion.block_name)
+    code=(f"$n={encoded};$b=WP_Block_Type_Registry::get_instance()->get_registered($n);"
+          "if(!$b||$b->name!==$n)exit(41);echo $b->name;")
+    result=_run(base+["exec","-T","cli","wp","eval",code,
+                      "--path=/var/www/html"],deadline,30)
+    if result["stdout"].strip()!=assertion.block_name:
+        raise RuntimeError("registered block name mismatch")
+    return {"id":"block_registration","status":"pass","required":True,
+            "block_name":assertion.block_name}
+
+
+def _create_disposable_block_post(base, deadline):
+    result=_run(base+["exec","-T","cli","wp","post","create",
+        "--path=/var/www/html","--post_type=post","--post_status=draft",
+        "--post_title=Runtime Block Smoke","--porcelain"],deadline,30)
+    value=result["stdout"].strip()
+    if re.fullmatch(r"[1-9][0-9]{0,9}",value) is None:
+        raise RuntimeError("disposable block post ID is malformed")
+    return int(value)
 
 
 def _container_manifest(base, slug, expected, deadline):
@@ -300,17 +325,32 @@ def _gateway_denials(base, deadline, generated):
     return tuple(checks)
 
 
-def _browser_policy_evidence(base, deadline, profile, slug):
+def _browser_policy_command(profile, slug, target, assertion, post_id):
+    command = ["node", "/opt/wp-runtime/browser-policy.js", profile,
+               BROWSER_ORIGIN, slug, target]
+    if assertion is not None:
+        command.extend([
+            assertion.block_name, assertion.frontend_selector,
+            assertion.expected_frontend_text, str(post_id),
+        ])
+    return command
+
+
+def _browser_policy_evidence(
+    base, deadline, profile, slug, assertion=None, post_id=None,
+):
     target=""
     if profile==contract.ADVERSARIAL_PROFILE:
         with runtime_network.controlled_host_listener() as (server,address,port):
             target=f"http://{address}:{port}"
-            result=_run(base+["exec","-T","browser","node",
-                "/opt/wp-runtime/browser-policy.js",profile,BROWSER_ORIGIN,slug,target],deadline,60)
+            result=_run(base+["exec","-T","browser",*_browser_policy_command(
+                profile,slug,target,assertion,post_id,
+            )],deadline,60)
             runtime_network.assert_listener_unreached(server)
     else:
-        result=_run(base+["exec","-T","browser","node",
-            "/opt/wp-runtime/browser-policy.js",profile,BROWSER_ORIGIN,slug,target],deadline,60)
+        result=_run(base+["exec","-T","browser",*_browser_policy_command(
+            profile,slug,target,assertion,post_id,
+        )],deadline,60)
     try:
         evidence = json.loads(result["stdout"].splitlines()[-1])
     except (ValueError, IndexError) as exc:
@@ -366,12 +406,43 @@ def _generated_browser_check(evidence, generated):
             "generated_denials": generated_denials}
 
 
-def _browser_policy(base, deadline, profile, slug):
-    evidence, common, generated = _browser_policy_evidence(base, deadline, profile, slug)
+def _normalized_block_text(value):
+    normalized=unicodedata.normalize("NFC",value)
+    return re.sub(r"\s+"," ",normalized).strip()
+
+
+def _block_frontend_check(evidence, assertion):
+    proof=evidence.get("block_editor_frontend")
+    keys={"status","block_name","frontend_selector","expected_text_sha256",
+          "observed_text_sha256","match_count","visible","normalization"}
+    expected_hash=hashlib.sha256(
+        _normalized_block_text(assertion.expected_frontend_text).encode("utf-8")
+    ).hexdigest()
+    valid=(isinstance(proof,dict) and set(proof)==keys
+           and proof.get("status")=="pass"
+           and proof.get("block_name")==assertion.block_name
+           and proof.get("frontend_selector")==assertion.frontend_selector
+           and proof.get("expected_text_sha256")==expected_hash
+           and proof.get("observed_text_sha256")==expected_hash
+           and proof.get("match_count")==1 and proof.get("visible") is True
+           and proof.get("normalization")=="unicode-nfc-whitespace-collapse-trim")
+    if not valid: raise RuntimeError("block editor/frontend proof is malformed or mismatched")
+    return {"id":"block_editor_frontend","status":"pass","required":True,
+            "proof":proof}
+
+
+def _browser_policy(base, deadline, profile, slug, assertion=None, post_id=None):
+    evidence, common, generated = _browser_policy_evidence(
+        base, deadline, profile, slug, assertion, post_id,
+    )
     checks = [{"id": "container_browser", "status": "pass", "required": True,
                "canaries": {name: evidence["canaries"][name] for name in sorted(common)}}]
     if profile == contract.ADVERSARIAL_PROFILE:
         checks.append(_generated_browser_check(evidence, generated))
+    if profile == contract.BLOCK_PROFILE:
+        if not isinstance(assertion,BlockRuntimeAssertion):
+            raise RuntimeError("block browser policy lacks an immutable assertion")
+        checks.append(_block_frontend_check(evidence,assertion))
     return tuple(checks)
 
 
@@ -736,6 +807,21 @@ def _standard_oracles(base, slug, deadline):
     return _run_steps(steps)
 
 
+def _block_oracles(base, slug, deadline, assertion):
+    if not isinstance(assertion,BlockRuntimeAssertion):
+        raise RuntimeError("block runtime profile requires an immutable assertion")
+    first=_run_steps((
+        ("wp_cli_activation",lambda:(_activation(base,slug,deadline),)),
+        ("plugin_check",lambda:(_plugin_check(base,slug,deadline),)),
+        ("block_registration",lambda:(_block_registration(base,assertion,deadline),)),
+    ))
+    post_id=_create_disposable_block_post(base,deadline)
+    browser=_run_steps((("container_browser",lambda:_browser_policy(
+        base,deadline,contract.BLOCK_PROFILE,slug,assertion,post_id,
+    )),))
+    return (*first,*browser)
+
+
 def _run_steps(steps):
     checks=[]
     for name,step in steps:
@@ -775,7 +861,9 @@ def _adversarial_oracles(base, slug, deadline, artifact_digest):
     return _run_steps(steps)
 
 
-def run_oracles(base, slug, deadline, requested, artifact_digest):
+def run_oracles(
+    base, slug, deadline, requested, artifact_digest, block_assertion=None,
+):
     if not isinstance(deadline, RuntimeDeadline):
         deadline = RuntimeDeadline.start(deadline)
     try:
@@ -784,6 +872,8 @@ def run_oracles(base, slug, deadline, requested, artifact_digest):
         raise RuntimeError(str(exc)) from exc
     if profile == contract.STANDARD_PROFILE:
         checks = _standard_oracles(base, slug, deadline)
+    elif profile == contract.BLOCK_PROFILE:
+        checks = _block_oracles(base,slug,deadline,block_assertion)
     else:
         checks = _adversarial_oracles(base, slug, deadline, artifact_digest)
     contract.require_exact_profile_checks(profile, checks)

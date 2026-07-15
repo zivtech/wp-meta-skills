@@ -587,6 +587,45 @@ provider registration/configuration, confirms connector registration when
 
 ### Repair-loop evidence freshness
 
+The repair loop applies this compatibility matrix before it creates a run
+directory or calls a model:
+
+| Executor | Static | Runtime |
+|---|---|---|
+| Plugin | Supported | `standard`: activation, Plugin Check, isolated container browser |
+| Block | Supported | Conditional `block-runtime`: fixture-owned exact block name, wrapper selector, and visible text required |
+| Blueprint | Supported | Rejected |
+
+For block runtime, only the exact selected fixture pair may supply
+`runtime_assertions.block_name`, `runtime_assertions.frontend_selector`, and
+`runtime_assertions.expected_frontend_text`. The loader rejects missing or extra
+keys, identity drift, unsafe paths or selectors, non-regular files, and invalid
+Unicode. The materialized block name must match before browser launch. The
+isolated result must then contain the exact `block-runtime` check inventory:
+`wp_cli_activation`, `plugin_check`, `block_registration`, `container_browser`,
+and `block_editor_frontend`, followed by the consumer-added `runtime_identity`.
+The frontend proof is selector-scoped, requires one visible match, and binds the
+Unicode-NFC/whitespace-normalized expected and observed text hashes.
+
+Both plugin and block repair consumers require the pre-stage artifact digest,
+post-command staging digest, inspected normalized/created/started/post-oracle
+no-egress topology, `sandbox_posture.host_fallback: false`, strict full profile,
+and complete compose/export/image/workspace/input/synthesis cleanup. Block also
+requires the bounded build, selected graph proof, combined execution-proof
+digest, sandbox output cleanup, and scan-handoff cleanup. A missing, malformed,
+`fail`, or `blocked` field is non-green. Neither adapter substitutes the
+`adversarial-test` canary profile.
+
+Blueprint repair is static-only. Its separate launch-readiness preflight and
+browser smoke require Blueprint-specific landing and expected-text inputs; the
+repair loop does not infer them from generated prose and does not silently
+downgrade Blueprint runtime to static.
+
+At this checkpoint, no tracked block-executor fixture metadata declares the
+optional `runtime_assertions` mapping. The block-runtime adapter and hosted
+model-free fixture prove the capability, but current repair fixtures remain
+ineligible and are rejected before a run directory or provider call.
+
 Repair certification is fail closed. Each repair run atomically leases its
 `evals/results/<run-id>` directory and refuses an existing run ID. Every
 iteration uses fresh artifact, static-certification, and runtime-result

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import io
 import json
 import os
@@ -29,7 +30,7 @@ import wp_runtime_export
 import wp_runtime_inspection
 import wp_runtime_oracles
 import wp_runtime_topology as topology
-from wp_runtime_types import RuntimeRequest, RuntimeResult
+from wp_runtime_types import BlockRuntimeAssertion, RuntimeRequest, RuntimeResult
 from wp_runtime_evidence import RuntimeDeadline
 
 
@@ -118,6 +119,25 @@ def test_facade_rejects_wrong_role_forgery_digest_slug_and_evidence(tmp_path):
         for invalid in cases:
             with pytest.raises(ValueError):
                 guard.run_staged_runtime(invalid)
+    finally:
+        _cleanup(staged, synthesized)
+
+
+def test_runtime_request_binds_block_assertion_to_only_block_profile(tmp_path):
+    staged, synthesized, digest = _synthesized(tmp_path)
+    assertion = BlockRuntimeAssertion(
+        "acme/runtime-card", ".wp-block-acme-runtime-card", "Exact runtime text"
+    )
+    standard = _request(synthesized, digest, tmp_path / "standard")
+    missing = replace(standard, requested_oracles=runtime_contract.BLOCK_REQUESTED_ORACLES)
+    misplaced = replace(standard, block_assertion=assertion)
+    try:
+        with pytest.raises(ValueError, match="assertion"):
+            guard.run_staged_runtime(missing)
+        with pytest.raises(ValueError, match="forbidden"):
+            guard.run_staged_runtime(misplaced)
+        with pytest.raises(Exception):
+            assertion.block_name = "changed"
     finally:
         _cleanup(staged, synthesized)
 
@@ -618,6 +638,51 @@ def test_standard_browser_profile_does_not_require_fixture_markers(monkeypatch):
     assert "generated_frontend_js" not in checks[0]["canaries"]
     source=Path(HARNESS/"runtime-images/browser/browser-policy.js").read_text(encoding="utf-8")
     assert "gateway-frontend:8081" in source and "profile === 'adversarial-test'" in source
+
+
+def test_block_browser_profile_requires_exact_selector_scoped_proof(monkeypatch):
+    assertion = BlockRuntimeAssertion(
+        "acme/runtime-card", ".wp-block-acme-runtime-card", "Exact runtime text"
+    )
+    digest = hashlib.sha256(assertion.expected_frontend_text.encode()).hexdigest()
+    common = {name: True for name in {"same_origin", "external_http", "external_navigation",
+        "websocket", "webrtc", "service_worker", "download", "popup"}}
+    proof = {"status": "pass", "block_name": assertion.block_name,
+        "frontend_selector": assertion.frontend_selector, "expected_text_sha256": digest,
+        "observed_text_sha256": digest, "match_count": 1, "visible": True,
+        "normalization": "unicode-nfc-whitespace-collapse-trim"}
+    monkeypatch.setattr(wp_runtime_oracles, "_run", lambda *_args: {"returncode": 0,
+        "stdout": json.dumps({"profile": runtime_contract.BLOCK_PROFILE,
+                              "canaries": common, "block_editor_frontend": proof}) + "\n",
+        "stderr": ""})
+    checks = wp_runtime_oracles._browser_policy(
+        ["docker", "compose"], RuntimeDeadline.start(60), runtime_contract.BLOCK_PROFILE,
+        "safe-plugin", assertion, 42,
+    )
+    assert tuple(item["id"] for item in checks) == (
+        "container_browser", "block_editor_frontend",
+    )
+    assert checks[1]["proof"] == proof
+    malformed = dict(proof, match_count=2)
+    with pytest.raises(RuntimeError, match="malformed or mismatched"):
+        wp_runtime_oracles._block_frontend_check(
+            {"block_editor_frontend": malformed}, assertion,
+        )
+
+
+def test_browser_and_gateway_freeze_same_block_write_surface():
+    browser = Path(HARNESS / "runtime-images/browser/browser-policy.js").read_text()
+    gateway = Path(HARNESS / "runtime-images/browser/gateway-policy.js").read_text()
+    for fragment in (
+        "/wp-json/wp/v2/posts/", "content|status", "application/json",
+        "x-wp-nonce", "65536", "32768", "application/x-www-form-urlencoded",
+        "8192", "/wp-admin/post.php", "rest_route",
+    ):
+        assert fragment in browser and fragment in gateway
+    combined = browser + gateway
+    assert "/wp-json/*" not in combined and "rest_route=/" not in combined
+    assert "admin-ajax.php" not in combined and "/wp-json/wp/v2/users" not in combined
+    assert "/wp-json/wp/v2/settings" not in combined and "/wp-json/wp/v2/media" not in combined
 
 
 def test_provisioning_api_cannot_receive_an_artifact():

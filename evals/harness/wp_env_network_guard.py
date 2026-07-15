@@ -4,6 +4,7 @@ import json, os, platform, shutil, tempfile
 import re
 from pathlib import Path
 import artifact_staging
+import isolated_runtime_contract as runtime_contract
 import runtime_image_provision as provision
 import materialize_wordpress_executor_packet as materializer
 import wp_runtime_lifecycle
@@ -41,8 +42,12 @@ def _validate_runtime_request(request):
     if request.input_artifact_digest != request.expected_input_artifact_digest: raise ValueError("runtime input artifact digest mismatch")
     if not RUNTIME_SLUG.fullmatch(request.plugin_slug): raise ValueError("runtime plugin slug is unsafe")
     if request.timeout_sec<30 or request.timeout_sec>1800: raise ValueError("runtime timeout is outside the reviewed range")
-    unsupported=set(request.requested_oracles)-{"activation","browser"}
-    if unsupported: raise ValueError(f"runtime oracle is not pinned and provisioned: {sorted(unsupported)}")
+    try: profile=runtime_contract.profile_for_requested(request.requested_oracles)
+    except ValueError as exc: raise ValueError(str(exc)) from exc
+    if profile==runtime_contract.BLOCK_PROFILE and request.block_assertion is None:
+        raise ValueError("block runtime profile requires an immutable assertion")
+    if profile!=runtime_contract.BLOCK_PROFILE and request.block_assertion is not None:
+        raise ValueError("block runtime assertion is forbidden for this runtime profile")
     prefix=request.plugin_slug+"/"
     if not request.staged.manifest or any(not item.path.startswith(prefix) for item in request.staged.manifest): raise ValueError("synthesized runtime is not rooted at the declared plugin slug")
     return request.staged.manifest
@@ -63,7 +68,7 @@ def _execute_staged_runtime(request,lease,held,deadline):
         seal=wp_runtime_export.seal_export(export,runtime,deadline)
         lifecycle=wp_runtime_lifecycle.execute_runtime(
             lease.root,project,runtime,export.image,request.plugin_slug,
-            deadline,request.requested_oracles,export.digest,
+            deadline,request.requested_oracles,export.digest,request.block_assertion,
         )
         lifecycle.setdefault("inspection",{})["artifact_seal"]=seal
     except Exception as exc:

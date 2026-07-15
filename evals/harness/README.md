@@ -194,39 +194,37 @@ python3 evals/harness/run_wordpress_runtime_smoke.py --fixture-kind block --bloc
 To prove disposable block insertion, save/publish, and frontend server render, run:
 
 ```bash
-python3 evals/harness/run_wordpress_runtime_smoke.py --fixture-kind block --block-name acme/runtime-card --editor-insert-render-smoke --write --run-id wp-env-block-editor-insert-render-smoke-YYYYMMDD --timeout-sec 180
+python3 evals/harness/run_wordpress_runtime_smoke.py --fixture-kind block --block-name acme/runtime-card --editor-insert-render-smoke --expected-frontend-selector .wp-block-acme-runtime-card --expected-frontend-text "Runtime block smoke" --write --run-id wp-env-block-editor-insert-render-smoke-YYYYMMDD --timeout-sec 180
 ```
 
 To prove a generated block executor artifact through build, full profile, and editor insert/render paths, first materialize/certify the packet, then let the runtime harness wrap the block-only artifact in a disposable plugin:
 
 ```bash
-python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --block-build-smoke --editor-insert-render-smoke --provision-full-profile --write --run-id generated-block-full-profile-YYYYMMDD --timeout-sec 300
+python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --block-build-smoke --block-name vendor/block-name --editor-insert-render-smoke --expected-frontend-selector .wp-block-vendor-block-name --expected-frontend-text "Exact fixture-owned text" --provision-full-profile --strict-full-profile --write --run-id generated-block-full-profile-YYYYMMDD --timeout-sec 300
 ```
 
-When `--block-name` is omitted, the harness infers it from the artifact's `block.json`. With the stronger flags above, this proves the materialized block files can run `npm install` plus `npm run build` on a disposable copy, register in `wp-env`, pass WPCS/PHPCS and Plugin Check through the wrapper plugin, insert/save/publish in the editor, and render on the frontend. It does not prove PHPUnit, deprecation migration, Interactivity API behavior, MCP Adapter exposure, AI Client provider-call behavior, or release readiness.
+For an external artifact, all three assertion values are required and the declared
+block name must equal the selected `block.json` name. The assertion is executed
+inside the staged isolated runtime; no ordinary `wp-env` or host-browser fallback
+is allowed. This proves the bounded build, exact graph scan, registration, narrow
+authenticated post update, and selector/text frontend result for that artifact.
+It does not prove PHPUnit, deprecation migration, Interactivity API behavior,
+MCP Adapter exposure, AI Client provider-call behavior, or release readiness.
+These direct CLI values are operator-supplied. Only
+`run_executor_repair_loop.py` binds assertions to a canonical suite fixture
+pair, and no tracked block-executor fixture currently contains that optional
+mapping.
 
-For generated Interactivity API block artifacts, add `--interactivity-smoke`:
+The repair-loop support matrix is plugin static/runtime, block static plus
+assertion-conditional runtime, and Blueprint static-only. Blueprint launch
+preflight/browser checks remain separate and cannot satisfy repair runtime.
 
-```bash
-python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --block-build-smoke --editor-insert-render-smoke --interactivity-smoke --provision-full-profile --write --run-id generated-block-interactivity-full-profile-YYYYMMDD --timeout-sec 300
-```
-
-This additionally requires `supports.interactivity`, `viewScriptModule`, a built
-`@wordpress/interactivity` module, frontend `data-wp-*` directives, and a
-Playwright click that changes the frontend state text. The first local proof is
-`evals/results/wordpress-skill-candidate-eval/generated-block-interactivity-full-profile-20260621/`.
-
-For generated block deprecation artifacts, add `--deprecation-smoke`:
-
-```bash
-python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --block-build-smoke --deprecation-smoke --provision-full-profile --write --run-id generated-block-deprecation-full-profile-YYYYMMDD --timeout-sec 300
-```
-
-This creates a post from the legacy serialized fixture named in
-`deprecation-smoke.json`, verifies the migrated current-block attribute in the
-editor, saves current serialized markup, and checks the frontend text. The first
-local proof is
-`evals/results/wordpress-skill-candidate-eval/generated-block-deprecation-full-profile-20260621/`.
+Interactivity and deprecation-specific checks are not supported for an external
+staged artifact or by the repair loop. Their legacy built-in harness-fixture
+paths do not satisfy the `block-runtime` adapter and cannot substitute for its
+exact fixture-owned selector/text proof. Historical result directories are not
+evidence that these modes are available through the current isolated artifact
+boundary.
 
 For any saved WordPress skill response, validate the output contract before scoring:
 

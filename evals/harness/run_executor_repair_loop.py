@@ -27,7 +27,9 @@ import stat
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -36,8 +38,12 @@ RESULTS = ROOT / "evals" / "results"
 sys.path.insert(0, str(HARNESS))
 
 import invoke  # noqa: E402  (reuse single-shot generation + provider routing)
+import artifact_layout  # noqa: E402
+import artifact_staging  # noqa: E402
 import isolated_runtime_contract  # noqa: E402
+import runtime_assertions  # noqa: E402
 from artifact_staging import digest_regular_tree  # noqa: E402
+from wp_runtime_types import BlockRuntimeAssertion  # noqa: E402
 from workspace_lease import WorkspacePurpose, create_named  # noqa: E402
 
 # Type aliases for the injectable callables.
@@ -47,6 +53,61 @@ from workspace_lease import WorkspacePurpose, create_named  # noqa: E402
 #                                     "failures": str, "gate_vector": {...}}
 GenerateFn = Callable[[int, Any, str], Any]
 CertifyFn = Callable[[int, Any], dict[str, Any]]
+
+
+EXECUTOR_PROFILE_MATRIX = MappingProxyType({
+    "plugin": MappingProxyType({"static": "supported", "runtime": "supported"}),
+    "block": MappingProxyType({"static": "supported", "runtime": "conditional"}),
+    "blueprint": MappingProxyType({"static": "supported", "runtime": "rejected"}),
+})
+
+
+@dataclass(frozen=True)
+class RuntimeAdapter:
+    executor: str
+    artifact_kind: str
+    profile_id: str
+    requested_oracles: tuple[str, ...]
+    flags: tuple[str, ...]
+
+
+PLUGIN_RUNTIME_ADAPTER = RuntimeAdapter(
+    "plugin", "plugin", isolated_runtime_contract.STANDARD_PROFILE,
+    isolated_runtime_contract.STANDARD_REQUESTED_ORACLES,
+    ("--provision-full-profile", "--strict-full-profile"),
+)
+BLOCK_RUNTIME_ADAPTER = RuntimeAdapter(
+    "block", "block", isolated_runtime_contract.BLOCK_PROFILE,
+    isolated_runtime_contract.BLOCK_REQUESTED_ORACLES,
+    ("--block-build-smoke", "--editor-insert-render-smoke",
+     "--provision-full-profile", "--strict-full-profile"),
+)
+
+
+def validate_compatibility(
+    executor: str, profile: str, assertion: BlockRuntimeAssertion | None = None,
+) -> BlockRuntimeAssertion | None:
+    """Apply the one executor/profile policy before any expensive side effect."""
+    try:
+        policy = EXECUTOR_PROFILE_MATRIX[executor][profile]
+    except KeyError as exc:
+        raise ValueError(f"unsupported executor/profile: {executor}/{profile}") from exc
+    if policy == "rejected":
+        raise ValueError("Blueprint runtime is unsupported; Blueprint repair is static-only")
+    if policy == "conditional" and not isinstance(assertion, BlockRuntimeAssertion):
+        raise ValueError("block runtime requires an exact fixture-owned assertion contract")
+    if policy != "conditional" and assertion is not None:
+        raise ValueError("block runtime assertions are valid only for block/runtime")
+    return assertion
+
+
+def runtime_adapter(
+    executor: str, profile: str, assertion: BlockRuntimeAssertion | None = None,
+) -> RuntimeAdapter:
+    validate_compatibility(executor, profile, assertion)
+    if profile != "runtime":
+        raise ValueError("runtime adapter requested for a static profile")
+    return PLUGIN_RUNTIME_ADAPTER if executor == "plugin" else BLOCK_RUNTIME_ADAPTER
 
 
 # ---------------------------------------------------------------------------
@@ -250,25 +311,36 @@ def _stage_failure(gate: str, detail: str, checks: list[dict[str, Any]] | None =
 
 
 def _isolated_runtime_command(
-    artifact: Path, result_root: Path, run_id: str, evidence_id: str,
-    expected_digest: str, timeout: int,
+    adapter: RuntimeAdapter, artifact: Path, result_root: Path, run_id: str,
+    evidence_id: str, expected_digest: str, timeout: int,
+    assertion: BlockRuntimeAssertion | None = None,
 ) -> list[str]:
-    return [
+    command = [
         sys.executable, str(HARNESS / "run_wordpress_runtime_smoke.py"),
-        "--artifact-path", str(artifact), "--artifact-kind", "plugin",
+        "--artifact-path", str(artifact), "--artifact-kind", adapter.artifact_kind,
         "--write", "--run-id", run_id, "--results-root", str(result_root),
         "--evidence-id", evidence_id, "--expected-artifact-digest", expected_digest,
-        "--timeout-sec", str(timeout), "--provision-full-profile", "--strict-full-profile",
+        "--timeout-sec", str(timeout), *adapter.flags,
     ]
+    if assertion is not None:
+        command.extend([
+            "--block-name", assertion.block_name,
+            "--expected-frontend-selector", assertion.frontend_selector,
+            "--expected-frontend-text", assertion.expected_frontend_text,
+        ])
+    return command
 
 
 def _isolated_runtime_verdict(
-    data: dict[str, Any], *, run_id: str, evidence_id: str, expected_digest: str,
+    data: dict[str, Any], *, adapter: RuntimeAdapter, run_id: str,
+    evidence_id: str, expected_digest: str,
+    assertion: BlockRuntimeAssertion | None = None,
 ) -> dict[str, Any]:
     checks = _checks_with_status({"checks": data.get("checks") or []})
     errors = isolated_runtime_contract.persisted_runtime_errors(
         data, run_id=run_id, evidence_id=evidence_id,
-        artifact_kind="plugin", input_digest=expected_digest,
+        artifact_kind=adapter.artifact_kind, input_digest=expected_digest,
+        block_assertion=assertion,
     )
     if errors:
         return _stage_failure("runtime_result", "; ".join(errors), checks)
@@ -279,6 +351,35 @@ def _isolated_runtime_verdict(
         "failures": _failure_text(checks) if failing else "",
         "gate_vector": {check["id"]: check["status"] for check in checks},
     }
+
+
+def _materialized_block_name(artifact: Path) -> str:
+    snapshot = artifact_staging.snapshot_regular_tree(artifact)
+    manifest = tuple(
+        artifact_staging.ManifestEntry(
+            relative.as_posix(), "executable" if info.st_mode & stat.S_IXUSR else "regular",
+            info.st_size, hashlib.sha256(content).hexdigest(),
+        )
+        for relative, content, info in snapshot
+    )
+    layout = artifact_layout.select_source_layout(manifest)
+    content = next(content for relative, content, _info in snapshot
+                   if relative.as_posix() == layout.source_block_json.as_posix())
+    try:
+        metadata = json.loads(content.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("selected materialized block.json is malformed") from exc
+    name = metadata.get("name") if isinstance(metadata, dict) else None
+    if not isinstance(name, str):
+        raise ValueError("selected materialized block.json lacks a name")
+    return name
+
+
+def _require_materialized_block_name(
+    artifact: Path, assertion: BlockRuntimeAssertion,
+) -> None:
+    if _materialized_block_name(artifact) != assertion.block_name:
+        raise ValueError("materialized block name does not match the fixture assertion")
 
 
 # ---------------------------------------------------------------------------
@@ -428,9 +529,11 @@ def _repair_body(failures: str, prior_text: str) -> str:
 
 def make_generate(suite: str, fixture: str, condition: str, run_dir: Path,
                   model: str | None, effort: str | None, timeout: int,
-                  provider: str | None = None) -> GenerateFn:
+                  provider: str | None = None,
+                  fixture_path: Path | None = None) -> GenerateFn:
     suite_dir = invoke.SUITES_ROOT / suite
-    fixture_text = (suite_dir / "fixtures" / f"{fixture}.md").read_text(encoding="utf-8")
+    selected_fixture = fixture_path or suite_dir / "fixtures" / f"{fixture}.md"
+    fixture_text = selected_fixture.read_text(encoding="utf-8")
     settings = invoke.get_invocation_settings(suite)
     persona_path = invoke.agent_prompt_path(suite)
     persona = persona_path.read_text(encoding="utf-8").strip() if persona_path else ""
@@ -480,7 +583,13 @@ def make_generate(suite: str, fixture: str, condition: str, run_dir: Path,
     return generate
 
 
-def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout: int) -> CertifyFn:
+def make_certify(
+    suite: str, executor: str, run_dir: Path, profile: str, timeout: int,
+    block_assertion: BlockRuntimeAssertion | None = None,
+) -> CertifyFn:
+    validate_compatibility(executor, profile, block_assertion)
+    adapter = runtime_adapter(executor, profile, block_assertion) if profile == "runtime" else None
+
     def certify(iteration: int, packet: Any) -> dict[str, Any]:
         try:
             art = create_named(run_dir, f"iter{iteration}.art", WorkspacePurpose.ARTIFACT_EXECUTION).root
@@ -541,18 +650,24 @@ def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout
             return {"passed": True, "failing_gates": [], "failures": "",
                     "gate_vector": {c["id"]: c["status"] for c in static_checks}}
 
-        if executor != "plugin":
-            return _stage_failure("runtime_profile", "Plan 008 runtime profile supports plugin artifacts only")
+        if adapter is None:
+            return _stage_failure("runtime_profile", "runtime adapter is missing")
+        if block_assertion is not None:
+            try:
+                _require_materialized_block_name(artifact_path, block_assertion)
+            except (OSError, ValueError) as exc:
+                return _stage_failure("block_assertion", str(exc))
 
         # Stage B: exact isolated WordPress activation and container-browser gate.
-        runtime_artifact = candidates[0]
+        runtime_artifact = artifact_path
         expected_digest = digest_regular_tree(runtime_artifact)
         run_id = f"{run_dir.name}-iter{iteration}"
         runtime_root = res / "runtime"
         runtime_root.mkdir(exist_ok=False)
         runtime_proc = subprocess.run(
             _isolated_runtime_command(
-                runtime_artifact, runtime_root, run_id, evidence_id, expected_digest, timeout
+                adapter, runtime_artifact, runtime_root, run_id, evidence_id,
+                expected_digest, timeout, block_assertion,
             ),
             capture_output=True, text=True, timeout=timeout + 120, check=False,
         )
@@ -566,7 +681,8 @@ def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout
         if data is None:
             return _stage_failure("runtime_result", "exact runtime result missing or malformed")
         return _isolated_runtime_verdict(
-            data, run_id=run_id, evidence_id=evidence_id, expected_digest=expected_digest
+            data, adapter=adapter, run_id=run_id, evidence_id=evidence_id,
+            expected_digest=expected_digest, assertion=block_assertion,
         )
 
     return certify
@@ -599,7 +715,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    fixture_pair = None
+    block_assertion = None
+    try:
+        if args.executor == "block" and args.profile == "runtime":
+            fixture_pair = runtime_assertions.load_block_runtime_fixture(
+                invoke.SUITES_ROOT, args.suite, args.fixture,
+            )
+            block_assertion = fixture_pair.assertion
+        validate_compatibility(args.executor, args.profile, block_assertion)
+    except ValueError as exc:
+        parser.error(str(exc))
     try:
         run_dir = create_named(RESULTS, args.run_id, WorkspacePurpose.REPAIR_RUN).root
     except (ValueError, FileExistsError) as exc:
@@ -607,8 +735,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     generate = make_generate(args.suite, args.fixture, args.condition, run_dir,
-                             args.model, args.effort, args.timeout_sec, provider=args.provider)
-    certify = make_certify(args.suite, args.executor, run_dir, args.profile, args.timeout_sec)
+                             args.model, args.effort, args.timeout_sec, provider=args.provider,
+                             fixture_path=fixture_pair.fixture_path if fixture_pair else None)
+    certify = make_certify(args.suite, args.executor, run_dir, args.profile, args.timeout_sec,
+                           block_assertion)
 
     result = orchestrate(generate, certify, args.max_repairs, args.gen_retries)
 

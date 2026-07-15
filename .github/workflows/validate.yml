@@ -41,6 +41,7 @@ jobs:
           python -m pytest \
             evals/harness/tests/test_runtime_image_provision.py \
             evals/harness/tests/test_wp_env_network_guard.py \
+            evals/harness/tests/test_runtime_assertions.py \
             evals/harness/tests/test_isolated_runtime_contract.py \
             evals/harness/tests/test_wp_staged_runtime.py \
             -m 'not docker_boundary' -q
@@ -231,6 +232,10 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CANARY_COMMIT_SHA"
       - name: Install test dependency without cache credentials
         run: python -m pip install --no-cache-dir pytest==8.4.2
+      - name: Install pinned PHP tools for the block full profile
+        run: >-
+          composer install --no-interaction --no-progress --no-scripts
+          --no-plugins --prefer-dist --working-dir evals/harness/php-tools
       - name: Admit the isolated runtime disk budget
         run: |
           free_before=$(df --output=avail -B1 / | tail -1)
@@ -345,6 +350,7 @@ jobs:
             evals/harness/tests/test_workspace_lease.py \
             evals/harness/tests/test_runtime_image_provision.py \
             evals/harness/tests/test_wp_env_network_guard.py \
+            evals/harness/tests/test_runtime_assertions.py \
             evals/harness/tests/test_isolated_runtime_contract.py \
             evals/harness/tests/test_wp_staged_runtime.py \
             evals/harness/tests/test_executor_repair_loop.py \

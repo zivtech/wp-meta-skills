@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sys
+import copy
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,12 +11,15 @@ HARNESS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HARNESS))
 
 import isolated_runtime_contract as contract
-from wp_runtime_types import RuntimeResult
+from wp_runtime_types import BlockRuntimeAssertion, RuntimeResult
 
 
 INPUT_DIGEST = "a" * 64
 MANIFEST_DIGEST = "b" * 64
 EXECUTION_DIGEST = "c" * 64
+BLOCK_ASSERTION = BlockRuntimeAssertion(
+    "acme/runtime-card", ".wp-block-acme-runtime-card", "Exact runtime text",
+)
 RUNTIME_CHECKS = (
     {"id": "wp_cli_activation", "status": "pass", "required": True,
      "duration_sec": 0.1},
@@ -63,21 +68,59 @@ def _adapt_block(**changes) -> dict:
 
 
 def _persisted_block() -> dict:
-    checks = [dict(check) for check in RUNTIME_CHECKS]
+    services, created, networks = _persisted_topology()
+    checks = [
+        {"id": check_id, "status": "pass", "required": True, "duration_sec": 0.1}
+        for check_id in contract.REQUIRED_CHECKS_BY_PROFILE[contract.BLOCK_PROFILE]
+    ]
+    text_digest = hashlib.sha256(BLOCK_ASSERTION.expected_frontend_text.encode()).hexdigest()
+    checks[-1]["proof"] = {
+        "status": "pass", "block_name": BLOCK_ASSERTION.block_name,
+        "frontend_selector": BLOCK_ASSERTION.frontend_selector,
+        "expected_text_sha256": text_digest, "observed_text_sha256": text_digest,
+        "match_count": 1, "visible": True,
+        "normalization": "unicode-nfc-whitespace-collapse-trim",
+    }
     checks.append({"id": "runtime_identity", "status": "pass", "required": True})
     return {
         "schema_version": 1, "run_id": "run", "evidence_id": "evidence",
         "artifact_kind": "block", "input_artifact_digest": INPUT_DIGEST,
         "runtime_pre_command_manifest_digest": MANIFEST_DIGEST,
         "post_command_manifest_digest": MANIFEST_DIGEST,
-        "runtime_profile_id": contract.STANDARD_PROFILE,
+        "runtime_profile_id": contract.BLOCK_PROFILE,
         "status": "pass", "pass": True, "checks": checks,
+        "block_build_smoke_requested": True, "block_build_smoke_status": "pass",
+        "block_build_gate": {"status": "pass"},
         "block_runtime_artifact_requested": True,
         "block_runtime_artifact_gate_status": "pass",
-        "block_runtime_artifact_gate": _gate(
-            "pass", "runtime_artifact", EXECUTION_DIGEST,
-        ),
+        "block_runtime_artifact_gate": _persisted_artifact_gate(),
         "execution_proof_digest": EXECUTION_DIGEST,
+        "provision_full_profile": True, "strict_full_profile": True,
+        "inspection": {
+            "normalized": {"services": sorted(services),
+                           "images": {name: value["image"] for name, value in services.items()},
+                           "networks": ["application", "backend", "frontend"]},
+            "created": {"services": created, "networks": {}, "require_running": False},
+            "started": {"services": services, "networks": networks, "require_running": True},
+            "post_oracle": {"services": copy.deepcopy(services),
+                            "networks": copy.deepcopy(networks), "require_running": True},
+            "artifact_seal": {"component": "runtime_artifact_image", "state": "sealed",
+                              "seed_started": False, "seed_removed": True,
+                              "artifact_mounts": 0, "base_image": "sha256:wordpress",
+                              "derived_image": "sha256:derived"},
+        },
+        "cleanup": _persisted_cleanup(),
+        "artifact_execution_retained": False,
+        "artifact_retention": {"retained": False, "resources": [
+            {"component": component, "state": "removed", "exists": False,
+             "live": False, "resource_path": f"/tmp/{component}",
+             "error": None, "recovery_path": None}
+            for component in ("input_copy", "synthesized_runtime", "sandbox_output", "scan_handoff")
+        ]},
+        "sandbox_posture": {"host_fallback": False, "static_scan_root": "staged_copy",
+                            "generated_execution": {"php": "pass", "browser": "pass",
+                                                    "npm_build": "pass",
+                                                    "block_runtime_artifact": "pass"}},
         "full_plugin_runtime_profile": {"status": "pass", "pass": True, "checks": [
             {"id": "phpcs_wpcs", "status": "pass", "required": True},
             {"id": "plugin_check", "status": "pass", "required": True},
@@ -86,10 +129,72 @@ def _persisted_block() -> dict:
     }
 
 
+def _persisted_topology():
+    service_networks = contract.SERVICE_NETWORKS
+    services = {
+        name: {"id": f"id-{name}", "image": f"sha256:{name}", "mounts": [],
+               "networks": [f"project_{network}" for network in networks],
+               "addresses": {f"project_{network}": "172.20.0.2" for network in networks},
+               "seccomp": 2}
+        for name, networks in service_networks.items()
+    }
+    created = copy.deepcopy(services)
+    for service in created.values():
+        service.pop("seccomp")
+        service["addresses"] = {name: "" for name in service["networks"]}
+    networks = {
+        f"project_{network}": {"id": f"id-{network}", "internal": True,
+            "members": sorted(service["id"] for name, service in services.items()
+                              if network in service_networks[name]),
+            "gateway": [], "gateway_mode": "isolated", "subnet": "172.20.0.0/24"}
+        for network in contract.RUNTIME_NETWORKS
+    }
+    return services, created, networks
+
+
+def _persisted_cleanup():
+    return {
+        "compose": {"component": "compose", "state": "removed", "errors": [],
+                    "remaining": {"containers": [], "networks": [], "volumes": []},
+                    "recovery": []},
+        "images": {"component": "runtime_images", "state": "removed", "error": None,
+                   "remaining": [], "recovery": []},
+        "export": {"component": "runtime_artifact_image", "state": "released",
+                   "error": None, "recovery": None},
+        "workspace": {"component": "runtime_workspace", "state": "removed", "error": None},
+    }
+
+
+def _persisted_artifact_gate():
+    return {
+        "schema": "wp-meta-skills/block-execution-artifact-gate", "schema_version": 1,
+        "id": "block_runtime_artifact_gate", "status": "pass", "blocked_reason": None,
+        "checks": [{"id": "execution_graph", "status": "pass", "detail": "passed"}],
+        "selected_root": "blocks/runtime-card/build",
+        "selected_block_json": "blocks/runtime-card/build/block.json",
+        "selection_reason": "built_block_json", "edges": [], "files": [], "scan_files": [],
+        "scanner_aliases": [], "scanner_evidence": {},
+        "component_digests": {"metadata_graph": "5" * 64, "php_set": "6" * 64,
+                              "scanner_aliases": "7" * 64, "artifact": "d" * 64},
+        "artifact_proof_digest": "d" * 64, "output_manifest_sha256": "2" * 64,
+        "source_manifest_sha256": "3" * 64,
+        "core": {"version": "6.8.2", "archive_sha256": "8" * 64,
+                 "blocks_php_sha256": "9" * 64},
+        "rule_digest": "4" * 64, "wrapper_path": "runtime-card/runtime-card.php",
+        "wrapper_size": 400, "wrapper_sha256": "e" * 64,
+        "wrapper_validation_digest": "f" * 64,
+        "wrapper_checks": [{"id": "bootstrap_exact", "status": "pass"},
+                           {"id": "php_syntax", "status": "pass"}],
+        "synthesized_manifest_sha256": "1" * 64,
+        "execution_proof_digest": EXECUTION_DIGEST,
+    }
+
+
 def _persisted_errors(data: dict, expected: str | None = EXECUTION_DIGEST) -> list[str]:
     return contract.persisted_runtime_errors(
         data, run_id="run", evidence_id="evidence", artifact_kind=data["artifact_kind"],
         input_digest=INPUT_DIGEST, execution_proof_digest=expected,
+        block_assertion=BLOCK_ASSERTION if data["artifact_kind"] == "block" else None,
     )
 
 
@@ -222,6 +327,11 @@ def test_plugin_and_nonbuilt_results_do_not_require_artifact_proof():
 
     persisted = _persisted_block()
     persisted["artifact_kind"] = "plugin"
+    persisted["runtime_profile_id"] = contract.STANDARD_PROFILE
+    persisted["checks"] = [
+        *[dict(check) for check in RUNTIME_CHECKS],
+        {"id": "runtime_identity", "status": "pass", "required": True},
+    ]
     for field in (
         "block_runtime_artifact_requested", "block_runtime_artifact_gate_status",
         "block_runtime_artifact_gate", "execution_proof_digest",

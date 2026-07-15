@@ -9,6 +9,13 @@ import artifact_staging
 
 
 @dataclass(frozen=True)
+class BlockRuntimeAssertion:
+    block_name: str
+    frontend_selector: str
+    expected_frontend_text: str
+
+
+@dataclass(frozen=True)
 class RuntimeRequest:
     staged: artifact_staging.StagedTree
     plugin_slug: str
@@ -18,6 +25,7 @@ class RuntimeRequest:
     timeout_sec: int = 300
     result_parent: Path | None = None
     requested_oracles: tuple[str, ...] = ("activation", "browser")
+    block_assertion: BlockRuntimeAssertion | None = None
 
 
 @dataclass(frozen=True)

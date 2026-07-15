@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sys
+import hashlib
+import copy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +13,8 @@ HARNESS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HARNESS))
 
 import isolated_runtime_contract as contract
-from wp_runtime_types import RuntimeResult
+import wp_runtime_topology as topology
+from wp_runtime_types import BlockRuntimeAssertion, RuntimeResult
 
 
 DIGEST = "a" * 64
@@ -122,6 +125,34 @@ def test_full_profile_cannot_ignore_a_blocked_parent_wpcs_gate():
 
 
 def _persisted():
+    services = {
+        name: {
+            "id": f"id-{name}", "image": f"sha256:{name}", "mounts": [],
+            "networks": [f"project_{network}" for network in networks],
+            "addresses": {
+                f"project_{network}": f"172.20.0.{index + 2}"
+                for index, network in enumerate(networks)
+            },
+            "seccomp": 2,
+        }
+        for name, networks in topology.SERVICE_NETWORKS.items()
+    }
+    created = copy.deepcopy(services)
+    for service in created.values():
+        service.pop("seccomp")
+        service["addresses"] = {name: "" for name in service["networks"]}
+    networks = {
+        f"project_{network}": {
+            "id": f"id-{network}", "internal": True,
+            "members": sorted(
+                service["id"] for name, service in services.items()
+                if network in topology.SERVICE_NETWORKS[name]
+            ),
+            "gateway": [], "gateway_mode": "isolated",
+            "subnet": f"172.{20 + index}.0.0/24",
+        }
+        for index, network in enumerate(("backend", "application", "frontend"))
+    }
     return {
         "schema_version": 1, "run_id": "run", "evidence_id": "evidence",
         "artifact_kind": "plugin", "input_artifact_digest": DIGEST,
@@ -129,6 +160,42 @@ def _persisted():
         "post_command_manifest_digest": MANIFEST, "status": "pass", "pass": True,
         "checks": [dict(check) for check in PERSISTED_CHECKS],
         "provision_full_profile": True, "strict_full_profile": True,
+        "inspection": {
+            "normalized": {"services": sorted(services),
+                           "images": {name: value["image"] for name, value in services.items()},
+                           "networks": ["application", "backend", "frontend"]},
+            "created": {"services": created, "networks": {}, "require_running": False},
+            "started": {"services": services, "networks": networks,
+                        "require_running": True},
+            "post_oracle": {"services": copy.deepcopy(services),
+                            "networks": copy.deepcopy(networks),
+                            "require_running": True},
+            "artifact_seal": {
+                "component": "runtime_artifact_image", "state": "sealed",
+                "seed_started": False, "seed_removed": True, "artifact_mounts": 0,
+                "base_image": "sha256:wordpress", "derived_image": "sha256:derived",
+            },
+        },
+        "cleanup": {
+            "compose": {"component": "compose", "state": "removed", "errors": [],
+                        "remaining": {"containers": [], "networks": [], "volumes": []},
+                        "recovery": []},
+            "images": {"component": "runtime_images", "state": "removed",
+                       "error": None, "remaining": [], "recovery": []},
+            "export": {"component": "runtime_artifact_image", "state": "released",
+                       "error": None, "recovery": None},
+            "workspace": {"component": "runtime_workspace", "state": "removed",
+                          "error": None},
+        },
+        "artifact_execution_retained": False,
+        "artifact_retention": {"retained": False, "resources": [
+            {"component": component, "state": "removed", "exists": False,
+             "live": False, "resource_path": f"/tmp/{component}",
+             "error": None, "recovery_path": None}
+            for component in ("input_copy", "synthesized_runtime")
+        ]},
+        "sandbox_posture": {"host_fallback": False, "static_scan_root": "staged_copy",
+                            "generated_execution": {"php": "pass", "browser": "pass"}},
         "full_plugin_runtime_profile": {"status": "pass", "pass": True, "checks": [
             {"id": "phpcs_wpcs", "status": "pass", "required": True},
             {"id": "plugin_check", "status": "pass", "required": True},
@@ -200,3 +267,127 @@ def test_adversarial_persisted_profile_requires_every_named_check():
     data["checks"] = data["checks"][:-2] + data["checks"][-1:]
     missing = contract.REQUIRED_CHECKS_BY_PROFILE[contract.ADVERSARIAL_PROFILE][-1]
     assert f"{missing} did not pass" in contract.persisted_runtime_errors(data, **expected)
+
+
+def _block_assertion():
+    return BlockRuntimeAssertion(
+        "acme/runtime-card", ".wp-block-acme-runtime-card", "Exact runtime text"
+    )
+
+
+def _block_persisted():
+    data = _persisted()
+    assertion = _block_assertion()
+    text_hash = hashlib.sha256(assertion.expected_frontend_text.encode()).hexdigest()
+    proof = {
+        "status": "pass", "block_name": assertion.block_name,
+        "frontend_selector": assertion.frontend_selector,
+        "expected_text_sha256": text_hash, "observed_text_sha256": text_hash,
+        "match_count": 1, "visible": True,
+        "normalization": "unicode-nfc-whitespace-collapse-trim",
+    }
+    data.update({
+        "artifact_kind": "block", "runtime_profile_id": contract.BLOCK_PROFILE,
+        "checks": [
+            {"id": "wp_cli_activation", "status": "pass", "duration_sec": 0.1},
+            {"id": "plugin_check", "status": "pass", "duration_sec": 0.1},
+            {"id": "block_registration", "status": "pass", "duration_sec": 0.1},
+            {"id": "container_browser", "status": "pass", "duration_sec": 0.1},
+            {"id": "block_editor_frontend", "status": "pass", "duration_sec": 0.1,
+             "proof": proof},
+            {"id": "runtime_identity", "status": "pass"},
+        ],
+        "block_build_smoke_requested": True, "block_build_smoke_status": "pass",
+        "block_build_gate": {"status": "pass"},
+        "block_runtime_artifact_requested": True,
+        "block_runtime_artifact_gate_status": "pass", "execution_proof_digest": "c" * 64,
+        "block_runtime_artifact_gate": {
+            "schema": "wp-meta-skills/block-execution-artifact-gate", "schema_version": 1,
+            "id": "block_runtime_artifact_gate", "status": "pass",
+            "blocked_reason": None,
+            "checks": [{"id": "execution_graph", "status": "pass", "detail": "passed"}],
+            "execution_proof_digest": "c" * 64, "artifact_proof_digest": "d" * 64,
+            "wrapper_sha256": "e" * 64, "wrapper_validation_digest": "f" * 64,
+            "synthesized_manifest_sha256": "1" * 64,
+            "output_manifest_sha256": "2" * 64, "source_manifest_sha256": "3" * 64,
+            "rule_digest": "4" * 64,
+            "core": {"version": "6.8.2", "archive_sha256": "8" * 64,
+                     "blocks_php_sha256": "9" * 64},
+            "selected_root": "blocks/runtime-card/build",
+            "selected_block_json": "blocks/runtime-card/build/block.json",
+            "selection_reason": "built_block_json", "edges": [], "files": [],
+            "scan_files": [], "scanner_aliases": [], "scanner_evidence": {},
+            "component_digests": {
+                "metadata_graph": "5" * 64, "php_set": "6" * 64,
+                "scanner_aliases": "7" * 64, "artifact": "d" * 64,
+            },
+            "wrapper_path": "runtime-card/runtime-card.php", "wrapper_size": 400,
+            "wrapper_checks": [
+                {"id": "bootstrap_exact", "status": "pass"},
+                {"id": "php_syntax", "status": "pass"},
+            ],
+        },
+    })
+    data["artifact_retention"]["resources"].extend([
+        {"component": component, "state": "removed", "exists": False, "live": False,
+         "resource_path": f"/tmp/{component}", "error": None, "recovery_path": None}
+        for component in ("sandbox_output", "scan_handoff")
+    ])
+    data["sandbox_posture"]["generated_execution"].update({
+        "npm_build": "pass", "block_runtime_artifact": "pass",
+    })
+    return data, assertion
+
+
+def test_block_persisted_consumer_requires_exact_profile_proof_and_cleanup():
+    data, assertion = _block_persisted()
+    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="block",
+                    input_digest=DIGEST, block_assertion=assertion)
+    assert contract.persisted_runtime_errors(data, **expected) == []
+    mutations = []
+    for key, value in (("match_count", 2), ("visible", False),
+                       ("observed_text_sha256", "0" * 64)):
+        changed = copy.deepcopy(data)
+        changed["checks"][4]["proof"][key] = value
+        mutations.append(changed)
+    changed = copy.deepcopy(data)
+    changed["checks"][4]["proof"]["extra"] = True
+    mutations.append(changed)
+    for changed in mutations:
+        assert "block editor/frontend proof mismatch" in contract.persisted_runtime_errors(
+            changed, **expected,
+        )
+
+
+@pytest.mark.parametrize("status", ("fail", "blocked"))
+def test_block_persisted_consumer_never_certifies_nonpass(status):
+    data, assertion = _block_persisted()
+    data["status"] = status
+    data["pass"] = False
+    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="block",
+                    input_digest=DIGEST, block_assertion=assertion)
+    assert "top-level runtime status did not pass" in contract.persisted_runtime_errors(
+        data, **expected,
+    )
+
+
+def test_block_persisted_consumer_requires_topology_posture_digest_and_cleanup():
+    data, assertion = _block_persisted()
+    expected = dict(run_id="run", evidence_id="evidence", artifact_kind="block",
+                    input_digest=DIGEST, block_assertion=assertion)
+    mutations = []
+    changed = copy.deepcopy(data); changed["inspection"].pop("post_oracle"); mutations.append(changed)
+    changed = copy.deepcopy(data); changed["sandbox_posture"]["host_fallback"] = True; mutations.append(changed)
+    changed = copy.deepcopy(data); changed["cleanup"]["workspace"]["state"] = "retained"; mutations.append(changed)
+    changed = copy.deepcopy(data); changed["artifact_retention"]["resources"][0]["live"] = True; mutations.append(changed)
+    changed = copy.deepcopy(data); changed["block_runtime_artifact_gate"]["execution_proof_digest"] = "0" * 64; mutations.append(changed)
+    changed = copy.deepcopy(data); changed["inspection"]["normalized"]["images"].pop("browser"); mutations.append(changed)
+    changed = copy.deepcopy(data); changed["inspection"]["started"]["networks"]["project_frontend"]["internal"] = False; mutations.append(changed)
+    changed = copy.deepcopy(data); changed["inspection"]["artifact_seal"]["seed_removed"] = False; mutations.append(changed)
+    changed = copy.deepcopy(data); changed["cleanup"]["compose"]["remaining"]["containers"] = ["leftover"]; mutations.append(changed)
+    changed = copy.deepcopy(data); changed["artifact_retention"]["resources"].append("malformed"); mutations.append(changed)
+    changed = copy.deepcopy(data); changed["block_runtime_artifact_gate"]["component_digests"].pop("artifact"); mutations.append(changed)
+    changed = copy.deepcopy(data); changed["block_runtime_artifact_gate"]["selected_block_json"] = "other/block.json"; mutations.append(changed)
+    changed = copy.deepcopy(data); changed["block_runtime_artifact_gate"]["wrapper_checks"][1]["status"] = "fail"; mutations.append(changed)
+    for changed in mutations:
+        assert contract.persisted_runtime_errors(changed, **expected)

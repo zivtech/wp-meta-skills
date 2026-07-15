@@ -39,6 +39,7 @@ import artifact_layout
 import artifact_staging
 import isolated_runtime_contract
 import runtime_artifact_pipeline
+import runtime_assertions
 import validate_wordpress_artifact
 import wp_env_network_guard
 import wp_security_gate
@@ -1913,13 +1914,31 @@ def _generated_runtime_unsupported(kwargs):
     fields={
         "ability_name":"ability-oracle",
         "editor_smoke":"legacy-editor-oracle",
-        "editor_insert_render_smoke":"legacy-editor-oracle",
         "interactivity_smoke":"legacy-editor-oracle",
         "block_deprecation_smoke":"legacy-editor-oracle",
         "mcp_adapter_smoke":"mcp-adapter",
         "ai_client_smoke":"ai-client",
     }
+    if kwargs.get("editor_insert_render_smoke"):
+        fields.pop("editor_smoke")
     return sorted({label for field,label in fields.items() if kwargs.get(field)})
+
+
+def _isolated_block_assertion(artifact_kind, kwargs):
+    requested = kwargs.get("editor_insert_render_smoke")
+    supplied = any(kwargs.get(name) is not None for name in (
+        "block_name", "expected_frontend_selector", "expected_frontend_text",
+    ))
+    if not requested:
+        if supplied and artifact_kind == "block":
+            raise ValueError("block runtime assertions require editor insert/render smoke")
+        return None
+    if artifact_kind != "block" or not kwargs.get("block_build_smoke"):
+        raise ValueError("isolated block editor/frontend proof requires a built block artifact")
+    return runtime_assertions.make_block_runtime_assertion(
+        kwargs.get("block_name"), kwargs.get("expected_frontend_selector"),
+        kwargs.get("expected_frontend_text"),
+    )
 
 
 def _blocked_isolated_result(detail,digest,receipts=(),requested=None):
@@ -2013,6 +2032,7 @@ def _run_isolated_smoke_input(staged,evidence_id,kwargs):
     digest=artifact_staging.digest_manifest_tree(staged.manifest)
     expected=kwargs.get("expected_artifact_digest")
     artifact_kind=kwargs.get("artifact_kind","plugin")
+    assertion=_isolated_block_assertion(artifact_kind,kwargs)
     lease=create_ephemeral(kwargs.get("workdir"),WorkspacePurpose.RUNTIME)
     prepared=None; terminal=None; runtime=None; request=None
     try:
@@ -2042,8 +2062,15 @@ def _run_isolated_smoke_input(staged,evidence_id,kwargs):
         else:
             if prepared.synthesized is None:
                 raise ValueError("runtime prerequisites passed without a synthesized artifact")
+            if assertion is not None and prepared.synthesized.block_name != assertion.block_name:
+                raise ValueError("materialized block name does not match the runtime assertion")
+            requested_oracles=(
+                isolated_runtime_contract.BLOCK_REQUESTED_ORACLES
+                if assertion is not None else isolated_runtime_contract.STANDARD_REQUESTED_ORACLES
+            )
             request=RuntimeRequest(prepared.synthesized.staged,prepared.synthesized.plugin_slug,evidence_id,
-                digest,expected,kwargs["timeout_sec"],lease.root.parent)
+                digest,expected,kwargs["timeout_sec"],lease.root.parent,
+                requested_oracles=requested_oracles,block_assertion=assertion)
             runtime=wp_env_network_guard.run_staged_runtime(request)
             if not isinstance(runtime,RuntimeResult): raise TypeError("isolated runtime returned an invalid result")
     except runtime_artifact_pipeline.RuntimePreparationError as exc:
@@ -2140,6 +2167,8 @@ def run_smoke(
     fixture_kind: str = "plugin",
     editor_smoke: bool = False,
     editor_insert_render_smoke: bool = False,
+    expected_frontend_selector: str | None = None,
+    expected_frontend_text: str | None = None,
     interactivity_smoke: bool = False,
     block_deprecation_smoke: bool = False,
     block_build_smoke: bool = False,
@@ -2157,6 +2186,10 @@ def run_smoke(
     editor_smoke = editor_smoke or editor_insert_render_smoke or block_deprecation_smoke
     if interactivity_smoke and not editor_insert_render_smoke:
         raise ValueError("interactivity_smoke requires editor_insert_render_smoke")
+    if editor_insert_render_smoke:
+        runtime_assertions.make_block_runtime_assertion(
+            block_name, expected_frontend_selector, expected_frontend_text,
+        )
     if artifact_kind not in {"plugin", "block"}:
         raise ValueError(f"unsupported artifact_kind: {artifact_kind}")
     lease = create_ephemeral(workdir, WorkspacePurpose.RUNTIME)
@@ -2469,7 +2502,11 @@ def run_smoke(
                                 str(timeout_sec * 1000),
                             ]
                             if editor_insert_render_smoke:
-                                editor_command.append("--insert-render-smoke")
+                                editor_command.extend([
+                                    "--insert-render-smoke",
+                                    "--expected-frontend-selector", str(expected_frontend_selector),
+                                    "--expected-frontend-text", str(expected_frontend_text),
+                                ])
                             if interactivity_smoke:
                                 editor_command.append("--interactivity-smoke")
                             if block_deprecation_smoke:
@@ -2826,6 +2863,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--block-name", help="Named block to verify in WP_Block_Type_Registry after plugin activation.")
     parser.add_argument("--editor-smoke", action="store_true", help="Open the block editor with Playwright and verify --block-name is available to the editor registry.")
     parser.add_argument("--editor-insert-render-smoke", action="store_true", help="Extend --editor-smoke by inserting the block, publishing a post, and verifying frontend render text.")
+    parser.add_argument("--expected-frontend-selector", help="Exact fixture-owned frontend selector required by --editor-insert-render-smoke.")
+    parser.add_argument("--expected-frontend-text", help="Exact fixture-owned visible text required by --editor-insert-render-smoke.")
     parser.add_argument("--interactivity-smoke", action="store_true", help="Require Interactivity API static surfaces and a frontend click/state assertion. Requires --editor-insert-render-smoke.")
     parser.add_argument("--deprecation-smoke", action="store_true", help="Create a post with legacy serialized block content, open it in the editor, save the migrated block, and verify frontend output.")
     parser.add_argument(
@@ -2911,6 +2950,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--editor-smoke requires --block-name")
     if args.editor_insert_render_smoke and not args.block_name and not can_infer_block_name:
         parser.error("--editor-insert-render-smoke requires --block-name")
+    if args.editor_insert_render_smoke:
+        try:
+            runtime_assertions.make_block_runtime_assertion(
+                args.block_name, args.expected_frontend_selector, args.expected_frontend_text,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.interactivity_smoke and not args.editor_insert_render_smoke:
         parser.error("--interactivity-smoke requires --editor-insert-render-smoke")
     if args.deprecation_smoke and not args.block_name and not can_infer_block_name:
@@ -2932,6 +2978,8 @@ def main(argv: list[str] | None = None) -> int:
         fixture_kind=args.fixture_kind,
         editor_smoke=args.editor_smoke or args.editor_insert_render_smoke,
         editor_insert_render_smoke=args.editor_insert_render_smoke,
+        expected_frontend_selector=args.expected_frontend_selector,
+        expected_frontend_text=args.expected_frontend_text,
         interactivity_smoke=args.interactivity_smoke,
         block_deprecation_smoke=args.deprecation_smoke,
         block_build_smoke=args.block_build_smoke,

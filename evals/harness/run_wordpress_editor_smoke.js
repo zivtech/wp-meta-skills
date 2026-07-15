@@ -99,6 +99,12 @@ function parseArgs(argv) {
       index += 1;
     } else if (key === "--insert-render-smoke") {
       args.insertRenderSmoke = true;
+    } else if (key === "--expected-frontend-selector") {
+      args.expectedFrontendSelector = value;
+      index += 1;
+    } else if (key === "--expected-frontend-text") {
+      args.expectedFrontendText = value;
+      index += 1;
     } else if (key === "--interactivity-smoke") {
       args.interactivitySmoke = true;
     } else if (key === "--deprecation-smoke") {
@@ -130,6 +136,9 @@ function parseArgs(argv) {
   }
   if (args.interactivitySmoke && !args.insertRenderSmoke) {
     throw new Error("--interactivity-smoke requires --insert-render-smoke");
+  }
+  if (args.insertRenderSmoke && (!args.expectedFrontendSelector || !args.expectedFrontendText)) {
+    throw new Error("--insert-render-smoke requires exact frontend selector and text");
   }
   if (args.deprecationSmoke && !args.postId) {
     throw new Error("--deprecation-smoke requires --post-id");
@@ -163,14 +172,17 @@ function defaultBlockClassName(blockName) {
   return `wp-block-${normalized.replace(/\//g, "-").replace(/[^a-z0-9_-]/gi, "-").toLowerCase()}`;
 }
 
-function verifyFrontendRender(wrapperText, wrapperClass, expectedText = "Runtime block smoke") {
+function verifyFrontendRender(wrapperText, wrapperSelector, expectedText) {
+  if (!expectedText || !wrapperSelector) {
+    throw new Error("frontend render assertion must be explicit");
+  }
   const frontendTextFound = wrapperText.includes(expectedText);
   if (!frontendTextFound) {
-    throw new Error(`frontend render text not found in .${wrapperClass}`);
+    throw new Error(`frontend render text not found in ${wrapperSelector}`);
   }
   return {
     frontendTextFound,
-    wrapperClass,
+    wrapperSelector,
     wrapperText: truncate(wrapperText),
   };
 }
@@ -489,7 +501,9 @@ async function main() {
           await page.goto(frontendUrl, { waitUntil: "domcontentloaded", timeout });
           const wrapper = page.locator(`.${wrapperClass}`).first();
           const wrapperText = await wrapper.innerText({ timeout });
-          const frontendRender = verifyFrontendRender(wrapperText, wrapperClass, args.expectedMigratedText);
+          const frontendRender = verifyFrontendRender(
+            wrapperText, `.${wrapperClass}`, args.expectedMigratedText,
+          );
 
           return {
             ...migrated,
@@ -573,9 +587,13 @@ async function main() {
           const frontendUrl = inserted.permalink || postUrl(args.url, inserted.postId);
           const wrapperClass = defaultBlockClassName(args.blockName);
           await page.goto(frontendUrl, { waitUntil: "domcontentloaded", timeout });
-          const wrapper = page.locator(`.${wrapperClass}`).first();
+          const wrapper = page.locator(args.expectedFrontendSelector).first();
           const wrapperText = await wrapper.innerText({ timeout });
-          const frontendRender = verifyFrontendRender(wrapperText, wrapperClass);
+          const frontendRender = verifyFrontendRender(
+            wrapperText,
+            args.expectedFrontendSelector,
+            args.expectedFrontendText,
+          );
           const frontendInteractivity = args.interactivitySmoke
             ? await verifyFrontendInteractivity(page, wrapperClass, timeout)
             : null;

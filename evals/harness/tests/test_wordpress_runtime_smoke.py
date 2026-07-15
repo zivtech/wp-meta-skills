@@ -1,6 +1,8 @@
 """Tests for the disposable WordPress runtime smoke harness."""
 
 import json
+import dataclasses
+import hashlib
 import io
 import re
 import shutil
@@ -1187,6 +1189,8 @@ def test_runtime_smoke_can_request_editor_insert_render_smoke(tmp_path, monkeypa
         fixture_kind="block",
         block_name="acme/runtime-card",
         editor_insert_render_smoke=True,
+        expected_frontend_selector=".wp-block-acme-runtime-card",
+        expected_frontend_text="Runtime block smoke",
     )
 
     editor_command = next(command for command, _cwd in commands if any("run_wordpress_editor_smoke.js" in part for part in command))
@@ -1196,6 +1200,8 @@ def test_runtime_smoke_can_request_editor_insert_render_smoke(tmp_path, monkeypa
     assert result["editor_insert_render_smoke_requested"] is True
     assert result["editor_smoke_status"] == "pass"
     assert "--insert-render-smoke" in editor_command
+    assert editor_command[editor_command.index("--expected-frontend-selector") + 1] == ".wp-block-acme-runtime-card"
+    assert editor_command[editor_command.index("--expected-frontend-text") + 1] == "Runtime block smoke"
     assert "not full editor interaction proof" not in result["negative_space"]
     assert "not block deprecation proof" in result["negative_space"]
     assert "not Interactivity API proof" in result["negative_space"]
@@ -1240,17 +1246,18 @@ def test_runtime_smoke_wraps_generated_block_artifact_for_editor_insert_render(t
     monkeypatch.setattr(smoke, "run_command", fake_run_command)
     patch_artifact_validators(monkeypatch, fake_validate_artifact)
 
-    result = smoke.run_smoke(
-        timeout_sec=5,
-        workdir=tmp_path / "fixture",
-        artifact_path=source,
-        artifact_kind="block",
-        keep_artifacts=True,
-        editor_insert_render_smoke=True,
-    )
-    assert result["status"] == "blocked"
-    assert result["editor_smoke_status"] == "blocked"
-    assert "legacy-editor-oracle" in result["reason"]
+    with pytest.raises(ValueError, match="built block artifact"):
+        smoke.run_smoke(
+            timeout_sec=5,
+            workdir=tmp_path / "fixture",
+            artifact_path=source,
+            artifact_kind="block",
+            keep_artifacts=True,
+            block_name="acme/runtime-card",
+            editor_insert_render_smoke=True,
+            expected_frontend_selector=".wp-block-acme-runtime-card",
+            expected_frontend_text="Runtime block smoke",
+        )
     assert commands == [] and validate_calls == []
 
 
@@ -1321,17 +1328,90 @@ def test_runtime_smoke_runs_generated_block_build_gate_on_disposable_copy(tmp_pa
         artifact_kind="block",
         keep_artifacts=True,
         block_build_smoke=True,
+        block_name="acme/runtime-card",
         editor_insert_render_smoke=True,
+        expected_frontend_selector=".wp-block-acme-runtime-card",
+        expected_frontend_text="Runtime block smoke",
     )
 
     assert not any(command[:2] == ["/usr/bin/npm", "install"] for command, _cwd in commands)
     assert result["status"] == "blocked"
     assert result["block_build_smoke_status"] == "blocked"
     assert result["editor_smoke_status"] == "blocked"
-    assert "legacy-editor-oracle" in result["reason"]
+    assert "exact Plan 008 artifact digest" in result["reason"]
     assert not any(call[0] == "block" and call[2] == [] for call in validate_calls)
     assert result["block_runtime_artifact_requested"] is True
     assert result["artifact_retention"]["components"]["sandbox_output"]["state"] == "removed"
+
+
+def test_isolated_built_block_carries_exact_assertion_into_runtime_request(tmp_path, monkeypatch):
+    source = tmp_path / "block"
+    source.mkdir()
+    (source / "block.json").write_text(
+        '{"name":"acme/runtime-card","title":"Card","category":"widgets"}',
+        encoding="utf-8",
+    )
+    digest = smoke.digest_regular_tree(source)
+    execution_digest = "c" * 64
+    observed = []
+
+    def prepare(staged, _kind, _source, _build, _phpunit, _full, _timeout, parent, _root):
+        synthesized = smoke.runtime_artifact_pipeline.synthesize_plugin_runtime(
+            staged, "generated", parent,
+        )
+        synthesized = dataclasses.replace(
+            synthesized, block_name="acme/runtime-card",
+            execution_proof=SimpleNamespace(execution_proof_digest=execution_digest),
+        )
+        gate = {"status": "pass", "execution_proof_digest": execution_digest, "checks": []}
+        return smoke.PreparedRuntimeArtifact(
+            synthesized, staged, None, {"status": "pass", "checks": []}, gate,
+            None, {"status": "pass", "checks": [
+                {"id": "phpcs_wpcs", "status": "pass"},
+            ]}, {}, None,
+        )
+
+    def runtime(request):
+        observed.append(request)
+        assertion = request.block_assertion
+        text_hash = hashlib.sha256(assertion.expected_frontend_text.encode()).hexdigest()
+        proof = {"status": "pass", "block_name": assertion.block_name,
+            "frontend_selector": assertion.frontend_selector,
+            "expected_text_sha256": text_hash, "observed_text_sha256": text_hash,
+            "match_count": 1, "visible": True,
+            "normalization": "unicode-nfc-whitespace-collapse-trim"}
+        checks = (
+            {"id": "wp_cli_activation", "status": "pass", "duration_sec": 0.1},
+            {"id": "plugin_check", "status": "pass", "duration_sec": 0.1},
+            {"id": "block_registration", "status": "pass", "duration_sec": 0.1},
+            {"id": "container_browser", "status": "pass", "duration_sec": 0.1},
+            {"id": "block_editor_frontend", "status": "pass", "duration_sec": 0.1,
+             "proof": proof},
+        )
+        return smoke.RuntimeResult(
+            "pass", request.evidence_id, request.input_artifact_digest,
+            smoke.artifact_staging.manifest_sha256(request.staged.manifest), checks,
+        )
+
+    monkeypatch.setattr(smoke, "_prepare_generated_runtime", prepare)
+    monkeypatch.setattr(smoke.wp_env_network_guard, "run_staged_runtime", runtime)
+    result = smoke.run_smoke(
+        timeout_sec=60, workdir=tmp_path / "work", artifact_path=source,
+        artifact_kind="block", expected_artifact_digest=digest, evidence_id="plan011",
+        block_build_smoke=True, block_name="acme/runtime-card",
+        editor_insert_render_smoke=True,
+        expected_frontend_selector=".wp-block-acme-runtime-card",
+        expected_frontend_text="Exact runtime text",
+        provision_full_profile=True, strict_full_profile=True,
+    )
+    assert result["status"] == "pass"
+    assert result["runtime_profile_id"] == "block-runtime"
+    assert result["block_runtime_artifact_gate_status"] == "pass"
+    assert len(observed) == 1
+    assert observed[0].requested_oracles == (
+        "activation", "browser", "block_frontend",
+    )
+    assert observed[0].block_assertion.expected_frontend_text == "Exact runtime text"
 
 
 def test_block_interactivity_surface_gate_requires_exact_surfaces(tmp_path):
@@ -1393,7 +1473,10 @@ def test_runtime_smoke_can_request_interactivity_smoke(tmp_path, monkeypatch):
         artifact_kind="block",
         keep_artifacts=True,
         block_build_smoke=True,
+        block_name="acme/interactive-counter",
         editor_insert_render_smoke=True,
+        expected_frontend_selector=".wp-block-acme-interactive-counter",
+        expected_frontend_text="0",
         interactivity_smoke=True,
     )
     assert result["status"] == "blocked"
@@ -1569,7 +1652,7 @@ const smoke = require(process.argv[1]);
 assert.strictEqual(smoke.defaultBlockClassName("acme/runtime-card"), "wp-block-acme-runtime-card");
 assert.strictEqual(smoke.defaultBlockClassName("core/paragraph"), "wp-block-paragraph");
 assert.strictEqual(
-  smoke.verifyFrontendRender("Runtime block smoke", "wp-block-acme-runtime-card").frontendTextFound,
+  smoke.verifyFrontendRender("Runtime block smoke", ".wp-block-acme-runtime-card", "Runtime block smoke").frontendTextFound,
   true,
 );
 assert.deepStrictEqual(
@@ -1593,7 +1676,7 @@ assert.deepStrictEqual(
   },
 );
 assert.throws(
-  () => smoke.verifyFrontendRender("Unrelated body text", "wp-block-acme-runtime-card"),
+  () => smoke.verifyFrontendRender("Unrelated body text", ".wp-block-acme-runtime-card", "Runtime block smoke"),
   /frontend render text not found/,
 );
 assert.throws(

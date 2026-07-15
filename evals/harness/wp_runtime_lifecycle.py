@@ -72,7 +72,10 @@ def _primary_status(primary,phase):
     return "fail" if phase=="oracles" and not isinstance(primary,TimeoutError) else "blocked"
 
 
-def execute_runtime(work,project,runtime,artifact_image,slug,deadline,requested,artifact_digest):
+def execute_runtime(
+    work,project,runtime,artifact_image,slug,deadline,requested,artifact_digest,
+    block_assertion=None,
+):
     if not isinstance(deadline,RuntimeDeadline): deadline=RuntimeDeadline.start(deadline)
     compose=work/"compose.json"; spec=topology.write_compose(
         compose,runtime.images,runtime.identities,artifact_image,slug
@@ -92,7 +95,9 @@ def execute_runtime(work,project,runtime,artifact_image,slug,deadline,requested,
         evidence["started"]=inspection.inspect_live(
             base,runtime.images,runtime.identities,artifact_image,project,slug,deadline
         )
-        phase="oracles"; checks=oracles.run_oracles(base,slug,deadline,requested,artifact_digest)
+        phase="oracles"; checks=oracles.run_oracles(
+            base,slug,deadline,requested,artifact_digest,block_assertion,
+        )
         evidence["post_oracle"]=inspection.inspect_live(
             base,runtime.images,runtime.identities,artifact_image,project,slug,deadline
         )

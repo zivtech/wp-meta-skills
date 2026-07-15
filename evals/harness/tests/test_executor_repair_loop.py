@@ -9,13 +9,17 @@ from __future__ import annotations
 
 import sys
 import json
+import copy
 from pathlib import Path
+
+import pytest
 
 HARNESS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HARNESS))
 
 import run_executor_repair_loop as loop  # noqa: E402
 import isolated_runtime_contract  # noqa: E402
+from wp_runtime_types import BlockRuntimeAssertion  # noqa: E402
 
 
 def _stub_generate(record):
@@ -197,18 +201,21 @@ def test_repair_runtime_contract_rejects_legacy_profile_without_isolated_oracles
         data, run_id="run", evidence_id="evidence",
         artifact_kind="plugin", input_digest="a" * 64,
     )
-    assert errors == [
+    assert {
         "wp_cli_activation did not pass", "plugin_check did not pass",
-        "container_browser did not pass",
-        "runtime_identity did not pass",
-        "runtime check timing evidence invalid",
-        "full plugin runtime profile did not pass",
-    ]
+        "container_browser did not pass", "runtime_identity did not pass",
+        "runtime check timing evidence invalid", "full plugin runtime profile did not pass",
+        "runtime topology inspection inventory mismatch", "runtime cleanup inventory mismatch",
+        "artifact retention cleanup did not converge", "sandbox posture did not pass",
+        "strict full profile was not requested",
+    } <= set(errors)
 
 
 def test_repair_runtime_command_uses_exact_isolated_contract_only(tmp_path):
+    adapter = loop.runtime_adapter("plugin", "runtime")
     command = loop._isolated_runtime_command(
-        tmp_path / "plugin", tmp_path / "results", "run", "evidence", "a" * 64, 300
+        adapter, tmp_path / "plugin", tmp_path / "results", "run", "evidence",
+        "a" * 64, 300,
     )
     assert "--provision-full-profile" in command and "--strict-full-profile" in command
     assert command[command.index("--evidence-id") + 1] == "evidence"
@@ -216,7 +223,133 @@ def test_repair_runtime_command_uses_exact_isolated_contract_only(tmp_path):
     assert command[command.index("--results-root") + 1] == str(tmp_path / "results")
 
 
+def _block_assertion():
+    return BlockRuntimeAssertion(
+        "acme/runtime-card", ".wp-block-acme-runtime-card", "Exact runtime card text"
+    )
+
+
+def test_executor_profile_matrix_is_exact_and_immutable():
+    assert loop.EXECUTOR_PROFILE_MATRIX == {
+        "plugin": {"static": "supported", "runtime": "supported"},
+        "block": {"static": "supported", "runtime": "conditional"},
+        "blueprint": {"static": "supported", "runtime": "rejected"},
+    }
+    with pytest.raises(TypeError):
+        loop.EXECUTOR_PROFILE_MATRIX["plugin"] = {}
+
+
+@pytest.mark.parametrize(
+    ("executor", "profile", "assertion"),
+    (
+        ("plugin", "static", None), ("plugin", "runtime", None),
+        ("block", "static", None), ("block", "runtime", _block_assertion()),
+        ("blueprint", "static", None),
+    ),
+)
+def test_supported_matrix_combinations(executor, profile, assertion):
+    assert loop.validate_compatibility(executor, profile, assertion) is assertion
+
+
+def test_conditional_and_rejected_runtime_are_direct_api_errors(tmp_path):
+    with pytest.raises(ValueError, match="assertion"):
+        loop.validate_compatibility("block", "runtime", None)
+    with pytest.raises(ValueError, match="Blueprint runtime"):
+        loop.validate_compatibility("blueprint", "runtime", None)
+    with pytest.raises(ValueError, match="Blueprint runtime"):
+        loop.make_certify("wordpress-blueprint-executor", "blueprint", tmp_path,
+                          "runtime", 60)
+
+
+def test_blueprint_runtime_cli_rejects_before_any_side_effect(monkeypatch):
+    monkeypatch.setattr(
+        loop, "create_named", lambda *_args, **_kwargs: pytest.fail("run directory created")
+    )
+    monkeypatch.setattr(
+        loop, "make_generate", lambda *_args, **_kwargs: pytest.fail("provider preflight reached")
+    )
+    with pytest.raises(SystemExit) as raised:
+        loop.main([
+            "--suite", "wordpress-blueprint-executor", "--fixture", "smoke-wordpress-v1",
+            "--executor", "blueprint", "--profile", "runtime", "--run-id", "rejected",
+        ])
+    assert raised.value.code == 2
+
+
+def test_block_runtime_cli_loads_assertions_before_run_directory(monkeypatch, tmp_path):
+    fixtures = tmp_path / "wordpress-block-executor" / "fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / "card.md").write_text("card", encoding="utf-8")
+    (fixtures / "card.metadata.yaml").write_text(
+        "name: card\nsuite: wordpress-block-executor\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(loop.invoke, "SUITES_ROOT", tmp_path)
+    monkeypatch.setattr(
+        loop, "create_named", lambda *_args, **_kwargs: pytest.fail("run directory created")
+    )
+    with pytest.raises(SystemExit) as raised:
+        loop.main([
+            "--suite", "wordpress-block-executor", "--fixture", "card",
+            "--executor", "block", "--profile", "runtime", "--run-id", "rejected",
+        ])
+    assert raised.value.code == 2
+
+
+def test_block_runtime_command_uses_named_adapter_and_exact_assertions(tmp_path):
+    assertion = _block_assertion()
+    adapter = loop.runtime_adapter("block", "runtime", assertion)
+    command = loop._isolated_runtime_command(
+        adapter, tmp_path / "block", tmp_path / "results", "run", "evidence",
+        "a" * 64, 300, assertion,
+    )
+    assert command[command.index("--artifact-kind") + 1] == "block"
+    assert "--block-build-smoke" in command
+    assert "--editor-insert-render-smoke" in command
+    assert command[command.index("--block-name") + 1] == assertion.block_name
+    assert command[command.index("--expected-frontend-selector") + 1] == assertion.frontend_selector
+    assert command[command.index("--expected-frontend-text") + 1] == assertion.expected_frontend_text
+
+
+def test_materialized_block_name_must_equal_fixture_assertion(tmp_path):
+    block = tmp_path / "block"
+    block.mkdir()
+    (block / "block.json").write_text(
+        '{"name":"acme/runtime-card","title":"Card","category":"widgets"}',
+        encoding="utf-8",
+    )
+    assert loop._materialized_block_name(block) == "acme/runtime-card"
+    with pytest.raises(ValueError, match="does not match"):
+        loop._require_materialized_block_name(block, BlockRuntimeAssertion(
+            "acme/other", ".wp-block-acme-other", "Other"
+        ))
+
+
 def test_repair_runtime_verdict_requires_exact_isolated_checks():
+    service_networks = {
+        "database": ("backend",), "wordpress": ("backend", "application"),
+        "cli": ("backend",), "gateway": ("application", "frontend"),
+        "browser": ("frontend",),
+    }
+    services = {
+        name: {"id": f"id-{name}", "image": f"sha256:{name}", "mounts": [],
+               "networks": [f"project_{network}" for network in networks],
+               "addresses": {f"project_{network}": "172.20.0.2" for network in networks},
+               "seccomp": 2}
+        for name, networks in service_networks.items()
+    }
+    created = copy.deepcopy(services)
+    for service in created.values():
+        service.pop("seccomp")
+        service["addresses"] = {name: "" for name in service["networks"]}
+    networks = {
+        f"project_{network}": {
+            "id": f"id-{network}", "internal": True,
+            "members": sorted(service["id"] for name, service in services.items()
+                              if network in service_networks[name]),
+            "gateway": [], "gateway_mode": "isolated", "subnet": "172.20.0.0/24",
+        }
+        for network in ("backend", "application", "frontend")
+    }
     data = {
         "schema_version": 1, "run_id": "run", "evidence_id": "evidence",
         "artifact_kind": "plugin", "input_artifact_digest": "a" * 64,
@@ -229,19 +362,54 @@ def test_repair_runtime_verdict_requires_exact_isolated_checks():
             {"id": "runtime_identity", "status": "pass"},
         ],
         "provision_full_profile": True, "strict_full_profile": True,
+        "inspection": {
+            "normalized": {"services": sorted(services),
+                           "images": {name: value["image"] for name, value in services.items()},
+                           "networks": ["application", "backend", "frontend"]},
+            "created": {"services": created, "networks": {}, "require_running": False},
+            "started": {"services": services, "networks": networks, "require_running": True},
+            "post_oracle": {"services": copy.deepcopy(services),
+                            "networks": copy.deepcopy(networks), "require_running": True},
+            "artifact_seal": {"component": "runtime_artifact_image", "state": "sealed",
+                              "seed_started": False, "seed_removed": True,
+                              "artifact_mounts": 0, "base_image": "sha256:wordpress",
+                              "derived_image": "sha256:derived"},
+        },
+        "cleanup": {
+            "compose": {"component": "compose", "state": "removed", "errors": [],
+                        "remaining": {"containers": [], "networks": [], "volumes": []},
+                        "recovery": []},
+            "images": {"component": "runtime_images", "state": "removed", "error": None,
+                       "remaining": [], "recovery": []},
+            "export": {"component": "runtime_artifact_image", "state": "released",
+                       "error": None, "recovery": None},
+            "workspace": {"component": "runtime_workspace", "state": "removed", "error": None},
+        },
+        "artifact_execution_retained": False,
+        "artifact_retention": {"retained": False, "resources": [
+            {"component": component, "state": "removed", "exists": False,
+             "live": False, "resource_path": f"/tmp/{component}",
+             "error": None, "recovery_path": None}
+            for component in ("input_copy", "synthesized_runtime")
+        ]},
+        "sandbox_posture": {"host_fallback": False, "static_scan_root": "staged_copy",
+                            "generated_execution": {"php": "pass", "browser": "pass"}},
         "full_plugin_runtime_profile": {"status": "pass", "pass": True, "checks": [
             {"id": "phpcs_wpcs", "status": "pass"},
             {"id": "plugin_check", "status": "pass"},
             {"id": "wp_env_smoke", "status": "pass"},
         ]},
     }
+    adapter = loop.runtime_adapter("plugin", "runtime")
     verdict = loop._isolated_runtime_verdict(
-        data, run_id="run", evidence_id="evidence", expected_digest="a" * 64
+        data, adapter=adapter, run_id="run", evidence_id="evidence",
+        expected_digest="a" * 64,
     )
     assert verdict["passed"] is True
     data["post_command_manifest_digest"] = "c" * 64
     assert loop._isolated_runtime_verdict(
-        data, run_id="run", evidence_id="evidence", expected_digest="a" * 64
+        data, adapter=adapter, run_id="run", evidence_id="evidence",
+        expected_digest="a" * 64,
     )["failing_gates"] == ["runtime_result"]
 
 
