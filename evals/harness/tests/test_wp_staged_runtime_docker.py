@@ -23,6 +23,16 @@ import wp_env_network_guard as guard
 from wp_runtime_evidence import scrub_tail
 from wp_runtime_types import RuntimeRequest
 
+BLOCK_DIAGNOSTIC_FIELD_LIMIT = 20
+BLOCK_DIAGNOSTIC_REASON_LIMIT = 500
+BLOCK_DIAGNOSTIC_FAILURE_LIMIT = 500
+BLOCK_DIAGNOSTIC_TOTAL_LIMIT = 1100
+
+
+def _diagnostic_tail(value, limit):
+    raw = str(value or "")
+    return scrub_tail(raw, len(raw))[-limit:] if raw else ""
+
 
 def _synthesized(tmp_path, slug="safe-plugin"):
     source = tmp_path / "source"
@@ -61,27 +71,44 @@ def _block_failure_diagnostic(result):
                 errors = json.loads(detail).get("errors") or []
             except (json.JSONDecodeError, AttributeError):
                 errors = []
-            rendered = " | ".join(scrub_tail(str(value), 180) for value in errors[:3])
+            rendered = " | ".join(_diagnostic_tail(value, 180) for value in errors[:3])
             failed.append(
                 f"{item.get('id')}:{item.get('status')}:"
-                f"{rendered or scrub_tail(detail, 180)}"
+                f"{rendered or _diagnostic_tail(detail, 180)}"
             )
-    build = result.get("block_build_smoke_status")
-    artifact = result.get("block_runtime_artifact_gate_status")
-    raw_reason = str(result.get("reason") or "")
-    reason = scrub_tail(raw_reason, len(raw_reason))[-500:] if raw_reason else ""
+    build = _diagnostic_tail(
+        result.get("block_build_smoke_status"), BLOCK_DIAGNOSTIC_FIELD_LIMIT,
+    )
+    artifact = _diagnostic_tail(
+        result.get("block_runtime_artifact_gate_status"), BLOCK_DIAGNOSTIC_FIELD_LIMIT,
+    )
+    reason = _diagnostic_tail(result.get("reason"), BLOCK_DIAGNOSTIC_REASON_LIMIT)
+    failures = _diagnostic_tail(
+        " | ".join(failed[:3]), BLOCK_DIAGNOSTIC_FAILURE_LIMIT,
+    )
     return (
         f"build={build};artifact={artifact};reason={reason};"
-        f"failures={' | '.join(failed[:3])}"
+        f"failures={failures}"
     )
 
 
 def test_block_failure_diagnostic_surfaces_bounded_redacted_runtime_reason():
+    failed = [
+        {
+            "id": f"failed-{index}", "status": "blocked",
+            "detail": json.dumps({"errors": [
+                "x" * 300 + f" password=errorsecret-{index}-{error}"
+                + (" failure final marker" if (index, error) == (2, 2) else "")
+                for error in range(3)
+            ]}),
+        }
+        for index in range(3)
+    ]
     result = {
-        "reason": "x" * 1200 + "\npassword=topsecret\nbrowser policy failed",
-        "checks": [],
-        "block_build_smoke_status": "pass",
-        "block_runtime_artifact_gate_status": "pass",
+        "reason": "x" * 1200 + "\npassword=topsecret\nruntime final marker",
+        "checks": failed,
+        "block_build_smoke_status": "pass" * 20,
+        "block_runtime_artifact_gate_status": "pass" * 20,
     }
 
     diagnostic = _block_failure_diagnostic(result)
@@ -89,8 +116,11 @@ def test_block_failure_diagnostic_surfaces_bounded_redacted_runtime_reason():
     assert "reason=" in diagnostic
     assert "password=[REDACTED]" in diagnostic
     assert "topsecret" not in diagnostic
-    assert diagnostic.endswith(";failures=")
-    assert len(diagnostic) <= 1100
+    assert "errorsecret" not in diagnostic
+    assert "runtime final marker" in diagnostic
+    assert "failure final marker" in diagnostic
+    assert all(field in diagnostic for field in ("build=", "artifact=", "failures="))
+    assert len(diagnostic) <= BLOCK_DIAGNOSTIC_TOTAL_LIMIT
 
 
 @pytest.fixture(scope="module")
