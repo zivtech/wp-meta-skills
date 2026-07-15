@@ -1,7 +1,6 @@
 'use strict';
 const crypto = require('crypto');
 const net = require('net');
-const { chromium } = require('playwright');
 const requestPolicy = require('./request-policy');
 
 const ORIGIN = requestPolicy.ORIGIN;
@@ -25,6 +24,26 @@ function digest(value) {
   return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
+function editorReady(expectedPostId) {
+  try {
+    const data = globalThis.wp?.data;
+    const blocks = globalThis.wp?.blocks;
+    if (!data || !blocks || typeof blocks.createBlock !== 'function') return false;
+    const blockActions = data.dispatch('core/block-editor');
+    const editorActions = data.dispatch('core/editor');
+    const blockState = data.select('core/block-editor');
+    const editorState = data.select('core/editor');
+    return Boolean(blockActions && typeof blockActions.insertBlocks === 'function'
+      && editorActions && typeof editorActions.editPost === 'function'
+      && typeof editorActions.savePost === 'function'
+      && blockState && typeof blockState.getBlocks === 'function'
+      && editorState && typeof editorState.getCurrentPostId === 'function'
+      && Number(editorState.getCurrentPostId()) === Number(expectedPostId));
+  } catch (_) {
+    return false;
+  }
+}
+
 async function login(page, origin) {
   const response = await page.goto(`${origin}/wp-login.php`, {waitUntil: 'domcontentloaded', timeout: 15000});
   if (!response || !response.ok()) throw new Error('login page unavailable');
@@ -41,17 +60,24 @@ async function blockFrontendProof(page, origin, assertion) {
     {waitUntil: 'domcontentloaded', timeout: 15000});
   await page.waitForFunction(name => Boolean(globalThis.wp?.blocks?.getBlockType(name)),
     assertion.blockName, {timeout: 15000});
+  await page.waitForFunction(editorReady, assertion.postId, {timeout: 15000});
   await page.evaluate(async ({blockName}) => {
     const block = globalThis.wp.blocks.createBlock(blockName);
-    globalThis.wp.data.dispatch('core/block-editor').insertBlocks(block);
+    const blockActions = globalThis.wp.data.dispatch('core/block-editor');
+    const editorActions = globalThis.wp.data.dispatch('core/editor');
+    if (!blockActions || typeof blockActions.insertBlocks !== 'function'
+        || !editorActions || typeof editorActions.editPost !== 'function'
+        || typeof editorActions.savePost !== 'function') {
+      throw new Error('editor actions became unavailable after readiness');
+    }
+    blockActions.insertBlocks(block);
     const blocks = globalThis.wp.data.select('core/block-editor').getBlocks();
     if (!blocks.some(item => item.clientId === block.clientId && item.name === blockName)) {
       throw new Error('inserted block is missing from the editor store');
     }
     const content = globalThis.wp.blocks.serialize(blocks);
-    const editor = globalThis.wp.data.dispatch('core/editor');
-    editor.editPost({content, status: 'publish'});
-    await editor.savePost();
+    editorActions.editPost({content, status: 'publish'});
+    await editorActions.savePost();
     const state = globalThis.wp.data.select('core/editor');
     if (typeof state.didPostSaveRequestFail === 'function'
         && state.didPostSaveRequestFail()) throw new Error('editor save request failed');
@@ -70,7 +96,8 @@ async function blockFrontendProof(page, origin, assertion) {
   return proof;
 }
 
-(async () => {
+async function main() {
+  const { chromium } = require('playwright');
   const profile = process.argv[2] || 'standard';
   const origin = process.argv[3] || process.env.WP_RUNTIME_ORIGIN || ORIGIN;
   const slug = process.argv[4];
@@ -152,4 +179,13 @@ async function blockFrontendProof(page, origin, assertion) {
   process.stdout.write(JSON.stringify({profile, origin, canaries, block_editor_frontend: blockProof,
     generated_denials: generatedDenials, generated_observers: generatedObservers,
     generated_navigation_denials: [...generatedNavigationDenials].sort(), denied_requests: denied}) + '\n');
-})().catch(error => { process.stderr.write(String(error && error.message || error).slice(0, 1000) + '\n'); process.exit(1); });
+}
+
+if (require.main === module) {
+  main().catch(error => {
+    process.stderr.write(String(error && error.message || error).slice(0, 1000) + '\n');
+    process.exit(1);
+  });
+}
+
+module.exports = Object.freeze({editorReady});
