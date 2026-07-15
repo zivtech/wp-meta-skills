@@ -24,7 +24,7 @@ function digest(value) {
   return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
-function editorReady(expectedPostId) {
+function editorReady() {
   try {
     const data = globalThis.wp?.data;
     const blocks = globalThis.wp?.blocks;
@@ -37,10 +37,40 @@ function editorReady(expectedPostId) {
       && editorActions && typeof editorActions.editPost === 'function'
       && typeof editorActions.savePost === 'function'
       && blockState && typeof blockState.getBlocks === 'function'
-      && editorState && typeof editorState.getCurrentPostId === 'function'
-      && Number(editorState.getCurrentPostId()) === Number(expectedPostId));
+      && editorState);
   } catch (_) {
     return false;
+  }
+}
+
+async function waitForEditor(page, origin, expectedPostId) {
+  try {
+    await page.waitForFunction(editorReady, null, {timeout: 15000});
+  } catch (error) {
+    if (error?.name !== 'TimeoutError') throw error;
+    const snapshot = await page.evaluate(({expectedOrigin, postId}) => {
+      const data = globalThis.wp?.data;
+      const blocks = globalThis.wp?.blocks;
+      const blockActions = data?.dispatch('core/block-editor');
+      const editorActions = data?.dispatch('core/editor');
+      const blockState = data?.select('core/block-editor');
+      const editorState = data?.select('core/editor');
+      const query = [...new URLSearchParams(location.search)];
+      const observedPostId = typeof editorState?.getCurrentPostId === 'function'
+        ? editorState.getCurrentPostId() : null;
+      return {data: Boolean(data), createBlock: typeof blocks?.createBlock === 'function',
+        blockActions: Boolean(blockActions), editorActions: Boolean(editorActions),
+        insertBlocks: typeof blockActions?.insertBlocks === 'function',
+        editPost: typeof editorActions?.editPost === 'function',
+        savePost: typeof editorActions?.savePost === 'function',
+        blockState: Boolean(blockState), getBlocks: typeof blockState?.getBlocks === 'function',
+        editorState: Boolean(editorState), currentPostId: Number.isSafeInteger(observedPostId)
+          ? observedPostId : null, exactEditUrl: location.origin === expectedOrigin
+          && location.pathname === '/wp-admin/post.php' && query.length === 2
+          && query.some(([key, value]) => key === 'post' && value === String(postId))
+          && query.some(([key, value]) => key === 'action' && value === 'edit')};
+    }, {expectedOrigin: origin, postId: expectedPostId}).catch(() => ({evaluation: false}));
+    throw new Error(`editor readiness timed out: ${JSON.stringify(snapshot)}`);
   }
 }
 
@@ -58,9 +88,14 @@ async function login(page, origin) {
 async function blockFrontendProof(page, origin, assertion) {
   await page.goto(`${origin}/wp-admin/post.php?post=${assertion.postId}&action=edit`,
     {waitUntil: 'domcontentloaded', timeout: 15000});
-  await page.waitForFunction(name => Boolean(globalThis.wp?.blocks?.getBlockType(name)),
-    assertion.blockName, {timeout: 15000});
-  await page.waitForFunction(editorReady, assertion.postId, {timeout: 15000});
+  try {
+    await page.waitForFunction(name => Boolean(globalThis.wp?.blocks?.getBlockType(name)),
+      assertion.blockName, {timeout: 15000});
+  } catch (error) {
+    if (error?.name !== 'TimeoutError') throw error;
+    throw new Error('target block registration timed out');
+  }
+  await waitForEditor(page, origin, assertion.postId);
   await page.evaluate(async ({blockName}) => {
     const block = globalThis.wp.blocks.createBlock(blockName);
     const blockActions = globalThis.wp.data.dispatch('core/block-editor');

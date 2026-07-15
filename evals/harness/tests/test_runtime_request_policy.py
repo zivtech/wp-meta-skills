@@ -41,7 +41,7 @@ def test_browser_policy_reads_cookie_complete_headers():
     assert "headers: request.headers()" not in policy
 
 
-def test_block_browser_waits_for_actionable_editor_stores():
+def test_block_browser_waits_for_actionable_editor_stores_without_store_post_identity():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is unavailable")
@@ -53,28 +53,38 @@ Module._load=function(request,parent,isMain) {
   return load.call(this,request,parent,isMain);
 };
 const policy=require(process.argv[1]);
-const postId=Number(process.argv[2]);
 const blockActions={insertBlocks() {}};
 const editorActions={editPost() {},savePost() {}};
 const blockState={getBlocks() { return []; }};
-const editorState={getCurrentPostId() { return postId; }};
+const editorState={};
 globalThis.wp={blocks:{createBlock() {}},data:{
   dispatch(name) { return name==='core/block-editor' ? blockActions : name==='core/editor' ? editorActions : null; },
   select(name) { return name==='core/block-editor' ? blockState : name==='core/editor' ? editorState : null; },
 }};
-if (!policy.editorReady(postId)) throw new Error('ready store was rejected');
-delete blockActions.insertBlocks;
-if (policy.editorReady(postId)) throw new Error('missing insertBlocks was accepted');
-blockActions.insertBlocks=() => {};
-if (policy.editorReady(postId + 1)) throw new Error('wrong post identity was accepted');
+if (!policy.editorReady()) throw new Error('ready store was rejected');
+for (const [surface,key] of [[blockActions,'insertBlocks'],[editorActions,'editPost'],
+  [editorActions,'savePost'],[blockState,'getBlocks']]) {
+  const original=surface[key];
+  delete surface[key];
+  if (policy.editorReady()) throw new Error(`missing ${key} was accepted`);
+  surface[key]=original;
+}
+globalThis.wp.data.select=name => name==='core/block-editor' ? blockState : null;
+if (policy.editorReady()) throw new Error('missing editor state was accepted');
 """
     result = subprocess.run(
         [node, "-e", script,
-         str(HARNESS / "runtime-images/browser/browser-policy.js"),
-         str(contract.BLOCK_CANARY_POST_ID)],
+         str(HARNESS / "runtime-images/browser/browser-policy.js")],
         check=False, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
+
+    policy = (HARNESS / "runtime-images/browser/browser-policy.js").read_text(encoding="utf-8")
+    assert "editor readiness timed out:" in policy
+    assert "target block registration timed out" in policy
+    assert "exactEditUrl" in policy
+    assert "error?.name !== 'TimeoutError'" in policy
+    assert "Number(editorState.getCurrentPostId())" not in policy
 
 
 def test_block_topology_binds_exact_profile_and_disposable_post():
