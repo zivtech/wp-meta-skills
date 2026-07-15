@@ -1,6 +1,7 @@
 """Security contracts for Step 5 runtime artifact capability flow."""
 import dataclasses
 import io
+import json
 import tarfile
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import artifact_layout
 import artifact_staging
 import run_wordpress_runtime_smoke as runtime_smoke
 import runtime_artifact_pipeline as pipeline
+import sandbox_evidence
 import workspace_lease
 
 
@@ -85,6 +87,29 @@ def test_typed_staging_receipt_survives_execution_outcome_and_build_result(tmp_p
         build=pipeline.build_block(staged,5)
         assert outcome.staging_cleanup_receipts==(receipt,)
         assert build.status=="blocked" and build.staging_cleanup_receipts==(receipt,)
+    finally: workspace_lease.cleanup(staged.lease)
+
+
+def test_failed_generated_command_adds_bounded_scrubbed_diagnostic(tmp_path, monkeypatch):
+    source=write_block(tmp_path/"source","fresh")
+    staged=artifact_staging.stage_tree(source,tmp_path/"input")
+    stderr="x"*1200+"\npassword=topsecret\nwebpack failed at blocks/card/index.js"
+    result=pipeline.artifact_execution.sandboxed_package_runner.SandboxResult(
+        "fail",1,"",stderr,None,
+        sandbox_evidence.encode("fail",error="generated command failed"),"container",
+    )
+    monkeypatch.setattr(pipeline.artifact_execution,"_profile",lambda *_args:"approved")
+    monkeypatch.setattr(pipeline.artifact_execution,"_image",lambda _kind:"node@sha256:"+"a"*64)
+    monkeypatch.setattr(
+        pipeline.artifact_execution.sandboxed_package_runner,"run_sandbox",
+        lambda _request:result,
+    )
+    try:
+        outcome=pipeline.artifact_execution.run_generated(staged,"npm-build",5)
+        errors=json.loads(outcome.detail)["errors"]
+        assert errors[0]=="generated command failed"
+        assert errors[1].endswith("password=[REDACTED]\nwebpack failed at blocks/card/index.js")
+        assert "topsecret" not in outcome.detail and len(errors[1])<=1040
     finally: workspace_lease.cleanup(staged.lease)
 
 

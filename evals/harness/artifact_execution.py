@@ -7,8 +7,10 @@ from dataclasses import dataclass
 import artifact_staging
 import dependency_egress_proxy
 import runtime_image_provision
+import sandbox_evidence
 import sandboxed_package_runner
 from sandbox_runner_types import SandboxRequest
+from wp_runtime_evidence import scrub_tail
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,16 @@ def _image(kind: str) -> str:
     item = runtime_image_provision.inventory()["images"][image_name]
     digest = runtime_image_provision.platform_digest(item, platform.machine())
     return f"{item['tag'].split(':')[0]}@{digest}"
+
+
+def _diagnostic_detail(result) -> str:
+    if result.status == "pass":
+        return result.detail
+    output = result.stderr or result.stdout
+    if not output:
+        return result.detail
+    diagnostic = f"generated command diagnostic: {scrub_tail(output, 1000)}"
+    return sandbox_evidence.finalize(result.detail, error=diagnostic)
 
 
 def run_generated(
@@ -72,5 +84,6 @@ def run_generated(
         detail = f"{phase} sandbox boundary raised {type(exc).__name__}"
         return ExecutionOutcome("blocked", detail, command, None)
     return ExecutionOutcome(
-        result.status,result.detail,command,result.output,result.staging_cleanup_receipts
+        result.status,_diagnostic_detail(result),command,result.output,
+        result.staging_cleanup_receipts,
     )
