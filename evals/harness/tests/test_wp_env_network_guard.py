@@ -186,6 +186,23 @@ def test_workflow_always_emits_runtime_timing_and_post_cleanup_disk_evidence():
     assert 'isolated_runtime_seconds=${ISOLATED_RUNTIME_SECONDS:-unavailable}' in generated
 
 
+def test_generated_runtime_provisions_and_cleans_block_build_sandbox():
+    workflow=(HARNESS.parent.parent / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+    generated=workflow.split("generated-runtime-boundary:",1)[1].split("  validate:",1)[0]
+    provision=generated.split("Trusted-provision exact block build and proxy images",1)[1]
+    provision=provision.split("- name: Admit the isolated runtime disk budget",1)[0]
+    assert 'for key in ("node","python")' in provision
+    assert "reference=f\"{item['tag'].split(':')[0]}@{item[arch]}\"" in provision
+    assert '["docker","pull",reference]' in provision
+    assert generated.index("Trusted-provision exact block build") < generated.index(
+        "Admit the isolated runtime disk budget"
+    )
+    cleanup=generated.split("Remove and measure generated-runtime resources",1)[1]
+    for marker in ("wp-package-", "wp-acquire-proxy-", "wp-proxy-preflight-",
+                   "wp-proxy-inventory-", "wp-acquire-(internal|egress)-"):
+        assert cleanup.count(marker) >= 2
+
+
 def test_cleanup_empty_query_failure_sets_aggregate_status():
     script=("set +e; set -o pipefail; cleanup_status=0; "
             "remaining=$(false) || cleanup_status=1; "
