@@ -55,10 +55,11 @@ def test_wordpress_performance_critic_names_query_cache_boundaries():
 def test_all_live_rubric_surfaces_have_typed_classification():
     validator = load_validator()
 
-    inventory = validator.inventory_rubric_surfaces()
+    inventory = validator.inventory_contract_surfaces()
     unclassified = [item for item in inventory if item.category is None]
 
     assert unclassified == []
+    assert len(inventory) >= 70
     assert {item.category for item in inventory} == {
         "argument_key",
         "capability",
@@ -133,3 +134,41 @@ def test_registry_validation_rejects_duplicates_and_version_drift(tmp_path):
 
     with pytest.raises(ValueError, match="not found"):
         validator.load_surface_registry(tmp_path / "missing.json")
+
+
+@pytest.mark.parametrize(
+    "surface",
+    ["security best practices", "../outside.php", "*", "wp_ajax_evil*"],
+)
+def test_registry_rejects_unsafe_file_category_entries(tmp_path, surface):
+    validator = load_validator()
+    data = json.loads(validator.REGISTRY_PATH.read_text(encoding="utf-8"))
+    data["categories"]["file_surfaces"].append(surface)
+    path = tmp_path / "unsafe-file-surface.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="file_surfaces entry is invalid"):
+        validator.load_surface_registry(path)
+
+
+def test_registry_rejects_unsafe_wildcard_hook(tmp_path):
+    validator = load_validator()
+    data = json.loads(validator.REGISTRY_PATH.read_text(encoding="utf-8"))
+    data["categories"]["wildcard_hooks"].append("wp_ajax_evil*")
+    path = tmp_path / "unsafe-wildcard.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="wildcard hook is unsafe"):
+        validator.load_surface_registry(path)
+
+
+@pytest.mark.parametrize("field", ["boundary", "provenance"])
+def test_registry_requires_boundary_and_provenance_metadata(tmp_path, field):
+    validator = load_validator()
+    data = json.loads(validator.REGISTRY_PATH.read_text(encoding="utf-8"))
+    data.pop(field)
+    path = tmp_path / "missing-metadata.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=field):
+        validator.load_surface_registry(path)

@@ -79,6 +79,27 @@ python3 evals/harness/materialize_wordpress_executor_packet.py --executor bluepr
 
 The materializer requires each generated plugin or block file to appear as `### relative/path.ext` immediately followed by one fenced code block. Blueprint packets must include one fenced JSON object under `## Generated Blueprint`; the materializer writes it to `blueprint.json`.
 
+## Exact-surface evidence boundaries
+
+The saved-output and rubric contract uses two version-aligned data files. The
+core function/class set comes from `data/wp-symbols.json`; reviewed non-core
+hooks, keys, capabilities, commands, packages, tools, paths, and composed
+surfaces come from `data/wp-exact-surfaces.json`. These support four distinct
+claims:
+
+1. Registry or core-symbol existence means the named surface is in a reviewed
+   WordPress 7.0 contract boundary.
+2. Output occurrence means the full surface was found contiguously with safe
+   identifier boundaries; partial names and scattered words do not count.
+3. Scoped non-applicability means a named subproblem includes a reason and a
+   concrete oracle or owner. It never waives the output's minimum surfaces.
+4. Runtime proof requires the applicable artifact/runtime oracle and its
+   evidence packet.
+
+The first three claims do not prove the fourth. In particular, a registered
+third-party package or hook is reviewed contract vocabulary, not proof that it
+is installed, callable, compatible, or exercised in the target runtime.
+
 After materializing generated files, run the artifact oracle before making code-generation claims:
 
 ```bash

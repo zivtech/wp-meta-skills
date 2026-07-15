@@ -70,6 +70,7 @@ python3 -m pytest \
   evals/harness/tests/test_wordpress_artifact_oracle.py \
   evals/harness/tests/test_wordpress_blueprint_launch_readiness.py \
   evals/harness/tests/test_wordpress_executor_packet_oracle.py \
+  evals/harness/tests/test_wp_symbol_db.py \
   evals/harness/tests/test_wordpress_exact_api_contract.py \
   evals/harness/tests/test_wordpress_executor_artifact_certifier.py \
   evals/harness/tests/test_wordpress_packet_materializer.py \
@@ -84,6 +85,20 @@ python3 -m pytest \
   evals/harness/tests/test_plan010_artifact_measurement.py \
   -m 'not docker_boundary and not live_provider' -q
 ```
+
+The symbol snapshot test is hermetic: it checks the committed source hashes,
+Composer-lock identities, container inventory, and normalized symbol digest.
+When those pinned inputs intentionally change, maintainers rebuild separately:
+
+```bash
+python3 scripts/build-wp-symbol-db.py --wp-version 7.0 \
+  --out /tmp/wp-symbols-rebuild.json
+cmp -s /tmp/wp-symbols-rebuild.json evals/harness/data/wp-symbols.json
+```
+
+The rebuild requires the reviewed Composer platform image to be present locally
+and fetches only the two immutable `raw.githubusercontent.com` source paths. It
+is not an ordinary CI step.
 
 Provider metadata smoke is a separate, explicitly authorized manual gate. It
 uses the same trusted-curl/header-FD path as the repair loop, performs no content

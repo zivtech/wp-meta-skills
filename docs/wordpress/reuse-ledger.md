@@ -39,8 +39,16 @@ introduced-in versions — no prose, descriptions, or code are copied.
 
 | Data | Source | Ref | License | Extracted facts |
 |---|---|---|---|---|
-| Function/class existence, `@deprecated` versions and replacements | php-stubs/wordpress-stubs | `v7.0.0` | MIT | Symbol names, deprecation version, successor API name (via PHP reflection over the stubs) |
-| Per-function `since` versions | johnbillion/wp-compat `symbols.json` | `trunk` (WP 7.0 data) | MIT | Function name → introduced-in version |
+| Function/class existence, `@deprecated` versions and replacements | php-stubs/wordpress-stubs | `d74b963ed4f47303859bf73c741c80f554c83dc6` (`v7.0.0`) | MIT | Symbol names, deprecation version, successor API name (via PHP reflection over the stubs); fetched from the immutable raw URL with SHA-256 `1fa69deee70f8a1be7e3a0498327ca16e36ee2b5c243a5b2ab1926bec456fd44` |
+| Per-function `since` versions | johnbillion/wp-compat `symbols.json` | `2ccebedbbbc6b6eec3fba4a568cff0a4ec05bf6e` (`1.5.0`) | MIT | Function name → introduced-in version; fetched from the immutable raw URL with SHA-256 `d5f7210cb8804263f71b888d1f34cd7593c4d166077efa055a9232ce2327a298` |
+
+The generator verifies both identities against `php-tools/composer.lock`, fetches
+only those exact source paths through the bounded public transport, and runs PHP
+reflection in the Composer platform image pinned by `container-images.json`.
+The snapshot records the canonical rebuild command, OCI index and platform
+digests, source metadata, and a normalized function/class digest. Ordinary CI
+validates that metadata and digest without network access; a maintainer rebuild
+must be byte-identical to the committed file.
 # Plan 009 sandbox feasibility inventory (verified 2026-07-14)
 
 Step 0 records the official Node, Composer, Python, Playwright, WordPress,

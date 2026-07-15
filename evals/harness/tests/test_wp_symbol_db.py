@@ -41,6 +41,7 @@ def test_committed_symbol_snapshot_has_lock_matched_durable_provenance():
         (lambda data: data["sources"]["wp_compat"].update(version="0.0.0"), "Composer lock"),
         (lambda data: data.update(wp_version="6.9"), "WordPress version"),
         (lambda data: data["generator"]["container"].update(index="sha256:" + "0" * 64), "container inventory"),
+        (lambda data: data["generator"].update(version=2), "generator metadata"),
         (lambda data: data["php_builtins"].append(data["php_builtins"][0]), "duplicate"),
         (lambda data: data["generator"].update(symbols_sha256="0" * 64), "symbol digest"),
     ],

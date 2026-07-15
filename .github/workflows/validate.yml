@@ -399,6 +399,7 @@ jobs:
             evals/harness/tests/test_wordpress_artifact_oracle.py \
             evals/harness/tests/test_wordpress_blueprint_launch_readiness.py \
             evals/harness/tests/test_wordpress_executor_packet_oracle.py \
+            evals/harness/tests/test_wp_symbol_db.py \
             evals/harness/tests/test_wordpress_exact_api_contract.py \
             evals/harness/tests/test_wordpress_executor_artifact_certifier.py \
             evals/harness/tests/test_wordpress_packet_materializer.py \
