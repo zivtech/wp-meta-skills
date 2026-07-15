@@ -90,6 +90,7 @@ function jsonWriteClass(url, headers, context) {
   const nonce = String(headers['x-wp-nonce'] || '');
   const cookie = String(headers.cookie || '');
   if (!exactMime(headers['content-type'], 'application/json')
+      || headers['x-http-method-override'] !== 'PUT'
       || !/^[A-Za-z0-9]{10,20}$/.test(nonce)
       || cookie.length < 1 || cookie.length > 4096) return null;
   return 'json-write';
@@ -101,8 +102,9 @@ function classifyRequest(request, context) {
   if (!url) return null;
   const method = String(request.method || '').toUpperCase();
   const headers = request.headers || {};
-  if (method === 'POST') return loginClass(url, headers, context);
-  if (method === 'PUT') return jsonWriteClass(url, headers, context);
+  if (method === 'POST') {
+    return jsonWriteClass(url, headers, context) || loginClass(url, headers, context);
+  }
   return ['GET', 'HEAD'].includes(method) && exactRead(url, context) ? 'read' : null;
 }
 

@@ -278,7 +278,7 @@ def _policy_cases():
     standard = dict(block, profile=contract.STANDARD_PROFILE, postId=0)
     adversarial = dict(block, profile=contract.ADVERSARIAL_PROFILE, postId=0)
     headers = {"content-type": "application/json", "x-wp-nonce": "abcdefghij",
-               "cookie": "wordpress=canary"}
+               "cookie": "wordpress=canary", "x-http-method-override": "PUT"}
     body = json.dumps({"id": post_id, "content": "<!-- wp:acme/runtime-card /-->",
                        "status": "publish"})
     return [
@@ -286,24 +286,34 @@ def _policy_cases():
         (block, "GET", f"/?p={post_id + 1}", {}, "", False),
         (block, "GET", f"/wp-admin/post.php?post={post_id}&action=edit", {}, "", True),
         (block, "GET", f"/wp-admin/post.php?post={post_id + 1}&action=edit", {}, "", False),
-        (block, "PUT", f"/wp-json/wp/v2/posts/{post_id}?_locale=user", headers, body, True),
-        (block, "PUT", f"/wp-json/wp/v2/posts/{post_id + 1}?_locale=user", headers, body, False),
-        (standard, "PUT", f"/wp-json/wp/v2/posts/{post_id}", headers, body, False),
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}?_locale=user", headers, body, True),
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id + 1}?_locale=user", headers, body, False),
+        (standard, "POST", f"/wp-json/wp/v2/posts/{post_id}", headers, body, False),
         (adversarial, "GET", "/wp-admin/post-new.php", {}, "", True),
         (block, "GET", "/wp-admin/post-new.php", {}, "", False),
-        (block, "PUT", f"/wp-json/wp/v2/posts/{post_id}?_locale=user&_locale=user", headers, body, False),
-        (block, "PUT", f"/wp-json/wp/v2/posts/{post_id}?context=edit", headers, body, False),
-        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}", headers, body, False),
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}?_locale=user&_locale=user", headers, body, False),
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}?context=edit", headers, body, False),
+        (block, "PUT", f"/wp-json/wp/v2/posts/{post_id}", headers, body, False),
         (block, "PATCH", f"/wp-json/wp/v2/posts/{post_id}", headers, body, False),
-        (block, "PUT", f"/wp-json/wp/v2/posts/{post_id}", headers,
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}",
+         {key: value for key, value in headers.items() if key != "x-http-method-override"}, body, False),
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}",
+         dict(headers, **{"x-http-method-override": "PATCH"}), body, False),
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}",
+         dict(headers, **{"x-http-method-override": "put"}), body, False),
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}",
+         dict(headers, **{"x-http-method-override": " PUT "}), body, False),
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}",
+         dict(headers, **{"x-http-method-override": "PUT,PATCH"}), body, False),
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}", headers,
          json.dumps({"id": post_id + 1, "content": "wrong", "status": "publish"}), False),
-        (block, "PUT", f"/wp-json/wp/v2/posts/{post_id}", headers,
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}", headers,
          json.dumps({"content": "missing id", "status": "publish"}), False),
-        (block, "PUT", f"/wp-json/wp/v2/posts/{post_id}",
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}",
          dict(headers, **{"content-type": "application/jsonp"}), body, False),
-        (block, "PUT", f"/wp-json/wp/v2/posts/{post_id}",
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}",
          dict(headers, **{"x-wp-nonce": "short"}), body, False),
-        (block, "PUT", f"/wp-json/wp/v2/posts/{post_id}",
+        (block, "POST", f"/wp-json/wp/v2/posts/{post_id}",
          dict(headers, cookie="x" * 4097), body, False),
         (block, "GET", "/wp-content/plugins/safe-plugin/view.js?ver=1", {}, "", True),
         (block, "GET", "/wp-content/plugins/safe-plugin/view.js?ver=1&ver=1", {}, "", False),
@@ -336,6 +346,33 @@ for (const item of JSON.parse(process.argv[2])) {
     assert result.returncode == 0, result.stderr
 
 
+def test_gateway_projects_method_override_only_for_json_write():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    script = """
+const gateway=require(process.argv[1]);
+const request={method:'POST',headers:{cookie:'wordpress=canary',
+  'content-type':'application/json','content-length':'42','x-wp-nonce':'abcdefghij',
+  'x-http-method-override':'PUT'}};
+const exactWrite={host:'gateway-frontend:8081',connection:'close',cookie:'wordpress=canary',
+  'content-type':'application/json','content-length':'42','x-http-method-override':'PUT',
+  'x-wp-nonce':'abcdefghij'};
+const write=gateway.upstreamHeaders(request,'json-write');
+if (JSON.stringify(write)!==JSON.stringify(exactWrite)) throw new Error('write projection drift');
+for (const kind of ['login','read']) {
+  const projected=gateway.upstreamHeaders(kind==='read' ? {...request,method:'GET'} : request,kind);
+  if (Object.hasOwn(projected,'x-http-method-override')) throw new Error(`${kind} leaked override`);
+}
+"""
+    result = subprocess.run(
+        [node, "-e", script,
+         str(HARNESS / "runtime-images/browser/gateway-policy.js")],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_response_ceiling_is_authorization_and_resource_class_bound():
     node = shutil.which("node")
     if node is None:
@@ -349,14 +386,15 @@ const context=JSON.parse(process.argv[2]);
 const documentBytes=1048576;
 const assetBytes=1209512;
 const form={'content-type':'application/x-www-form-urlencoded'};
-const json={'content-type':'application/json','x-wp-nonce':'abcdefghij','cookie':'wordpress=canary'};
+const json={'content-type':'application/json','x-wp-nonce':'abcdefghij','cookie':'wordpress=canary',
+  'x-http-method-override':'PUT'};
 const cases=[
   [{method:'GET',url:'/wp-includes/js/dist/block-editor.min.js?ver=7.0.1',headers:{}},assetBytes],
   [{method:'GET',url:'/wp-content/plugins/safe-plugin/view.js?ver=1',headers:{}},assetBytes],
   [{method:'GET',url:'/wp-admin/load-scripts.php?c=1&load[chunk_0]=wp-block-editor&ver=7.0.1',headers:{}},documentBytes],
   [{method:'GET',url:`/wp-admin/post.php?post=${context.postId}&action=edit`,headers:{}},documentBytes],
   [{method:'POST',url:'/wp-login.php',headers:form},documentBytes],
-  [{method:'PUT',url:`/wp-json/wp/v2/posts/${context.postId}`,headers:json},documentBytes],
+  [{method:'POST',url:`/wp-json/wp/v2/posts/${context.postId}`,headers:json},documentBytes],
   [{method:'GET',url:'/wp-includes/js/dist/block-editor.min.js?ver=1&ver=2',headers:{}},0],
   [{method:'POST',url:'/wp-includes/js/dist/block-editor.min.js',headers:form},0],
   [{method:'GET',url:'https://example.com/wp-includes/js/dist/block-editor.min.js',headers:{}},0],
@@ -385,3 +423,5 @@ if (policy.nextResponseByteCount(count,1,assetBytes)!==null) throw new Error('ce
     assert "incoming.on('data', chunk =>" in gateway
     assert "bytes = next; response.write(chunk)" in gateway
     assert "bytes > 1024 * 1024" not in gateway
+    assert "upstreamHeaders(request, kind)" in gateway
+    assert "kind === 'json-write'" in gateway

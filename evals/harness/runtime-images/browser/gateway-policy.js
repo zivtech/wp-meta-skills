@@ -7,7 +7,9 @@ const slug = process.argv[2];
 const profile = process.argv[3];
 const postId = Number(process.argv[4]);
 const policyContext = {origin: requestPolicy.ORIGIN, slug, profile, postId};
-if (!requestPolicy.validContext(policyContext)) throw new Error('gateway requires an exact request context');
+if (require.main === module && !requestPolicy.validContext(policyContext)) {
+  throw new Error('gateway requires an exact request context');
+}
 
 function requestClass(request) {
   return requestPolicy.classifyRequest({
@@ -51,12 +53,15 @@ function boundedBody(request, response, upstream, kind) {
   request.on('error', () => { if (!rejected) reject(response, upstream); });
 }
 
-function upstreamHeaders(request) {
+function upstreamHeaders(request, kind) {
   const headers = {host: 'gateway-frontend:8081', connection: 'close'};
   if (request.headers.cookie) headers.cookie = request.headers.cookie;
-  if (['POST', 'PUT'].includes(request.method)) {
+  if (request.method === 'POST') {
     headers['content-type'] = request.headers['content-type'];
     headers['content-length'] = request.headers['content-length'];
+  }
+  if (kind === 'json-write') {
+    headers['x-http-method-override'] = request.headers['x-http-method-override'];
   }
   if (request.headers['x-wp-nonce']) headers['x-wp-nonce'] = request.headers['x-wp-nonce'];
   return headers;
@@ -67,7 +72,7 @@ function forward(request, response) {
   const ceiling = responseCeiling(request);
   if (!kind || !ceiling) { reject(response); return; }
   const upstream = http.request({hostname: 'wordpress-application', port: 8080,
-    method: request.method, path: request.url, headers: upstreamHeaders(request)}, incoming => {
+    method: request.method, path: request.url, headers: upstreamHeaders(request, kind)}, incoming => {
     let bytes = 0; const headers = {...incoming.headers};
     if (headers['content-length'] !== undefined) {
       const declared = Number(headers['content-length']);
@@ -98,14 +103,18 @@ function forward(request, response) {
   else boundedBody(request, response, upstream, kind);
 }
 
-(async () => {
-  const {address} = await dns.lookup('gateway-frontend', {family: 4});
-  const server = http.createServer(forward);
-  server.requestTimeout = 10000;
-  server.headersTimeout = 5000;
-  server.maxRequestsPerSocket = 100;
-  server.listen(8081, address);
-})().catch(error => {
-  process.stderr.write(`${String(error && error.message || error).slice(0, 500)}\n`);
-  process.exit(1);
-});
+if (require.main === module) {
+  (async () => {
+    const {address} = await dns.lookup('gateway-frontend', {family: 4});
+    const server = http.createServer(forward);
+    server.requestTimeout = 10000;
+    server.headersTimeout = 5000;
+    server.maxRequestsPerSocket = 100;
+    server.listen(8081, address);
+  })().catch(error => {
+    process.stderr.write(`${String(error && error.message || error).slice(0, 500)}\n`);
+    process.exit(1);
+  });
+}
+
+module.exports = Object.freeze({upstreamHeaders});
