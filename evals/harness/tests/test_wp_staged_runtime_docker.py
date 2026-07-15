@@ -19,6 +19,7 @@ import materialize_wordpress_executor_packet as materializer
 import run_wordpress_runtime_smoke as smoke
 import runtime_artifact_pipeline
 import wp_env_network_guard as guard
+from wp_runtime_evidence import scrub_tail
 from wp_runtime_types import RuntimeRequest
 
 
@@ -48,6 +49,24 @@ def _request(synthesized, digest, parent):
         synthesized.staged, synthesized.plugin_slug, "evidence-123", digest, digest,
         1800, parent, requested_oracles=runtime_contract.ADVERSARIAL_REQUESTED_ORACLES,
     )
+
+
+def _block_failure_diagnostic(result):
+    failed = []
+    for item in result.get("checks", ()):
+        if item.get("status") != "pass":
+            failed.append({
+                "id": item.get("id"), "status": item.get("status"),
+                "detail": scrub_tail(str(item.get("detail") or ""), 300),
+            })
+    return {
+        "reason": result.get("reason"),
+        "block_build_smoke_status": result.get("block_build_smoke_status"),
+        "block_runtime_artifact_gate_status": result.get(
+            "block_runtime_artifact_gate_status"
+        ),
+        "failed_checks": failed[:12],
+    }
 
 
 @pytest.fixture(scope="module")
@@ -121,7 +140,7 @@ def test_real_block_profile_proves_registration_editor_frontend_and_cleanup(
     passing, _near_miss, elapsed = live_block_runtime_results
     assert elapsed <= 1800
     assert (passing["status"] == "pass"
-            and passing["runtime_profile_id"] == "block-runtime"), passing.get("reason")
+            and passing["runtime_profile_id"] == "block-runtime"), _block_failure_diagnostic(passing)
     assert [item["id"] for item in passing["checks"]] == [
         "wp_cli_activation", "plugin_check", "block_registration",
         "container_browser", "block_editor_frontend", "runtime_identity",
