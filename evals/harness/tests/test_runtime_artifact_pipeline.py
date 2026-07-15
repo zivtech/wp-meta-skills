@@ -109,8 +109,42 @@ def test_failed_generated_command_adds_bounded_scrubbed_diagnostic(tmp_path, mon
         errors=json.loads(outcome.detail)["errors"]
         assert errors[0]=="generated command failed"
         assert errors[1].endswith("password=[REDACTED]\nwebpack failed at blocks/card/index.js")
-        assert "topsecret" not in outcome.detail and len(errors[1])<=1040
+        tail=errors[1].removeprefix(pipeline.artifact_execution.DIAGNOSTIC_PREFIX)
+        assert "topsecret" not in outcome.detail
+        assert len(tail)<=pipeline.artifact_execution.DIAGNOSTIC_TAIL_LIMIT
     finally: workspace_lease.cleanup(staged.lease)
+
+
+@pytest.mark.parametrize("output,secret", [
+    ("password=x "*300, "password=x"),
+    ("password=topsecret"+"z"*991, "topsecret"),
+])
+def test_generated_diagnostic_redacts_before_final_tail_bound(output, secret):
+    result=pipeline.artifact_execution.sandboxed_package_runner.SandboxResult(
+        "fail",1,"",output,None,sandbox_evidence.encode("fail"),"container",
+    )
+    detail=pipeline.artifact_execution._diagnostic_detail(result)
+    diagnostic=json.loads(detail)["errors"][-1]
+    tail=diagnostic.removeprefix(pipeline.artifact_execution.DIAGNOSTIC_PREFIX)
+    assert secret not in diagnostic
+    assert len(tail)<=pipeline.artifact_execution.DIAGNOSTIC_TAIL_LIMIT
+
+
+def test_generated_diagnostic_prefers_stderr_and_leaves_pass_detail_unchanged():
+    failed=pipeline.artifact_execution.sandboxed_package_runner.SandboxResult(
+        "fail",1,"stdout marker","stderr marker",None,
+        sandbox_evidence.encode("fail"),"container",
+    )
+    diagnostic=json.loads(
+        pipeline.artifact_execution._diagnostic_detail(failed)
+    )["errors"][-1]
+    assert "stderr marker" in diagnostic and "stdout marker" not in diagnostic
+    stdout_only=dataclasses.replace(failed,stderr="")
+    assert "stdout marker" in pipeline.artifact_execution._diagnostic_detail(stdout_only)
+    passed=dataclasses.replace(failed,status="pass",detail="unchanged")
+    assert pipeline.artifact_execution._diagnostic_detail(passed)=="unchanged"
+    empty=dataclasses.replace(failed,stdout="",stderr="",detail="empty")
+    assert pipeline.artifact_execution._diagnostic_detail(empty)=="empty"
 
 
 def test_synthesized_runtime_uses_exact_sandbox_output(tmp_path, monkeypatch):

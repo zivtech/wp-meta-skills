@@ -12,6 +12,9 @@ import sandboxed_package_runner
 from sandbox_runner_types import SandboxRequest
 from wp_runtime_evidence import scrub_tail
 
+DIAGNOSTIC_PREFIX = "generated command diagnostic: "
+DIAGNOSTIC_TAIL_LIMIT = 1000
+
 
 @dataclass(frozen=True)
 class ExecutionOutcome:
@@ -49,7 +52,8 @@ def _diagnostic_detail(result) -> str:
     output = result.stderr or result.stdout
     if not output:
         return result.detail
-    diagnostic = f"generated command diagnostic: {scrub_tail(output, 1000)}"
+    sanitized = scrub_tail(output, len(output))
+    diagnostic = DIAGNOSTIC_PREFIX + sanitized[-DIAGNOSTIC_TAIL_LIMIT:]
     return sandbox_evidence.finalize(result.detail, error=diagnostic)
 
 
