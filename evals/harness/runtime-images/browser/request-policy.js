@@ -85,8 +85,9 @@ function loginClass(url, headers, context) {
 
 function jsonWriteClass(url, headers, context) {
   if (context.profile !== 'block-runtime') return null;
-  if (url.pathname !== `/wp-json/wp/v2/posts/${context.postId}`
-      || !(url.search === '' || exactQuery(url, {_locale: 'user'}))) return null;
+  if (url.pathname !== '/index.php' || !exactQuery(url, {
+    rest_route: `/wp/v2/posts/${context.postId}`, _locale: 'user',
+  })) return null;
   const nonce = String(headers['x-wp-nonce'] || '');
   const cookie = String(headers.cookie || '');
   if (!exactMime(headers['content-type'], 'application/json')
