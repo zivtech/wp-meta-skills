@@ -68,7 +68,29 @@ def _block_failure_diagnostic(result):
             )
     build = result.get("block_build_smoke_status")
     artifact = result.get("block_runtime_artifact_gate_status")
-    return f"build={build};artifact={artifact};failures={' | '.join(failed[:3])}"
+    raw_reason = str(result.get("reason") or "")
+    reason = scrub_tail(raw_reason, len(raw_reason))[-500:] if raw_reason else ""
+    return (
+        f"build={build};artifact={artifact};reason={reason};"
+        f"failures={' | '.join(failed[:3])}"
+    )
+
+
+def test_block_failure_diagnostic_surfaces_bounded_redacted_runtime_reason():
+    result = {
+        "reason": "x" * 1200 + "\npassword=topsecret\nbrowser policy failed",
+        "checks": [],
+        "block_build_smoke_status": "pass",
+        "block_runtime_artifact_gate_status": "pass",
+    }
+
+    diagnostic = _block_failure_diagnostic(result)
+
+    assert "reason=" in diagnostic
+    assert "password=[REDACTED]" in diagnostic
+    assert "topsecret" not in diagnostic
+    assert diagnostic.endswith(";failures=")
+    assert len(diagnostic) <= 1100
 
 
 @pytest.fixture(scope="module")
