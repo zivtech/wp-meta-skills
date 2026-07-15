@@ -33,20 +33,30 @@ generate → certify (deterministic WordPress gates) → feed the exact failures
 Generate → gate → auto-repair, with whatever model you have:
 
 ```bash
-# cheap API (Gemini Flash via GOOGLE_API_KEY)
+# API provider. Set GEMINI_MODEL to an exact ID visible to GOOGLE_API_KEY.
 python3 evals/harness/run_executor_repair_loop.py \
   --suite wordpress-plugin-executor --fixture abilities-ai-surface-v1 \
-  --provider gemini --model gemini-2.5-flash \
-  --profile runtime --max-repairs 3 --run-id demo-flash
+  --provider gemini --model "$GEMINI_MODEL" \
+  --profile runtime --max-repairs 3 --run-id demo-gemini
 
-# local model (Ollama)
+# Local provider. Set OLLAMA_MODEL to an exact tag from `ollama list`.
 python3 evals/harness/run_executor_repair_loop.py \
   --suite wordpress-plugin-executor --fixture abilities-ai-surface-v1 \
-  --provider ollama --model qwen2.5-coder:32b-instruct-q8_0 \
+  --provider ollama --model "$OLLAMA_MODEL" \
   --profile runtime --max-repairs 3 --run-id demo-local
 ```
 
 Reports `pass@1`, `pass@k`-with-repair, iterations-to-green, and per-iteration gate vectors to `repair-loop-summary.json`. Use `--profile static` for a fast, Docker-free contract check before spending on the runtime gate.
+
+Ollama and Gemini have no repository model default. Before generation, the
+repair loop checks the exact requested tag or model and writes only a sanitized
+`provider-preflight.json` receipt. Gemini authentication uses an anonymous
+header pipe: the key is never placed in the URL, process arguments, receipt, or
+diagnostic. The metadata check requires the exact model name and advertised
+`generateContent` method; it does not prove a generation request, quota, billing
+authorization, or future model availability. Select a current ID from the
+[official Gemini model documentation](https://ai.google.dev/gemini-api/docs/models)
+and verify its metadata against the [Models API](https://ai.google.dev/api/models).
 
 ## The deterministic gates (use directly)
 

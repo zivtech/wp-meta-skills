@@ -484,11 +484,106 @@ def test_run_gemini_without_key_is_graceful():
     try:
         rc, out, err = loop._run_gemini("prompt", "gemini-2.5-flash", 5)
         assert rc == 127 and out == ""
-        assert "API_KEY" in err
+        assert err == "credential_missing"
     finally:
         for k, v in saved.items():
             if v is not None:
                 os.environ[k] = v
+
+
+@pytest.mark.parametrize("provider_name", ("ollama", "gemini"))
+def test_external_provider_requires_model_before_run_directory(monkeypatch, provider_name):
+    monkeypatch.setattr(
+        loop, "create_named", lambda *_args, **_kwargs: pytest.fail("run directory created")
+    )
+    with pytest.raises(SystemExit) as raised:
+        loop.main([
+            "--suite", "wordpress-plugin-executor", "--fixture", "abilities-ai-surface-v1",
+            "--executor", "plugin", "--profile", "static", "--run-id", "missing-model",
+            "--provider", provider_name,
+        ])
+    assert raised.value.code == 2
+
+
+def _provider_result(status, error_code):
+    receipt = loop.provider_preflight.PreflightReceipt(
+        schema_version=1,
+        provider="gemini",
+        model="gemini-test-model",
+        timestamp="2026-07-15T00:00:00Z",
+        status=status,
+        endpoint_class="google_models_api",
+        error_code=error_code,
+    )
+    return loop.provider_preflight.PreflightResult(receipt, "")
+
+
+def test_failed_preflight_writes_only_sanitized_receipt(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    run_dir = tmp_path / "failed-preflight"
+
+    def create_run(*_args, **_kwargs):
+        run_dir.mkdir()
+        return SimpleNamespace(root=run_dir)
+
+    monkeypatch.setattr(loop, "create_named", create_run)
+    monkeypatch.setattr(
+        loop.provider_preflight, "preflight",
+        lambda *_args, **_kwargs: _provider_result("fail", "model_not_found"),
+    )
+    monkeypatch.setattr(
+        loop, "make_generate", lambda *_args, **_kwargs: pytest.fail("generation attempted")
+    )
+    result = loop.main([
+        "--suite", "wordpress-plugin-executor", "--fixture", "abilities-ai-surface-v1",
+        "--executor", "plugin", "--profile", "static", "--run-id", "failed-preflight",
+        "--provider", "gemini", "--model", "gemini-test-model",
+    ])
+    assert result == 2
+    assert [path.name for path in run_dir.iterdir()] == ["provider-preflight.json"]
+    receipt = json.loads((run_dir / "provider-preflight.json").read_text(encoding="utf-8"))
+    assert receipt["error_code"] == "model_not_found"
+    assert set(receipt) == {
+        "schema_version", "provider", "model", "timestamp", "status",
+        "endpoint_class", "error_code",
+    }
+
+
+def test_successful_preflight_occurs_before_generation_wiring(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    run_dir = tmp_path / "successful-preflight"
+    events = []
+
+    def create_run(*_args, **_kwargs):
+        run_dir.mkdir()
+        return SimpleNamespace(root=run_dir)
+
+    def preflight(*_args, **_kwargs):
+        events.append("preflight")
+        return _provider_result("pass", "none")
+
+    def make_generate(*_args, **_kwargs):
+        events.append("generate_wired")
+        return lambda *_inner: "packet"
+
+    monkeypatch.setattr(loop, "create_named", create_run)
+    monkeypatch.setattr(loop.provider_preflight, "preflight", preflight)
+    monkeypatch.setattr(loop, "make_generate", make_generate)
+    monkeypatch.setattr(loop, "make_certify", lambda *_args, **_kwargs: lambda *_inner: {})
+    monkeypatch.setattr(loop, "orchestrate", lambda *_args, **_kwargs: {
+        "green": True, "pass_at_1": True, "iterations_to_green": 0,
+        "generations": 1, "generation_failures": 0, "history": [],
+    })
+    result = loop.main([
+        "--suite", "wordpress-plugin-executor", "--fixture", "abilities-ai-surface-v1",
+        "--executor", "plugin", "--profile", "static", "--run-id", "success-preflight",
+        "--provider", "gemini", "--model", "gemini-test-model",
+    ])
+    assert result == 0
+    assert events == ["preflight", "generate_wired"]
+    assert (run_dir / "provider-preflight.json").exists()
 
 
 def test_provider_lane_assembles_persona_fixture_and_repair_feedback():

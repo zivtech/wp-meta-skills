@@ -45,7 +45,7 @@ jobs:
             evals/harness/tests/test_runtime_request_policy.py \
             evals/harness/tests/test_isolated_runtime_contract.py \
             evals/harness/tests/test_wp_staged_runtime.py \
-            -m 'not docker_boundary' -q
+            -m 'not docker_boundary and not live_provider' -q
       - name: Trusted-provision exact package and proxy images
         run: |
           PYTHONPATH=evals/harness python - <<'PY'
@@ -97,7 +97,7 @@ jobs:
             evals/harness/tests/test_sandboxed_package_runner.py \
             evals/harness/tests/test_sandboxed_package_runner_canonical_bind.py \
             evals/harness/tests/test_workspace_lease.py \
-            -m 'not docker_boundary' -q
+            -m 'not docker_boundary and not live_provider' -q
       - name: Run implemented package acquisition and endpointless boundary cases
         run: |
           evidence_dir="$RUNNER_TEMP/wp-step4-evidence"
@@ -382,6 +382,8 @@ jobs:
             evals/harness/tests/test_runtime_request_policy.py \
             evals/harness/tests/test_isolated_runtime_contract.py \
             evals/harness/tests/test_wp_staged_runtime.py \
+            evals/harness/tests/test_safe_curl.py \
+            evals/harness/tests/test_provider_preflight.py \
             evals/harness/tests/test_executor_repair_loop.py \
             evals/harness/tests/test_artifact_layout.py \
             evals/harness/tests/test_artifact_execution_graph.py \
@@ -409,7 +411,7 @@ jobs:
             evals/harness/tests/test_wp_api_lint.py \
             evals/harness/tests/test_wp_security_gate.py \
             evals/harness/tests/test_plan010_artifact_measurement.py \
-            -m 'not docker_boundary' -q
+            -m 'not docker_boundary and not live_provider' -q
 
       - name: Measure Plan 010 artifact certification boundary
         run: |

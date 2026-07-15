@@ -34,6 +34,9 @@ Repeatable runners and scoring infrastructure for the zivtech-meta-skills eval s
 | `audit_wordpress_blueprint_launch_readiness.py` | Preflight audit for generated Blueprint launch readiness and missing VFS payloads |
 | `validate_wordpress_skill_output.py` | Deterministic output-contract oracle for saved WordPress planner/executor/critic responses |
 | `run_wordpress_runtime_smoke.py` | Disposable wp-env smoke harness for the WordPress artifact oracle runtime lane |
+| `safe_curl.py` | Fixed-path, no-ambient-config curl transport with bounded response and anonymous header-FD support |
+| `provider_preflight.py` | Exact Ollama/Gemini metadata policy, sanitized receipts, and bounded provider generation adapters |
+| `run_executor_repair_loop.py` | Bounded generation, certification, repair, and re-certification loop |
 
 ## Suite Integrity
 
@@ -229,6 +232,33 @@ These direct CLI values are operator-supplied. Only
 `run_executor_repair_loop.py` binds assertions to a canonical suite fixture
 pair, and no tracked block-executor fixture currently contains that optional
 mapping.
+
+## Repair-loop provider preflight
+
+The explicit `ollama` and `gemini` lanes require `--model`; there is no aging
+repository default. Before creating a packet or invoking a model, the repair
+loop checks the exact Ollama tag through loopback `/api/show`, or the exact
+Gemini model through the official models metadata API. Gemini must return the
+same canonical `models/{id}` name and advertise `generateContent`.
+
+Provider HTTPS uses `safe_curl.py`: a fixed root-owned system curl 8.4.0 or
+newer, first option `--disable`, minimal environment, no redirects or ambient
+proxy/CA/config, and an anonymous header file descriptor for `x-goog-api-key`.
+The version floor makes `--max-filesize` a response-memory bound even when the
+server omits content length. The key is absent from
+the URL, argv, disk, response diagnostics, and `provider-preflight.json`.
+Failures persist only schema version, provider, validated model, timestamp,
+status, endpoint class, and bounded error code. If trusted curl/header-FD/TLS is
+unavailable, the lane is blocked; it does not fall back to query authentication,
+temporary credential files, `--insecure`, or inherited configuration.
+
+The explicit `live_provider` pytest marker performs metadata preflight only and
+is excluded from ordinary CI. It also requires
+`WP_META_SKILLS_LIVE_PROVIDER_AUTHORIZED=1`; missing authorization, model, or
+credential fails this manual gate rather than skipping it. A pass proves the
+bounded transport and advertised
+metadata for that request. It does not make a generation call or prove quota,
+billing authorization, content quality, or future model availability.
 
 The repair-loop support matrix is plugin static/runtime, block static plus
 assertion-conditional runtime, and Blueprint static-only. Blueprint launch

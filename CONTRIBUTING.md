@@ -53,6 +53,8 @@ python3 -m pytest \
   evals/harness/tests/test_runtime_request_policy.py \
   evals/harness/tests/test_isolated_runtime_contract.py \
   evals/harness/tests/test_wp_staged_runtime.py \
+  evals/harness/tests/test_safe_curl.py \
+  evals/harness/tests/test_provider_preflight.py \
   evals/harness/tests/test_executor_repair_loop.py \
   evals/harness/tests/test_artifact_layout.py \
   evals/harness/tests/test_artifact_execution_graph.py \
@@ -80,8 +82,26 @@ python3 -m pytest \
   evals/harness/tests/test_wp_api_lint.py \
   evals/harness/tests/test_wp_security_gate.py \
   evals/harness/tests/test_plan010_artifact_measurement.py \
-  -m 'not docker_boundary' -q
+  -m 'not docker_boundary and not live_provider' -q
 ```
+
+Provider metadata smoke is a separate, explicitly authorized manual gate. It
+uses the same trusted-curl/header-FD path as the repair loop, performs no content
+generation, and prints no credential or provider response:
+
+```bash
+WP_META_SKILLS_LIVE_PROVIDER_AUTHORIZED=1 \
+GEMINI_LIVE_MODEL="$GEMINI_MODEL" python3 -m pytest \
+  evals/harness/tests/test_provider_preflight.py \
+  -m live_provider -q
+```
+
+The authorization sentinel must be set exactly to `1`. Set `GEMINI_MODEL` to
+an operator-selected current model and provide
+`GOOGLE_API_KEY` or `GEMINI_API_KEY` in the environment. Do not add this marker
+to ordinary CI. A pass proves TLS/header transport, exact metadata identity, and
+metadata-advertised `generateContent`; it does not prove generation quota or
+billing authorization.
 
 Plan 010 also requires the two-profile artifact-certification measurement after
 the pinned Composer toolchain is installed:

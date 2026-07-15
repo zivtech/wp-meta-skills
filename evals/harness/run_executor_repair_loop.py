@@ -31,6 +31,7 @@ import invoke  # noqa: E402  (reuse single-shot generation + provider routing)
 import artifact_layout  # noqa: E402
 import artifact_staging  # noqa: E402
 import isolated_runtime_contract  # noqa: E402
+import provider_preflight  # noqa: E402
 import runtime_assertions  # noqa: E402
 from artifact_staging import digest_regular_tree  # noqa: E402
 from wp_runtime_evidence import RuntimeDeadline  # noqa: E402
@@ -433,82 +434,25 @@ def _safe_subprocess(cmd: list[str], prompt: str, timeout: int) -> tuple[int, st
 
 
 def _run_ollama(prompt: str, model: str | None, timeout: int) -> tuple[int, str, str]:
-    """Generate via the ollama HTTP API with an explicit large context window.
-
-    `ollama run` defaults to num_ctx=4096, which truncates the persona+fixture prompt
-    and leaves no room for a full materializable packet — the cause of the earlier
-    "local truncation" (incomplete ~1.8KB packets). Driving the API directly lets us
-    set num_ctx (default 32768; override via OLLAMA_NUM_CTX) so complete packets fit.
-    """
-    import os
-
-    num_ctx = int(os.environ.get("OLLAMA_NUM_CTX", "32768"))
-    payload = json.dumps({
-        "model": model or "qwen2.5-coder:32b-instruct-q8_0",
-        "prompt": prompt,
-        "stream": False,
-        "options": {"num_ctx": num_ctx, "temperature": 0.2},
-    })
-    try:
-        proc = subprocess.run(
-            ["curl", "-sS", "-X", "POST", "http://localhost:11434/api/generate",
-             "-H", "Content-Type: application/json", "--data-binary", "@-"],
-            input=payload, capture_output=True, text=True, timeout=timeout, check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return 124, "", f"ollama request timed out after {timeout}s (num_ctx={num_ctx})"
-    if proc.returncode != 0:
-        return proc.returncode, "", (proc.stderr or "curl failed")[:300]
-    try:
-        data = json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError:
-        return 1, "", "non-JSON ollama response: " + (proc.stdout or "")[:200]
-    text = data.get("response", "")
-    if not text.strip():
-        return 1, "", f"empty ollama response (done_reason={data.get('done_reason')})"
-    return 0, _strip_model_noise(text), ""
+    """Generate through the preflighted, bounded Ollama transport."""
+    if model is None:
+        return 1, "", "model_required"
+    return _normalized_provider_result(
+        provider_preflight.generate("ollama", prompt, model, timeout)
+    )
 
 
 def _run_gemini(prompt: str, model: str | None, timeout: int) -> tuple[int, str, str]:
-    """Call the Gemini REST API directly with GOOGLE_API_KEY.
+    """Generate through the preflighted, bounded Gemini transport."""
+    if model is None:
+        return 1, "", "model_required"
+    return _normalized_provider_result(
+        provider_preflight.generate("gemini", prompt, model, timeout)
+    )
 
-    The gemini-cli individual oauth tier is deprecated (-> Antigravity IDE), so the
-    API key is the headless path. curl is used rather than urllib because the
-    framework Python here fails TLS verification (CERTIFICATE_VERIFY_FAILED).
-    Reads GOOGLE_API_KEY/GEMINI_API_KEY from env; the key is never logged.
-    """
-    import os
 
-    key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if not key:
-        return 127, "", "no GOOGLE_API_KEY / GEMINI_API_KEY in environment"
-    m = model or "gemini-2.5-flash"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={key}"
-    payload = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": 16384, "temperature": 0.2},
-    })
-    try:
-        proc = subprocess.run(
-            ["curl", "-sS", "-X", "POST", url, "-H", "Content-Type: application/json", "--data-binary", "@-"],
-            input=payload, capture_output=True, text=True, timeout=timeout, check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return 124, "", f"gemini request timed out after {timeout}s"
-    if proc.returncode != 0:
-        return proc.returncode, "", (proc.stderr or "curl failed")[:300]
-    try:
-        data = json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError:
-        return 1, "", "non-JSON Gemini response: " + (proc.stdout or "")[:200]
-    try:
-        cand = data["candidates"][0]
-        text = "".join(p.get("text", "") for p in cand.get("content", {}).get("parts", []))
-    except (KeyError, IndexError):
-        return 1, "", "unexpected Gemini response: " + json.dumps(data)[:300]
-    if not text.strip():
-        return 1, "", f"empty Gemini text (finishReason={data.get('candidates', [{}])[0].get('finishReason')})"
-    return 0, _strip_model_noise(text), ""
+def _normalized_provider_result(result: tuple[int, str, str]) -> tuple[int, str, str]:
+    return result[0], _strip_model_noise(result[1]), result[2]
 
 
 def _run_provider(provider: str, prompt: str, model: str | None, effort: str | None,
@@ -738,6 +682,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.provider in {"ollama", "gemini"} and not args.model:
+        parser.error(f"--model is required for provider {args.provider}")
     fixture_pair = None
     block_assertion = None
     try:
@@ -754,6 +700,18 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, FileExistsError) as exc:
         print(f"repair run refused: {exc}", file=sys.stderr)
         return 2
+
+    if args.provider in {"ollama", "gemini"}:
+        preflight = provider_preflight.preflight(
+            args.provider, args.model, timeout=min(args.timeout_sec, 30),
+        )
+        receipt_path = run_dir / "provider-preflight.json"
+        receipt_path.write_text(
+            json.dumps(preflight.receipt.as_dict(), indent=2) + "\n", encoding="utf-8",
+        )
+        if preflight.receipt.status != "pass":
+            print(preflight.diagnostic, file=sys.stderr)
+            return 2
 
     generate = make_generate(args.suite, args.fixture, args.condition, run_dir,
                              args.model, args.effort, args.timeout_sec, provider=args.provider,
