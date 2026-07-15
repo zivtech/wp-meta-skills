@@ -55,18 +55,13 @@ def _block_failure_diagnostic(result):
     failed = []
     for item in result.get("checks", ()):
         if item.get("status") != "pass":
-            failed.append({
-                "id": item.get("id"), "status": item.get("status"),
-                "detail": scrub_tail(str(item.get("detail") or ""), 300),
-            })
-    return {
-        "reason": result.get("reason"),
-        "block_build_smoke_status": result.get("block_build_smoke_status"),
-        "block_runtime_artifact_gate_status": result.get(
-            "block_runtime_artifact_gate_status"
-        ),
-        "failed_checks": failed[:12],
-    }
+            failed.append(
+                f"{item.get('id')}:{item.get('status')}:"
+                f"{scrub_tail(str(item.get('detail') or ''), 180)}"
+            )
+    build = result.get("block_build_smoke_status")
+    artifact = result.get("block_runtime_artifact_gate_status")
+    return f"build={build};artifact={artifact};failures={' | '.join(failed[:3])}"
 
 
 @pytest.fixture(scope="module")
