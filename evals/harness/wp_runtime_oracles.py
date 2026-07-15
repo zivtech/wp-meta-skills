@@ -13,6 +13,7 @@ import runtime_image_provision as transport
 import wp_runtime_inspection as inspection
 import wp_runtime_network as runtime_network
 import wp_runtime_topology as topology
+import wp_plugin_check_runtime as plugin_check_runtime
 from wp_runtime_evidence import RuntimeDeadline, docker_absence_proved, scrub_tail
 from wp_runtime_types import BlockRuntimeAssertion
 
@@ -124,12 +125,25 @@ def _activation(base, slug, deadline):
 
 
 def _plugin_check(base, slug, deadline):
-    command = (
-        "set -eu; wp plugin activate plugin-check --path=/var/www/html; "
-        f"wp plugin check {slug} --path=/var/www/html --format=json "
-        "--require=./wp-content/plugins/plugin-check/cli.php"
-    )
-    _run(base + ["exec", "-T", "cli", "sh", "-c", command], deadline, 120)
+    primary = None
+    try:
+        _run(plugin_check_runtime.build_command(base, slug), deadline, 120)
+    except Exception as exc:
+        primary = exc
+    try:
+        proof = _cleanup_raw(
+            plugin_check_runtime.absence_command(base), deadline, 10,
+        )
+    except Exception as exc:
+        detail = scrub_tail(str(exc), 500)
+        cause = f"; primary: {scrub_tail(str(primary), 500)}" if primary else ""
+        raise RuntimeError(f"Plugin Check final absence proof failed: {detail}{cause}") from primary
+    if proof["returncode"]:
+        detail = scrub_tail((proof.get("stderr") or "") + (proof.get("stdout") or ""), 500)
+        cause = f"; primary: {scrub_tail(str(primary), 500)}" if primary else ""
+        raise RuntimeError(f"Plugin Check final absence proof failed: {detail}{cause}") from primary
+    if primary:
+        raise primary
     return {"id": "plugin_check", "status": "pass", "required": True,
             "version": "2.0.0"}
 
