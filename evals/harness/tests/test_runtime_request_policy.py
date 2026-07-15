@@ -334,3 +334,54 @@ for (const item of JSON.parse(process.argv[2])) {
          json.dumps(payload)], check=False, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_response_ceiling_is_authorization_and_resource_class_bound():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    post_id = contract.BLOCK_CANARY_POST_ID
+    context = {"origin": "http://gateway-frontend:8081", "slug": "safe-plugin",
+               "profile": contract.BLOCK_PROFILE, "postId": post_id}
+    script = """
+const policy=require(process.argv[1]);
+const context=JSON.parse(process.argv[2]);
+const documentBytes=1048576;
+const assetBytes=1209512;
+const form={'content-type':'application/x-www-form-urlencoded'};
+const json={'content-type':'application/json','x-wp-nonce':'abcdefghij','cookie':'wordpress=canary'};
+const cases=[
+  [{method:'GET',url:'/wp-includes/js/dist/block-editor.min.js?ver=7.0.1',headers:{}},assetBytes],
+  [{method:'GET',url:'/wp-content/plugins/safe-plugin/view.js?ver=1',headers:{}},assetBytes],
+  [{method:'GET',url:'/wp-admin/load-scripts.php?c=1&load[chunk_0]=wp-block-editor&ver=7.0.1',headers:{}},documentBytes],
+  [{method:'GET',url:`/wp-admin/post.php?post=${context.postId}&action=edit`,headers:{}},documentBytes],
+  [{method:'POST',url:'/wp-login.php',headers:form},documentBytes],
+  [{method:'PUT',url:`/wp-json/wp/v2/posts/${context.postId}`,headers:json},documentBytes],
+  [{method:'GET',url:'/wp-includes/js/dist/block-editor.min.js?ver=1&ver=2',headers:{}},0],
+  [{method:'POST',url:'/wp-includes/js/dist/block-editor.min.js',headers:form},0],
+  [{method:'GET',url:'https://example.com/wp-includes/js/dist/block-editor.min.js',headers:{}},0],
+];
+for (const [request,expected] of cases) {
+  const actual=policy.responseByteCeiling(request,context);
+  if (actual!==expected) throw new Error(JSON.stringify({request,expected,actual}));
+}
+const wrongContext={...context,postId:context.postId+1};
+if (policy.responseByteCeiling(cases[0][0],wrongContext)!==0) throw new Error('invalid context received a ceiling');
+let count=policy.nextResponseByteCount(0,600000,assetBytes);
+count=policy.nextResponseByteCount(count,assetBytes-600000,assetBytes);
+if (count!==assetBytes) throw new Error('exact response ceiling was rejected');
+if (policy.nextResponseByteCount(count,1,assetBytes)!==null) throw new Error('ceiling plus one was accepted');
+"""
+    result = subprocess.run(
+        [node, "-e", script,
+         str(HARNESS / "runtime-images/browser/request-policy.js"), json.dumps(context)],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    gateway = (HARNESS / "runtime-images/browser/gateway-policy.js").read_text(encoding="utf-8")
+    assert "responseByteCeiling" in gateway
+    assert "nextResponseByteCount" in gateway
+    assert "incoming.on('data', chunk =>" in gateway
+    assert "bytes = next; response.write(chunk)" in gateway
+    assert "bytes > 1024 * 1024" not in gateway

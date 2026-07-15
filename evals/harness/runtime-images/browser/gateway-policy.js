@@ -15,6 +15,12 @@ function requestClass(request) {
   }, policyContext);
 }
 
+function responseCeiling(request) {
+  return requestPolicy.responseByteCeiling({
+    url: request.url, method: request.method, headers: request.headers,
+  }, policyContext);
+}
+
 function reject(response, upstream) {
   if (upstream) upstream.destroy();
   if (!response.headersSent) response.writeHead(403, {'content-type': 'text/plain'});
@@ -58,10 +64,17 @@ function upstreamHeaders(request) {
 
 function forward(request, response) {
   const kind = requestClass(request);
-  if (!kind) { reject(response); return; }
+  const ceiling = responseCeiling(request);
+  if (!kind || !ceiling) { reject(response); return; }
   const upstream = http.request({hostname: 'wordpress-application', port: 8080,
     method: request.method, path: request.url, headers: upstreamHeaders(request)}, incoming => {
     let bytes = 0; const headers = {...incoming.headers};
+    if (headers['content-length'] !== undefined) {
+      const declared = Number(headers['content-length']);
+      if (!Number.isSafeInteger(declared) || declared < 0 || declared > ceiling) {
+        incoming.destroy(); reject(response); return;
+      }
+    }
     if (headers.location) {
       const target = new URL(headers.location, requestPolicy.ORIGIN);
       if (target.origin !== requestPolicy.ORIGIN) { incoming.destroy(); reject(response); return; }
@@ -69,9 +82,9 @@ function forward(request, response) {
     }
     response.writeHead(incoming.statusCode || 502, headers);
     incoming.on('data', chunk => {
-      bytes += chunk.length;
-      if (bytes > 1024 * 1024) { incoming.destroy(); response.destroy(); }
-      else response.write(chunk);
+      const next = requestPolicy.nextResponseByteCount(bytes, chunk.length, ceiling);
+      if (next === null) { incoming.destroy(); response.destroy(); }
+      else { bytes = next; response.write(chunk); }
     });
     incoming.on('end', () => response.end());
     incoming.on('error', () => response.destroy());

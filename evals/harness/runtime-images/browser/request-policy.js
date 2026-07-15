@@ -3,6 +3,8 @@
 const ORIGIN = 'http://gateway-frontend:8081';
 const REST_CANARY = '/wp-runtime-canary/v1/output';
 const BLOCK_CANARY_POST_ID = 910011;
+const DOCUMENT_RESPONSE_BYTES = 1048576;
+const ASSET_RESPONSE_BYTES = 1209512;
 const PROFILES = new Set(['standard', 'block-runtime', 'adversarial-test']);
 const ASSET_PREFIXES = ['/wp-includes/', '/wp-admin/css/', '/wp-admin/js/',
   '/wp-admin/images/', '/wp-content/themes/'];
@@ -120,6 +122,23 @@ function validateBody(kind, body, context) {
   }
 }
 
+function responseByteCeiling(request, context) {
+  const kind = classifyRequest(request, context);
+  if (!kind) return 0;
+  if (kind !== 'read') return DOCUMENT_RESPONSE_BYTES;
+  const url = boundedUrl(request.url, context.origin);
+  if (!url) return 0;
+  return staticAsset(url, context.slug) ? ASSET_RESPONSE_BYTES : DOCUMENT_RESPONSE_BYTES;
+}
+
+function nextResponseByteCount(current, chunkLength, ceiling) {
+  if (![current, chunkLength, ceiling].every(Number.isSafeInteger)
+      || current < 0 || chunkLength < 0 || ceiling < 1
+      || current > ceiling || chunkLength > ceiling - current) return null;
+  return current + chunkLength;
+}
+
 module.exports = {
-  BLOCK_CANARY_POST_ID, ORIGIN, classifyRequest, validContext, validateBody,
+  ASSET_RESPONSE_BYTES, BLOCK_CANARY_POST_ID, DOCUMENT_RESPONSE_BYTES, ORIGIN,
+  classifyRequest, nextResponseByteCount, responseByteCeiling, validContext, validateBody,
 };
