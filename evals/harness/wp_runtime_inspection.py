@@ -140,6 +140,11 @@ def _validate_live_host(service, inspected, image):
 def _validate_live(service: str, inspected: dict, image: str, identity:str,
                    expected_service:dict, require_running:bool=True) -> dict:
     host = _validate_live_host(service, inspected, image)
+    if service == "gateway":
+        config = inspected["Config"]
+        if (config.get("Entrypoint") != expected_service["entrypoint"]
+                or config.get("Cmd") != expected_service["command"]):
+            raise RuntimeError("gateway live entrypoint or command drift")
     live_mounts=inspected.get("Mounts",[]); mounts={(item["Source"],item["Destination"]) for item in live_mounts}
     if mounts or live_mounts:
         raise RuntimeError(f"{service} live artifact mount drift")

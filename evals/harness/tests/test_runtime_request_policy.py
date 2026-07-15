@@ -15,6 +15,7 @@ sys.path.insert(0, str(HARNESS))
 
 import isolated_runtime_contract as contract  # noqa: E402
 import wp_runtime_oracles as oracles  # noqa: E402
+import wp_runtime_inspection as inspection  # noqa: E402
 import wp_runtime_topology as topology  # noqa: E402
 from wp_runtime_evidence import RuntimeDeadline  # noqa: E402
 from wp_runtime_types import BlockRuntimeAssertion  # noqa: E402
@@ -68,6 +69,84 @@ def test_block_topology_binds_exact_profile_and_disposable_post():
         topology.validate_compose(
             mutated, artifact_image, "safe-plugin", contract.BLOCK_PROFILE,
             contract.BLOCK_CANARY_POST_ID,
+        )
+
+
+def _live_gateway_fixture(expected_service, image, identity, running):
+    tmpfs = dict(item.split(":", 1) for item in expected_service["tmpfs"])
+    networks = {
+        f"runtime_{name}": {"IPAddress": "172.20.0.2" if running else ""}
+        for name in topology.SERVICE_NETWORKS["gateway"]
+    }
+    return {
+        "Id": "gateway-id", "Image": image, "Mounts": [],
+        "Config": {"User": identity, "Env": [],
+                   "Entrypoint": list(expected_service["entrypoint"]),
+                   "Cmd": list(expected_service["command"])},
+        "HostConfig": {
+            "ReadonlyRootfs": True, "CapDrop": ["ALL"], "CapAdd": None,
+            "PidsLimit": 128, "Memory": 536870912, "MemorySwap": 536870912,
+            "NanoCpus": 500000000, "SecurityOpt": ["no-new-privileges:true"],
+            "ShmSize": 16777216,
+            "Ulimits": [{"Name": "nofile", "Soft": 1024, "Hard": 1024},
+                        {"Name": "nproc", "Soft": 256, "Hard": 256}],
+            "LogConfig": {"Type": "none"}, "Init": True,
+            "NetworkMode": "runtime_application", "RestartPolicy": {
+                "Name": "no", "MaximumRetryCount": 0,
+            }, "Tmpfs": tmpfs,
+        },
+        "NetworkSettings": {"Networks": networks},
+        "State": {"Running": running,
+                  "Status": "running" if running else "created"},
+    }
+
+
+@pytest.mark.parametrize("running", [False, True])
+def test_live_gateway_inspection_accepts_bound_command(running):
+    images = {name: "sha256:" + str(index) * 64
+              for index, name in enumerate(("database", "wordpress", "browser"), 1)}
+    identities = {"database": "999:999", "wordpress": "33:33",
+                  "browser": "1000:1000"}
+    artifact_image = "sha256:" + "4" * 64
+    service = topology.build_compose(
+        images, identities, artifact_image, "safe-plugin",
+        contract.BLOCK_PROFILE, contract.BLOCK_CANARY_POST_ID,
+    )["services"]["gateway"]
+    inspected = _live_gateway_fixture(
+        service, images["browser"], identities["browser"], running,
+    )
+    evidence = inspection._validate_live(
+        "gateway", inspected, images["browser"], identities["browser"],
+        service, running,
+    )
+    assert evidence["id"] == "gateway-id"
+
+
+@pytest.mark.parametrize("running", [False, True])
+@pytest.mark.parametrize("drift", ["profile", "post_id", "entrypoint"])
+def test_live_gateway_inspection_rejects_bound_command_drift(running, drift):
+    images = {name: "sha256:" + str(index) * 64
+              for index, name in enumerate(("database", "wordpress", "browser"), 1)}
+    identities = {"database": "999:999", "wordpress": "33:33",
+                  "browser": "1000:1000"}
+    artifact_image = "sha256:" + "4" * 64
+    service = topology.build_compose(
+        images, identities, artifact_image, "safe-plugin",
+        contract.BLOCK_PROFILE, contract.BLOCK_CANARY_POST_ID,
+    )["services"]["gateway"]
+    inspected = _live_gateway_fixture(
+        service, images["browser"], identities["browser"], running,
+    )
+    if drift == "profile":
+        inspected["Config"]["Cmd"][-2] = contract.STANDARD_PROFILE
+    elif drift == "post_id":
+        inspected["Config"]["Cmd"][-1] = "0"
+    else:
+        inspected["Config"]["Entrypoint"] = ["sleep"]
+    with pytest.raises(RuntimeError, match="gateway live entrypoint or command drift"):
+        inspection._validate_live(
+            "gateway", inspected, images["browser"], identities["browser"],
+            service, running,
         )
 
 
