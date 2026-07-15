@@ -1,6 +1,7 @@
 """Live Docker tests for the staged WordPress runtime boundary."""
 from __future__ import annotations
 
+import json
 import platform
 import shutil
 import sys
@@ -55,9 +56,15 @@ def _block_failure_diagnostic(result):
     failed = []
     for item in result.get("checks", ()):
         if item.get("status") != "pass":
+            detail = str(item.get("detail") or "")
+            try:
+                errors = json.loads(detail).get("errors") or []
+            except (json.JSONDecodeError, AttributeError):
+                errors = []
+            rendered = " | ".join(scrub_tail(str(value), 180) for value in errors[:3])
             failed.append(
                 f"{item.get('id')}:{item.get('status')}:"
-                f"{scrub_tail(str(item.get('detail') or ''), 180)}"
+                f"{rendered or scrub_tail(detail, 180)}"
             )
     build = result.get("block_build_smoke_status")
     artifact = result.get("block_runtime_artifact_gate_status")
