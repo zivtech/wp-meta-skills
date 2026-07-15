@@ -154,9 +154,16 @@ Hard-fail evidence:
 - security-relevant suppressions that reappear under `--ignore-annotations`.
 
 Advisory evidence is preserved for the critic, including direct-query/caching
-signals that need reachability and product-context review. Reviewed
-`get_block_wrapper_attributes()` suppressions are recorded with
-`reviewed_safe_api` instead of being treated as blanket allowlist evidence.
+signals that need reachability and product-context review. Every newly emitted
+unmatched suppressed `OutputNotEscaped` occurrence remains a hard fail unless
+the existing operator-supplied `--allow-suppression-prefix` policy applies; PHPCS
+basename messages cannot distinguish the genuine global
+`get_block_wrapper_attributes()` helper from constants, namespaced/local
+functions, or imported aliases. New reports therefore emit
+`reviewed_safe_api: null`. The security critic may adjudicate genuine-helper
+context manually, but the deterministic gate does not downgrade it. Historical
+v1 reports with a non-null nullable-string field remain readable but are not
+current deterministic proof.
 
 One-time setup for the pinned PHPCS/WPCS toolchain:
 

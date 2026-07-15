@@ -46,6 +46,7 @@ import stat
 import sys
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -91,7 +92,6 @@ HARD_FAIL_PREFIXES = ("WordPress.DB.PreparedSQL", "WordPress.Security.EscapeOutp
 # A suppressed violation is "security relevant" (and therefore a hard fail when
 # it reappears without annotations) when its sniff is one of the security sniffs.
 SECURITY_RELEVANT_PREFIXES = ("WordPress.Security.", "WordPress.DB.")
-REVIEWED_SAFE_SUPPRESSION_APIS = ("get_block_wrapper_attributes",)
 
 # Sniff-source prefix -> coarse vulnerability class for the critic's convenience.
 VULN_CLASS_PREFIXES = (
@@ -318,17 +318,6 @@ def _source_excerpt(
         return None
 
 
-def reviewed_safe_suppression_api(violation: dict[str, Any]) -> str | None:
-    """Return a known-safe WordPress helper for a reviewed suppression, if any."""
-    if violation["source"] != "WordPress.Security.EscapeOutput.OutputNotEscaped":
-        return None
-    haystack = " ".join(str(violation.get(key) or "") for key in ("message", "source_excerpt"))
-    for api in REVIEWED_SAFE_SUPPRESSION_APIS:
-        if api in haystack:
-            return api
-    return None
-
-
 def parse_phpcs_output(
     output: dict[str, Any],
     artifact_path: Path,
@@ -370,8 +359,28 @@ def parse_phpcs_output(
     return violations
 
 
-def _violation_key(violation: dict[str, Any]) -> tuple[str, Any, str]:
-    return (violation["file"], violation["line"], violation["source"])
+def _normalized_location(value: Any) -> int | str | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _normalized_message(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _violation_key(violation: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        os.path.normpath(str(violation["file"])).replace(os.sep, "/"),
+        _normalized_location(violation.get("line")),
+        _normalized_location(violation.get("column")),
+        str(violation.get("source") or ""),
+        str(violation.get("type") or "").upper(),
+        _normalized_message(violation.get("message")),
+    )
 
 
 def diff_suppressions(
@@ -384,29 +393,33 @@ def diff_suppressions(
 
     Pure function — the hermetic unit-test surface for the differential.
     """
-    normal_keys = {_violation_key(v) for v in normal}
+    normal_counts = Counter(_violation_key(violation) for violation in normal)
     suppressed: list[dict[str, Any]] = []
     for violation in ignored:
         if budget is not None:
             budget.check_deadline()
-        if _violation_key(violation) in normal_keys:
+        identity = _violation_key(violation)
+        if normal_counts[identity] > 0:
+            normal_counts[identity] -= 1
             continue
-        reviewed_safe_api = reviewed_safe_suppression_api(violation)
         suppressed.append(
             {
                 "file": violation["file"],
                 "line": violation["line"],
                 "annotation": "phpcs:ignore",
                 "suppressed_rules": [violation["source"]],
-                "security_relevant": False if reviewed_safe_api else is_security_relevant(violation["source"], allow_prefixes),
+                "security_relevant": is_security_relevant(violation["source"], allow_prefixes),
                 "reappears_without_annotations": True,
                 "vuln_class": vuln_class_for(violation["source"]),
                 "message": violation["message"],
                 "source_excerpt": violation.get("source_excerpt"),
-                "reviewed_safe_api": reviewed_safe_api,
+                "reviewed_safe_api": None,
             }
         )
-    suppressed.sort(key=lambda item: (item["file"], item["line"] or 0, item["suppressed_rules"][0]))
+    suppressed.sort(key=lambda item: (
+        item["file"], item["line"] or 0, item["suppressed_rules"][0],
+        _normalized_message(item.get("message")), str(item.get("source_excerpt") or ""),
+    ))
     return suppressed
 
 

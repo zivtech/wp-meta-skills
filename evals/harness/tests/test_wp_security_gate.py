@@ -112,8 +112,15 @@ NONCE_WARNING = {
     "column": 3,
 }
 
+def _escape_output_message(reported):
+    return (
+        "All output should be run through an escaping function (see the Security sections "
+        f"in the WordPress Developer Handbooks), found '{reported}'."
+    )
+
+
 BLOCK_WRAPPER_SUPPRESSION = {
-    "message": "All output should be run through an escaping function, found 'get_block_wrapper_attributes'.",
+    "message": _escape_output_message("get_block_wrapper_attributes"),
     "source": "WordPress.Security.EscapeOutput.OutputNotEscaped",
     "severity": 5,
     "fixable": False,
@@ -165,14 +172,189 @@ def test_diff_suppressions_allow_prefix_downgrades_relevance():
     assert suppressed[0]["security_relevant"] is False
 
 
-def test_diff_suppressions_marks_reviewed_block_wrapper_helper_as_advisory():
+def test_diff_suppressions_keeps_genuine_block_wrapper_helper_security_relevant():
     ignored = wp_security_gate.parse_phpcs_output(
         _phpcs_json("/work/artifact/render.php", [BLOCK_WRAPPER_SUPPRESSION]), Path("/work/artifact")
     )
     suppressed = wp_security_gate.diff_suppressions([], ignored)
 
-    assert suppressed[0]["security_relevant"] is False
-    assert suppressed[0]["reviewed_safe_api"] == "get_block_wrapper_attributes"
+    assert suppressed[0]["security_relevant"] is True
+    assert suppressed[0]["reviewed_safe_api"] is None
+
+
+def _violation(**overrides):
+    return {
+        "file": "render.php",
+        "line": 16,
+        "column": 7,
+        "source": "WordPress.Security.EscapeOutput.OutputNotEscaped",
+        "type": "ERROR",
+        "severity": 5,
+        "fixable": False,
+        "message": "All output should be escaped, found '$unsafe'.",
+        "source_excerpt": "echo $unsafe;",
+        **overrides,
+    }
+
+
+def test_diff_suppressions_consumes_duplicate_occurrences_one_for_one():
+    violation = _violation()
+    suppressed = wp_security_gate.diff_suppressions(
+        [violation], [violation, violation],
+    )
+    assert len(suppressed) == 1
+    assert suppressed[0]["security_relevant"] is True
+
+
+def test_diff_suppressions_preserves_two_identical_normal_occurrences():
+    violation = _violation()
+    assert wp_security_gate.diff_suppressions(
+        [violation, violation], [violation, violation],
+    ) == []
+
+
+def test_diff_suppressions_normalizes_identity_fields_before_consumption():
+    normal = [_violation(
+        file="./render.php", line="16", column="7", type="error",
+        message="All output should be escaped,  found   '$unsafe'.",
+    )]
+    ignored = [_violation(
+        file="render.php", line=16, column=7, type="ERROR",
+        message="All output should be escaped, found '$unsafe'.",
+    )]
+    assert wp_security_gate.diff_suppressions(normal, ignored) == []
+
+
+def test_diff_suppressions_distinguishes_column_and_message_on_same_line():
+    normal = [_violation(column=7, message="found '$first'.")]
+    ignored = [
+        _violation(column=7, message="found '$first'."),
+        _violation(column=11, message="found '$first'."),
+        _violation(column=7, message="found '$second'."),
+    ]
+    suppressed = wp_security_gate.diff_suppressions(normal, ignored)
+    assert len(suppressed) == 2
+    assert {entry["message"] for entry in suppressed} == {
+        "found '$first'.", "found '$second'.",
+    }
+
+
+def test_diff_suppressions_column_alone_is_part_of_identity():
+    normal = [_violation(column=7)]
+    ignored = [_violation(column=11)]
+    assert len(wp_security_gate.diff_suppressions(normal, ignored)) == 1
+
+
+def test_diff_suppressions_message_alone_is_part_of_identity():
+    normal = [_violation(message="found '$first'.")]
+    ignored = [_violation(message="found '$second'.")]
+    suppressed = wp_security_gate.diff_suppressions(normal, ignored)
+    assert len(suppressed) == 1
+    assert suppressed[0]["message"] == "found '$second'."
+
+
+@pytest.mark.parametrize(
+    ("message", "excerpt"),
+    [
+        ("All output should be escaped.", "// get_block_wrapper_attributes; echo $unsafe;"),
+        ("All output should be escaped.", "echo 'get_block_wrapper_attributes'; echo $unsafe;"),
+        ("All output should be escaped, found 'foo_get_block_wrapper_attributes'.", ""),
+        ("All output should be escaped, found 'get_block_wrapper_attributes_extra'.", ""),
+        ("All output should be escaped, found 'Vendor\\get_block_wrapper_attributes'.", ""),
+        (_escape_output_message("get_block_wrapper_attributes"), "echo get_block_wrapper_attributes();"),
+        (_escape_output_message("get_block_wrapper_attributes()"), "echo get_block_wrapper_attributes();"),
+        (_escape_output_message("\\get_block_wrapper_attributes"), "echo get_block_wrapper_attributes();"),
+    ],
+)
+def test_no_message_or_excerpt_can_grant_reviewed_safe_status(message, excerpt):
+    suppressed = wp_security_gate.diff_suppressions(
+        [], [_violation(message=message, source_excerpt=excerpt)]
+    )
+    assert suppressed[0]["reviewed_safe_api"] is None
+    assert suppressed[0]["security_relevant"] is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "All output should be escaped.",
+        "Found get_block_wrapper_attributes without quoted expression.",
+        "Helper not found 'get_block_wrapper_attributes'.",
+        "found 'get_block_wrapper_attributes' and found '$unsafe'.",
+        "found 'get_block_wrapper_attributes', found 'get_block_wrapper_attributes'.",
+    ],
+)
+def test_missing_or_ambiguous_messages_remain_security_relevant(message):
+    suppressed = wp_security_gate.diff_suppressions(
+        [], [_violation(message=message)]
+    )
+    assert suppressed[0]["reviewed_safe_api"] is None
+    assert suppressed[0]["security_relevant"] is True
+
+
+def test_diff_suppression_output_order_is_deterministic_after_matching():
+    first = _violation(message="found '$z'.", source_excerpt="echo $z;")
+    second = _violation(message="found '$a'.", source_excerpt="echo $second;")
+    third = _violation(message="found '$a'.", source_excerpt="echo $first;")
+    forward = wp_security_gate.diff_suppressions([], [first, second, third])
+    reverse = wp_security_gate.diff_suppressions([], [third, second, first])
+    assert forward == reverse
+    assert [(entry["message"], entry["source_excerpt"]) for entry in forward] == [
+        ("found '$a'.", "echo $first;"),
+        ("found '$a'.", "echo $second;"),
+        ("found '$z'.", "echo $z;"),
+    ]
+
+
+@pytest.mark.real_security_gate
+@needs_toolchain
+@pytest.mark.parametrize(
+    ("case_name", "source"),
+    [
+        (
+            "genuine-global-helper",
+            "// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Genuine helper.\n"
+            "echo get_block_wrapper_attributes();\n",
+        ),
+        (
+            "same-named-constant",
+            "define( 'get_block_wrapper_attributes', $_GET['unsafe'] );\n"
+            "// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Adversarial constant.\n"
+            "echo get_block_wrapper_attributes;\n",
+        ),
+        (
+            "namespaced-local-function",
+            "namespace Evil;\n"
+            "function get_block_wrapper_attributes() { return $_GET['unsafe']; }\n"
+            "// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Adversarial local function.\n"
+            "echo get_block_wrapper_attributes();\n",
+        ),
+        (
+            "imported-function-alias",
+            "namespace Evil { function unsafe_value() { return $_GET['unsafe']; } }\n"
+            "namespace Plugin {\n"
+            "use function Evil\\unsafe_value as get_block_wrapper_attributes;\n"
+            "// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Adversarial alias.\n"
+            "echo get_block_wrapper_attributes();\n"
+            "}\n",
+        ),
+    ],
+)
+def test_real_phpcs_basename_collisions_all_fail_closed(tmp_path, case_name, source):
+    artifact = tmp_path / "block"
+    artifact.mkdir()
+    (artifact / "render.php").write_text(
+        "<?php\n" + source,
+        encoding="utf-8",
+    )
+    report = wp_security_gate.run_security_gate(artifact)
+    reviewed = report["suppressed_annotations"]
+    assert report["status"] == "fail", (case_name, report)
+    matching = [entry for entry in reviewed if "EscapeOutput" in entry["suppressed_rules"][0]]
+    assert matching, (case_name, report)
+    assert all(entry["reviewed_safe_api"] is None for entry in matching)
+    assert all(entry["security_relevant"] is True for entry in matching)
+    assert any("found 'get_block_wrapper_attributes'" in entry["message"] for entry in matching)
 
 
 def test_classify_hard_fails_prepared_sql_error():
