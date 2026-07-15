@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 import validate_wordpress_skill_output as oracle
 
 
@@ -25,7 +27,9 @@ Rich text uses `wp_kses_post()` and redirects use `wp_safe_redirect()`.
 Run PHPCS/WPCS, PHPUnit, WP-CLI smoke, and Plugin Check before release.
 
 ## Assumption Register
-Assumption: no exact WordPress API applies to external CRM ownership until integration scope is confirmed.
+    Assumption: no exact WordPress API applies to external CRM ownership because
+    WordPress does not control the vendor account; the CRM owner must confirm it
+    against the vendor API contract.
 
 ## Test Strategy
 PHPUnit covers settings persistence; Plugin Check covers package readiness.
@@ -205,6 +209,75 @@ def test_good_planner_output_passes():
 
     assert result["pass"] is True
     assert result["score"] == 1.0
+
+
+def test_blanket_non_applicability_cannot_replace_exact_surfaces():
+    check = oracle.check_exact_surfaces(
+        "No exact WordPress API applies.",
+        {"min_surfaces": 2},
+    )
+
+    assert check.passed is False
+    assert "expected at least 2" in check.detail
+
+
+def test_exact_surface_matching_is_boundary_and_order_aware():
+    partial = oracle.check_exact_surfaces(
+        "current_user_canary and register_rest_routeable are custom names.",
+        {"min_surfaces": 1},
+    )
+    scattered = oracle.check_exact_surfaces(
+        "Use register_rest_route. In a separate sentence, add permission_callback.",
+        {"min_surfaces": 2},
+    )
+    exact = oracle.check_exact_surfaces(
+        "Use current_user_can() and register_rest_route permission_callback.",
+        {"min_surfaces": 2},
+    )
+
+    assert partial.passed is False
+    assert scattered.passed is False
+    assert exact.passed is True
+    assert "core_function:current_user_can()" in exact.detail
+    assert "reviewed_composed:register_rest_route permission_callback" in exact.detail
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "No exact WordPress API applies because this is external; verify it with the owner.",
+        "No exact WordPress API applies to external CRM ownership; verify it with the CRM owner.",
+        "No exact WordPress API applies to external CRM ownership because WordPress does not control it.",
+    ],
+)
+def test_non_applicability_requires_scope_reason_and_oracle(statement):
+    text = f"Use current_user_can() and register_post_type(). {statement}"
+
+    check = oracle.check_exact_surfaces(text, {"min_surfaces": 2})
+
+    assert check.passed is False
+    assert "invalid non-applicability" in check.detail
+
+
+def test_scoped_non_applicability_does_not_waive_surface_minimum():
+    statement = (
+        "No exact WordPress API applies to external CRM ownership because WordPress "
+        "does not control the vendor account; verify it with the CRM owner against "
+        "the vendor API contract."
+    )
+
+    too_few = oracle.check_exact_surfaces(
+        f"Use current_user_can(). {statement}",
+        {"min_surfaces": 2},
+    )
+    enough = oracle.check_exact_surfaces(
+        f"Use current_user_can() and register_post_type(). {statement}",
+        {"min_surfaces": 2},
+    )
+
+    assert too_few.passed is False
+    assert enough.passed is True
+    assert "scoped non-applicability" in enough.detail
 
 
 def test_dot_notation_planner_alias_passes():
