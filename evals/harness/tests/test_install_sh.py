@@ -1,4 +1,6 @@
 import os
+import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,11 +42,15 @@ def _run(
     home: Path,
     *args: str,
     check: bool = True,
+    extra_env: dict[str, str] | None = None,
+    script_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    run_env = _env(home)
+    run_env.update(extra_env or {})
     return subprocess.run(
-        ["/bin/bash", str(repo / "install.sh"), *args],
+        ["/bin/bash", str(script_path or repo / "install.sh"), *args],
         cwd=repo,
-        env=_env(home),
+        env=run_env,
         text=True,
         capture_output=True,
         check=check,
@@ -72,10 +78,21 @@ def _make_sibling(repo: Path, name: str = "drupal-meta-skills") -> Path:
     sibling = repo.parent / name
     _write(sibling / ".claude/skills/sibling-skill/SKILL.md")
     _write(sibling / ".claude/agents/sibling-agent.md")
-    subprocess.run(["git", "init", "-q", str(sibling)], check=True)
+    git_home = repo.parent / "git-home"
+    git_home.mkdir()
+    git_env = _env(git_home) | {
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+    }
+    subprocess.run(
+        ["git", "init", "-q", "--template=", str(sibling)],
+        check=True,
+        env=git_env,
+    )
     subprocess.run(
         ["git", "-C", str(sibling), "remote", "add", "origin", f"https://github.com/zivtech/{name}.git"],
         check=True,
+        env=git_env,
     )
     return sibling
 
@@ -98,6 +115,76 @@ def test_no_verify_does_not_discover_sibling_repo(tmp_path: Path) -> None:
     _run(repo, home, "--no-verify")
 
     assert not _skill_link(home, ".codex", "sibling-skill").exists()
+
+
+@pytest.mark.parametrize("kind", ["skill", "agent"])
+def test_discovery_cannot_split_newline_path_into_external_source(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    repo, home = _make_repo(tmp_path)
+    if kind == "skill":
+        external = _write(tmp_path / "external-skill/SKILL.md")
+        malicious = repo / ".claude/skills" / f"split\n{external}"
+        destination = _skill_link(home, ".codex", "external-skill")
+    else:
+        external = _write(tmp_path / "external-agent.md")
+        malicious = repo / ".claude/agents" / f"split\n{external}"
+        destination = _agent_link(home, "external-agent.md")
+    _write(malicious)
+
+    _run(repo, home, "--no-verify")
+
+    assert not destination.exists() and not destination.is_symlink()
+    _assert_current_links(repo, home)
+
+
+@pytest.mark.parametrize("kind", ["skill", "agent"])
+def test_discovery_rejects_control_character_entry_name(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    repo, home = _make_repo(tmp_path)
+    if kind == "skill":
+        _write(repo / ".claude/skills/bad\tname/SKILL.md")
+        destination = _skill_link(home, ".claude", "bad\tname")
+    else:
+        _write(repo / ".claude/agents/bad\tname.md")
+        destination = _agent_link(home, "bad\tname.md")
+
+    result = _run(repo, home, "--no-verify")
+
+    assert "BLOCK unsafe" in result.stdout
+    assert not destination.exists() and not destination.is_symlink()
+
+
+def test_symlink_launcher_uses_physical_checkout_root(tmp_path: Path) -> None:
+    repo, home = _make_repo(tmp_path)
+    launcher = tmp_path / "launcher/install.sh"
+    launcher.parent.mkdir()
+    launcher.symlink_to(repo / "install.sh")
+    _write(launcher.parent / ".claude/skills/not-from-checkout/SKILL.md")
+
+    _run(repo, home, "--no-verify", script_path=launcher)
+
+    _assert_current_links(repo, home)
+    assert not _skill_link(home, ".claude", "not-from-checkout").exists()
+
+
+def test_control_bearing_checkout_path_has_one_line_output_and_log(
+    tmp_path: Path,
+) -> None:
+    controlled_root = tmp_path / "checkout\npath"
+    controlled_root.mkdir()
+    repo, home = _make_repo(controlled_root)
+
+    result = _run(repo, home, "--no-verify")
+    log_text = (home / ".claude/install.log").read_text(encoding="utf-8")
+
+    assert str(repo) not in result.stdout
+    assert str(repo) not in log_text
+    assert "\\n" in result.stdout
+    assert "\\n" in log_text
 
 
 def test_remove_deletes_current_repo_links(tmp_path: Path) -> None:
@@ -217,6 +304,8 @@ def test_install_preserves_unowned_symlink_by_default(
     assert link.is_symlink()
     assert os.readlink(link) == raw
     assert "PRESERVE" in result.stdout
+    assert "Skipped 1 existing destinations." in result.stdout
+    assert "non-symlink files/dirs" not in result.stdout
 
 
 @pytest.mark.parametrize("kind", ["skill", "agent"])
@@ -280,21 +369,41 @@ def test_force_never_replaces_regular_destination(tmp_path: Path, kind: str) -> 
 
 def test_force_output_supports_interrupted_recovery(tmp_path: Path) -> None:
     repo, home = _make_repo(tmp_path)
-    target = _write(tmp_path / "outside/original")
+    target = _write(tmp_path / "outside/original target $value")
     link = _skill_link(home, ".claude")
     link.parent.mkdir(parents=True)
     raw = os.path.relpath(target, link.parent)
     link.symlink_to(raw)
+    untouched_target = _write(tmp_path / "outside/untouched")
+    untouched = _skill_link(home, ".codex")
+    untouched.parent.mkdir(parents=True)
+    untouched.symlink_to(untouched_target)
+    wrapper_dir = tmp_path / "bin"
+    wrapper = _write(
+        wrapper_dir / "ln",
+        "#!/bin/bash\n/bin/ln \"$@\"\nkill -TERM \"$PPID\"\n",
+    )
+    wrapper.chmod(0o755)
 
-    result = _run(repo, home, "--force")
+    result = _run(
+        repo,
+        home,
+        "--force",
+        check=False,
+        extra_env={"PATH": f"{wrapper_dir}:{_env(home)['PATH']}"},
+    )
+    assert result.returncode == -15
     recovery_line = next(
         line for line in result.stdout.splitlines() if "FORCE replace" in line
     )
-    recorded = recovery_line.split("prior-target=", 1)[1]
+    recorded = shlex.split(recovery_line.split("prior-target=", 1)[1])[0]
+    assert link.resolve() == (repo / ".claude/skills/current-skill").resolve()
     link.unlink()
     link.symlink_to(recorded)
 
     assert link.resolve() == target.resolve()
+    assert untouched.is_symlink()
+    assert untouched.resolve() == untouched_target.resolve()
 
 
 def test_force_is_rejected_for_remove_mode(tmp_path: Path) -> None:
@@ -306,12 +415,18 @@ def test_force_is_rejected_for_remove_mode(tmp_path: Path) -> None:
     assert "--force" in result.stderr
 
 
-def test_subprocess_home_is_synthetic(tmp_path: Path) -> None:
-    repo, home = _make_repo(tmp_path)
-    real_home_link = Path.home() / ".codex/skills/current-skill"
-    before = real_home_link.lstat() if real_home_link.exists() else None
+def test_installer_avoids_errexit_unsafe_postincrement(tmp_path: Path) -> None:
+    repo, _home = _make_repo(tmp_path)
+    source = (repo / "install.sh").read_text(encoding="utf-8")
 
-    _run(repo, home)
+    assert not re.search(r"\(\([A-Za-z_][A-Za-z0-9_]*\+\+\)\)", source)
 
-    after = real_home_link.lstat() if real_home_link.exists() else None
-    assert before == after
+
+def test_subprocess_environment_is_minimal_and_synthetic(tmp_path: Path) -> None:
+    _repo, home = _make_repo(tmp_path)
+
+    assert _env(home) == {
+        "HOME": str(home),
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LC_ALL": "C",
+    }

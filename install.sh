@@ -12,7 +12,23 @@
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+SCRIPT_LINK_HOPS=0
+while [ -L "$SCRIPT_PATH" ]; do
+  SCRIPT_LINK_HOPS=$((SCRIPT_LINK_HOPS + 1))
+  if [ "$SCRIPT_LINK_HOPS" -gt 40 ]; then
+    echo "Installer entrypoint exceeds 40 symlink hops" >&2
+    exit 1
+  fi
+  SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+  SCRIPT_TARGET="$(readlink "$SCRIPT_PATH")"
+  if [[ "$SCRIPT_TARGET" = /* ]]; then
+    SCRIPT_PATH="$SCRIPT_TARGET"
+  else
+    SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_TARGET"
+  fi
+done
+REPO_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
 CLAUDE_SKILLS_DIR="$HOME/.claude/skills"
 CODEX_SKILLS_DIR="$HOME/.codex/skills"
 LEGACY_AGENTS_SKILLS_DIR="$HOME/.agents/skills"
@@ -54,7 +70,9 @@ log_install() {
   if [ -d "$source/.git" ] || [ -d "$(git -C "$source" rev-parse --git-dir 2>/dev/null)" ]; then
     commit=$(git -C "$source" rev-parse --short HEAD 2>/dev/null || echo "unknown")
   fi
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $action $name commit=$commit source=$source" >> "$INSTALL_LOG"
+  printf '%s action=%q name=%q commit=%q source=%q\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$action" "$name" "$commit" "$source" \
+    >> "$INSTALL_LOG"
 }
 
 is_managed_link() {
@@ -78,6 +96,21 @@ is_managed_link() {
   [[ "$resolved_target" == "$resolved_repo" || "$resolved_target" == "$resolved_repo/"* ]]
 }
 
+is_repo_source() {
+  local source="$1"
+  local resolved_source
+  local resolved_repo
+
+  [ -e "$source" ] || return 1
+  resolved_source=$(realpath "$source" 2>/dev/null) || return 1
+  resolved_repo=$(realpath "$REPO_DIR" 2>/dev/null) || return 1
+  [[ "$resolved_source" == "$resolved_repo/"* ]]
+}
+
+is_safe_entry_name() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
 # ── Security: Scan agent files for suspicious patterns ────────────
 scan_agent_file() {
   local file="$1"
@@ -89,7 +122,7 @@ scan_agent_file() {
         echo "  SECURITY WARNING in $(basename "$file"):"
       fi
       echo "    - matches pattern: $pattern"
-      ((findings++))
+      findings=$((findings + 1))
     fi
   done
 
@@ -121,7 +154,7 @@ verify_manifest() {
 
     if [ ! -f "$REPO_DIR/$file_path" ]; then
       echo "  MISSING: $file_path"
-      ((failures++))
+      failures=$((failures + 1))
       continue
     fi
 
@@ -132,7 +165,7 @@ verify_manifest() {
       echo "  MODIFIED: $file_path"
       echo "    Expected: $expected_hash"
       echo "    Actual:   $actual_hash"
-      ((failures++))
+      failures=$((failures + 1))
     fi
   done < "$MANIFEST"
 
@@ -169,7 +202,7 @@ generate_manifest() {
     -type f -print | \
     sort | \
     while IFS= read -r file; do
-      local rel_path="${file#$REPO_DIR/}"
+      local rel_path="${file#"$REPO_DIR"/}"
       shasum -a 256 "$file" | awk -v rp="$rel_path" '{print $1 "  " rp}'
     done >> "$MANIFEST"
 
@@ -214,7 +247,7 @@ fi
 
 # ── Uninstall mode ────────────────────────────────────────────────
 if [ "$MODE" = "remove" ]; then
-  echo "Removing symlinks managed by $REPO_DIR ..."
+  printf 'Removing symlinks managed by %q ...\n' "$REPO_DIR"
   removed=0
 
   for skills_dir in "${SKILL_TARGET_DIRS[@]}"; do
@@ -224,9 +257,9 @@ if [ "$MODE" = "remove" ]; then
       target="$(readlink "$link")"
       is_managed_link "$link" || continue
       rm "$link"
-      echo "  removed skill: $(basename "$link") from $skills_dir"
+      printf '  removed skill: %q from %q\n' "$(basename "$link")" "$skills_dir"
       log_install "REMOVE" "$(basename "$link")" "$target"
-      ((removed++))
+      removed=$((removed + 1))
     done
   done
 
@@ -234,9 +267,9 @@ if [ "$MODE" = "remove" ]; then
     [ -L "$link" ] && is_managed_link "$link" && {
       target="$(readlink "$link")"
       rm "$link"
-      echo "  removed agent: $(basename "$link")"
+      printf '  removed agent: %q\n' "$(basename "$link")"
       log_install "REMOVE" "$(basename "$link")" "$target"
-      ((removed++))
+      removed=$((removed + 1))
     }
   done
 
@@ -278,13 +311,18 @@ fi
 
 installed=0
 skipped=0
-scan_warnings=0
 
 link_destination() {
   local source="$1"
   local destination="$2"
   local label="$3"
   local raw_target
+
+  if ! is_repo_source "$source"; then
+    printf '  BLOCK %s from unowned source %q\n' "$label" "$source"
+    skipped=$((skipped + 1))
+    return 1
+  fi
 
   if [ -L "$destination" ]; then
     if is_managed_link "$destination"; then
@@ -296,13 +334,13 @@ link_destination() {
       rm "$destination"
     else
       printf '  PRESERVE %s at %q (unowned symlink)\n' "$label" "$destination"
-      ((skipped++))
+      skipped=$((skipped + 1))
       return 1
     fi
   elif [ -e "$destination" ]; then
     printf '  SKIP %s at %q (regular file or directory exists)\n' \
       "$label" "$destination"
-    ((skipped++))
+    skipped=$((skipped + 1))
     return 1
   fi
 
@@ -316,12 +354,17 @@ link_one_skill() {
   local skills_dir
 
   name="$(basename "$skill_path")"
+  if ! is_safe_entry_name "$name"; then
+    printf '  BLOCK unsafe skill name %q\n' "$name"
+    skipped=$((skipped + 3))
+    return
+  fi
 
   for skills_dir in "${SKILL_TARGET_DIRS[@]}"; do
     link_destination "$skill_path" "$skills_dir/$name" "skill:$name" || continue
 
     log_install "INSTALL" "skill:$name" "$skill_path -> $skills_dir"
-    ((installed++))
+    installed=$((installed + 1))
   done
 }
 
@@ -330,6 +373,11 @@ link_one_agent() {
   local name
 
   name="$(basename "$agent_file")"
+  if ! is_safe_entry_name "$name"; then
+    printf '  BLOCK unsafe agent name %q\n' "$name"
+    skipped=$((skipped + 1))
+    return
+  fi
 
   # Scan agent file for suspicious patterns.
   scan_agent_file "$agent_file"
@@ -340,7 +388,7 @@ link_one_agent() {
   fi
 
   log_install "INSTALL" "agent:$name" "$agent_file"
-  ((installed++))
+  installed=$((installed + 1))
 }
 
 install_repo_tree() {
@@ -348,29 +396,31 @@ install_repo_tree() {
   local skill_file
   local agent_file
 
-  while IFS= read -r skill_file; do
-    link_one_skill "$(dirname "$skill_file")"
-  done < <(
-    find "$root" \
-      \( -path '*/.git' -o -path '*/.claude/worktrees' \) -prune -o \
-      -path '*/.claude/skills/*/SKILL.md' -type f -print | sort
-  )
+  if [ -d "$root/.claude/skills" ]; then
+    while IFS= read -r -d '' skill_file; do
+      link_one_skill "$(dirname "$skill_file")"
+    done < <(
+      find "$root/.claude/skills" -mindepth 2 -maxdepth 2 \
+        -name SKILL.md -type f -print0 | sort -z
+    )
+  fi
 
-  while IFS= read -r agent_file; do
-    link_one_agent "$agent_file"
-  done < <(
-    find "$root" \
-      \( -path '*/.git' -o -path '*/.claude/worktrees' \) -prune -o \
-      -path '*/.claude/agents/*.md' -type f -print | sort
-  )
+  if [ -d "$root/.claude/agents" ]; then
+    while IFS= read -r -d '' agent_file; do
+      link_one_agent "$agent_file"
+    done < <(
+      find "$root/.claude/agents" -mindepth 1 -maxdepth 1 \
+        -name '*.md' -type f -print0 | sort -z
+    )
+  fi
 }
 
-echo "Installing wp-meta-skills from $REPO_DIR"
-echo "  Claude skills -> $CLAUDE_SKILLS_DIR"
-echo "  Codex skills  -> $CODEX_SKILLS_DIR"
-echo "  Legacy skills -> $LEGACY_AGENTS_SKILLS_DIR"
-echo "  Claude agents -> $CLAUDE_AGENTS_DIR"
-echo "  Log    -> $INSTALL_LOG"
+printf 'Installing wp-meta-skills from %q\n' "$REPO_DIR"
+printf '  Claude skills -> %q\n' "$CLAUDE_SKILLS_DIR"
+printf '  Codex skills  -> %q\n' "$CODEX_SKILLS_DIR"
+printf '  Legacy skills -> %q\n' "$LEGACY_AGENTS_SKILLS_DIR"
+printf '  Claude agents -> %q\n' "$CLAUDE_AGENTS_DIR"
+printf '  Log    -> %q\n' "$INSTALL_LOG"
 echo ""
 
 # Log install session start
@@ -383,10 +433,10 @@ log_install "SESSION_END" "install.sh" "$REPO_DIR (installed=$installed, skipped
 
 echo ""
 echo "Done. Installed $installed symlinks."
-[ "$skipped" -gt 0 ] && echo "Skipped $skipped (non-symlink files/dirs already exist)."
+[ "$skipped" -gt 0 ] && echo "Skipped $skipped existing destinations."
 echo ""
 echo "Skills are now available in Claude Code and Codex skill directories."
 echo "Run './install.sh --remove' to uninstall."
 echo "Run './install.sh --verify' to check integrity."
 echo ""
-echo "Install log: $INSTALL_LOG"
+printf 'Install log: %q\n' "$INSTALL_LOG"
