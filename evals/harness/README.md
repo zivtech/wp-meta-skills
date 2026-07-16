@@ -42,9 +42,22 @@ Repeatable runners and scoring infrastructure for the zivtech-meta-skills eval s
 
 Eval suites should keep fixture, metadata, and rubric contracts aligned:
 
+- Every YAML document is limited to 1 MiB and must use unique mapping keys;
+  anchors, aliases, and explicit tags are rejected before construction.
+- Each eval config, metadata document, and rubric must match exactly one named
+  schema profile. New intentional families require a named rule plus positive
+  and negative contract tests.
 - `fixtures.count` should match the number of fixture Markdown files.
 - Every fixture should have matching metadata using the configured `metadata_suffix`.
 - Every scoreable fixture should have a matching rubric in the configured `rubrics.directory`.
+- Weighted rubric criteria require unique IDs, positive finite weights, and a
+  total within an absolute `1e-6` tolerance of `max_score`. Missing criterion
+  categories mean `quality`; the only other accepted weighted category is
+  `false_positive_trap`, which the scorer inverts.
+- Domain signals are score-bearing: expected WordPress APIs and artifact
+  surfaces add one aggregate positive criterion, while each `must_not_claim`
+  and `must_not_penalize_or_do` item adds a distinct inverted trap. Direct
+  scorer calls reject malformed, blank, or unknown domain-signal values.
 - Placeholder markers such as `TBD`, `[Finding]`, and `Placeholder` should not appear in scoreable metadata or rubric files.
 
 Run a repo-wide report:
@@ -60,6 +73,9 @@ python3 scripts/validate-eval-suite-integrity.py --strict-suites dashboard-plann
 ```
 
 Known quarantined content gaps are recorded in [`evals/suites/QUALITY_GAPS.md`](../suites/QUALITY_GAPS.md). A known gap is not publication-ready benchmark evidence; it is an explicit marker that the suite still needs human completion.
+YAML parsing and schema validation run before placeholder/content checks, and
+structural `invalid_*`, `duplicate_*`, and `schema_*` issues cannot be
+quarantined with `--allow-known-gaps`.
 
 For WordPress executor outputs, validate saved packets before judge- or critic-based review:
 

@@ -41,6 +41,10 @@ MAX_TOKENS_JUDGE = 4096
 # Anthropic API judge disabled for that suite unless the operator intentionally opts into
 # direct API cost. This does not prohibit Claude Code as an operator workflow.
 DESIGN_TOOLING_ALLOW_ENV = "ALLOW_ANTHROPIC_FOR_DESIGN_TOOLING"
+DOMAIN_SIGNAL_KEYS = frozenset({
+    "expected_wordpress_apis", "expected_surfaces", "must_detect",
+    "must_not_claim", "must_not_penalize_or_do",
+})
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -154,6 +158,95 @@ Return ONLY valid JSON with this exact schema:
 # ---------------------------------------------------------------------------
 
 
+def _validated_domain_signals(rubric: dict[str, Any]) -> dict[str, list[str]]:
+    raw = rubric.get("domain_signals")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not raw or not set(raw).issubset(DOMAIN_SIGNAL_KEYS):
+        raise ValueError("domain_signals must be a nonempty mapping of accepted fields")
+    validated: dict[str, list[str]] = {}
+    for key, value in raw.items():
+        if not isinstance(value, list) or not value:
+            raise ValueError(f"domain_signals.{key} must be a nonempty string list")
+        if not all(type(item) is str and item.strip() for item in value):
+            raise ValueError(f"domain_signals.{key} must contain nonblank strings")
+        validated[key] = value
+    return validated
+
+
+def _domain_summary_criteria(signals: dict[str, list[str]]) -> list[dict[str, Any]]:
+    criteria: list[dict[str, Any]] = []
+    expected_apis = signals.get("expected_wordpress_apis") or []
+    if expected_apis:
+        criteria.append({
+            "criterion_id": "domain_expected_wordpress_apis",
+            "category": "domain_wordpress_api",
+            "description": (
+                "Uses relevant WordPress APIs when applicable, such as "
+                f"{', '.join(expected_apis)}. Do not require every listed API "
+                "if it is not relevant to the fixture."
+            ),
+            "evidence_hint": "", "weight": 1.0,
+        })
+    expected_surfaces = signals.get("expected_surfaces") or []
+    if expected_surfaces:
+        criteria.append({
+            "criterion_id": "domain_expected_surfaces", "category": "quality",
+            "description": (
+                "Uses relevant artifact or verification surfaces when applicable, "
+                f"such as {', '.join(expected_surfaces)}. Do not require every "
+                "listed surface when it is irrelevant to the fixture."
+            ),
+            "evidence_hint": "", "weight": 1.0,
+        })
+    return criteria
+
+
+def _domain_item_criteria(signals: dict[str, list[str]]) -> list[dict[str, Any]]:
+    criteria: list[dict[str, Any]] = []
+    for i, signal in enumerate(signals.get("must_detect") or []):
+        criteria.append({
+            "criterion_id": f"domain_must_detect_{i+1}",
+            "category": "domain_must_detect",
+            "description": (
+                "Detects or plans around this fixture-specific WordPress risk "
+                f"or requirement: {signal}"
+            ),
+            "evidence_hint": "", "weight": 1.0,
+        })
+    trap_fields = (
+        ("must_not_penalize_or_do", "domain_false_positive_trap_", "Triggers this discouraged behavior, unsafe recommendation, or false positive: "),
+        ("must_not_claim", "domain_must_not_claim_trap_", "Makes this unsupported claim: "),
+    )
+    for field, prefix, description in trap_fields:
+        for i, trap in enumerate(signals.get(field) or []):
+            criteria.append({
+                "criterion_id": f"{prefix}{i+1}",
+                "category": "false_positive_trap",
+                "description": f"{description}{trap}",
+                "evidence_hint": "", "weight": 1.0,
+            })
+    return criteria
+
+
+def _domain_signal_criteria(rubric: dict[str, Any]) -> list[dict[str, Any]]:
+    signals = _validated_domain_signals(rubric)
+    return _domain_summary_criteria(signals) + _domain_item_criteria(signals)
+
+
+def _explicit_false_positive_criteria(rubric: dict[str, Any]) -> list[dict[str, Any]]:
+    criteria: list[dict[str, Any]] = []
+    for i, trap in enumerate(rubric.get("false_positive_traps") or []):
+        if isinstance(trap, dict):
+            criteria.append({
+                "criterion_id": trap.get("id", f"FP{i+1}"),
+                "category": "false_positive_trap",
+                "description": trap.get("description", ""),
+                "evidence_hint": "", "weight": float(trap.get("weight", 1)),
+            })
+    return criteria
+
+
 def _extract_criteria_from_rubric(rubric: dict[str, Any]) -> list[dict[str, Any]]:
     """
     Extract a flat list of criteria from a rubric YAML dict.
@@ -211,66 +304,14 @@ def _extract_criteria_from_rubric(rubric: dict[str, Any]) -> list[dict[str, Any]
     # Turn these into scoreable criteria so the judge cannot reward fluent
     # genericism while missing concrete WordPress risks or recommending unsafe
     # patterns.
-    domain_signals = rubric.get("domain_signals") or {}
-    if isinstance(domain_signals, dict):
-        expected_apis = domain_signals.get("expected_wordpress_apis") or []
-        if expected_apis:
-            api_list = ", ".join(str(api) for api in expected_apis)
-            criteria.append(
-                {
-                    "criterion_id": "domain_expected_wordpress_apis",
-                    "category": "domain_wordpress_api",
-                    "description": (
-                        "Uses relevant WordPress APIs when applicable, such as "
-                        f"{api_list}. Do not require every listed API if it is not "
-                        "relevant to the fixture."
-                    ),
-                    "evidence_hint": "",
-                    "weight": 1.0,
-                }
-            )
+    criteria.extend(_domain_signal_criteria(rubric))
+    criteria.extend(_explicit_false_positive_criteria(rubric))
 
-        for i, signal in enumerate(domain_signals.get("must_detect") or []):
-            criteria.append(
-                {
-                    "criterion_id": f"domain_must_detect_{i+1}",
-                    "category": "domain_must_detect",
-                    "description": (
-                        "Detects or plans around this fixture-specific WordPress "
-                        f"risk or requirement: {signal}"
-                    ),
-                    "evidence_hint": "",
-                    "weight": 1.0,
-                }
-            )
-
-        for i, trap in enumerate(domain_signals.get("must_not_penalize_or_do") or []):
-            criteria.append(
-                {
-                    "criterion_id": f"domain_false_positive_trap_{i+1}",
-                    "category": "false_positive_trap",
-                    "description": (
-                        "Triggers this discouraged behavior, unsafe recommendation, "
-                        f"or false positive: {trap}"
-                    ),
-                    "evidence_hint": "",
-                    "weight": 1.0,
-                }
-            )
-
-    # False positive traps
-    for i, trap in enumerate(rubric.get("false_positive_traps") or []):
-        if isinstance(trap, dict):
-            criteria.append(
-                {
-                    "criterion_id": trap.get("id", f"FP{i+1}"),
-                    "category": "false_positive_trap",
-                    "description": trap.get("description", ""),
-                    "evidence_hint": "",
-                    "weight": float(trap.get("weight", 1)),
-                }
-            )
-
+    criterion_ids = [item["criterion_id"] for item in criteria]
+    if not all(type(item) is str and item.strip() for item in criterion_ids):
+        raise ValueError("rubric criteria IDs must be nonblank strings")
+    if len(criterion_ids) != len(set(criterion_ids)):
+        raise ValueError("rubric criteria produce duplicate criterion IDs")
     return criteria
 
 

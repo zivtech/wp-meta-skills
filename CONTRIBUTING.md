@@ -50,6 +50,7 @@ python3 -m pytest \
   evals/harness/tests/test_runtime_image_provision.py \
   evals/harness/tests/test_wp_env_network_guard.py \
   evals/harness/tests/test_runtime_assertions.py \
+  evals/harness/tests/test_eval_suite_integrity.py \
   evals/harness/tests/test_runtime_request_policy.py \
   evals/harness/tests/test_isolated_runtime_contract.py \
   evals/harness/tests/test_wp_staged_runtime.py \
