@@ -4,12 +4,19 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - ".agents/**"
+      - ".claude/**"
+      - ".codex/**"
       - "evals/harness/**"
       - "evals/suites/wordpress-*/**"
       - "scripts/**"
       - ".github/workflows/validate.yml"
-      - "pytest.ini"
       - "CONTRIBUTING.md"
+      - "MANIFEST.sha256"
+      - "SECURITY.md"
+      - "install.sh"
+      - "pytest.ini"
+      - "skills.sh.json"
   push:
     branches:
       - main

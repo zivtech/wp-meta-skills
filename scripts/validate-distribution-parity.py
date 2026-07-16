@@ -126,7 +126,7 @@ def _normalize_newlines(text: str) -> str:
 
 def _read_text(path: Path) -> str:
     try:
-        return _normalize_newlines(path.read_text(encoding="utf-8"))
+        return _normalize_newlines(path.read_bytes().decode("utf-8"))
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"read failed: {exc.__class__.__name__}") from exc
 
@@ -298,8 +298,25 @@ def _strip_inline_code(value: str) -> str:
     return normalized
 
 
-def _protocol_records(value: str) -> tuple[str, ...]:
-    records = tuple(_strip_inline_code(line.strip()) for line in value.splitlines() if line.strip())
+def _unwrap_record(line: str, prefix: str, label: str) -> str:
+    if not line.startswith(prefix):
+        raise ValueError(f"{label} wrapper mismatch")
+    record = line[len(prefix) :]
+    if not record or record[:1].isspace() or record != record.rstrip():
+        raise ValueError(f"{label} whitespace mismatch")
+    return _strip_inline_code(record)
+
+
+def _protocol_records(value: str, skill_side: bool) -> tuple[str, ...]:
+    lines = tuple(line for line in value.splitlines() if line)
+    records = tuple(
+        _unwrap_record(
+            line,
+            ("" if index == 0 else "    ") if skill_side else "    ",
+            "Protocol",
+        )
+        for index, line in enumerate(lines)
+    )
     if len(records) != 10:
         raise ValueError("Protocol must contain ten records")
     for index, record in enumerate(records):
@@ -308,22 +325,24 @@ def _protocol_records(value: str) -> tuple[str, ...]:
     return records
 
 
-def _gate_records(value: str) -> tuple[str, ...]:
+def _gate_records(value: str, skill_side: bool) -> tuple[str, ...]:
     records: list[str] = []
+    index = 0
     for line in value.splitlines():
-        stripped = line.strip()
-        if not stripped:
+        if not line:
             continue
-        if not stripped.startswith("- "):
-            raise ValueError("Hard Gates contains an unparsed record")
-        records.append(_strip_inline_code(stripped[2:]))
+        prefix = ("" if index == 0 else "    ") if skill_side else "    "
+        records.append(_unwrap_record(line, f"{prefix}- ", "Hard Gates"))
+        index += 1
     if not records:
         raise ValueError("Hard Gates is empty")
     return tuple(records)
 
 
-def _api_records(value: str) -> tuple[str, ...]:
-    records = tuple(_strip_inline_code(line.strip()) for line in value.splitlines() if line.strip())
+def _api_records(value: str, skill_side: bool) -> tuple[str, ...]:
+    lines = tuple(line for line in value.splitlines() if line)
+    prefix = "" if skill_side else "    "
+    records = tuple(_unwrap_record(line, prefix, "Exact API contract") for line in lines)
     if len(records) != 1:
         raise ValueError("Exact API contract must contain one paragraph")
     return records
@@ -332,11 +351,10 @@ def _api_records(value: str) -> tuple[str, ...]:
 def _output_records(value: str, skill_side: bool) -> tuple[str, ...]:
     records: list[str] = []
     for line in value.splitlines():
-        stripped = line.strip()
-        if skill_side and stripped.startswith("- "):
-            candidate = _strip_inline_code(stripped[2:])
-        elif not skill_side:
-            candidate = stripped
+        if skill_side and line.startswith("- "):
+            candidate = _unwrap_record(line, "- ", "Output contract")
+        elif not skill_side and line.startswith("    "):
+            candidate = _unwrap_record(line, "    ", "Output contract")
         else:
             continue
         if candidate.startswith("## ") or (
@@ -350,11 +368,11 @@ def _output_records(value: str, skill_side: bool) -> tuple[str, ...]:
 
 def _project(value: str, section: str, skill_side: bool) -> tuple[str, ...]:
     if section == "Protocol":
-        return _protocol_records(value)
+        return _protocol_records(value, skill_side)
     if section == "Hard Gates":
-        return _gate_records(value)
+        return _gate_records(value, skill_side)
     if section == "Exact API And Verification Contract":
-        return _api_records(value)
+        return _api_records(value, skill_side)
     return _output_records(value, skill_side)
 
 
@@ -441,6 +459,8 @@ def _validate_agent_pair(
     for field in ("name", "description"):
         if claude_fields.get(field) != codex_fields.get(field):
             issues.append(f"{codex_path}: field {field} differs from {claude_path}")
+    if claude_fields.get("name") != name:
+        issues.append(f"{claude_path}: field name does not match inventory")
     body, body_issues = _claude_agent_body(raw_body, claude_path)
     issues.extend(body_issues)
     codex_body = codex_fields.get("developer_instructions")
@@ -486,10 +506,32 @@ def _filesystem_manifest_paths(root: Path) -> set[str]:
     return paths
 
 
+def _distribution_parent_issues(root: Path) -> list[str]:
+    issues: list[str] = []
+    for relative in (
+        ".agents",
+        ".agents/skills",
+        ".claude",
+        ".claude/agents",
+        ".claude/skills",
+        ".codex",
+        ".codex/agents",
+    ):
+        path = root / relative
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            issues.append(f"{relative}: distribution parent unavailable: {exc}")
+            continue
+        if path.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+            issues.append(f"{relative}: distribution parent is not a real directory")
+    return issues
+
+
 def _filesystem_manifest_issues(root: Path) -> list[str]:
     expected = set(expected_manifest_paths())
     actual = _filesystem_manifest_paths(root)
-    issues: list[str] = []
+    issues = _distribution_parent_issues(root)
     if expected - actual:
         issues.append(f"distribution inventory missing {', '.join(sorted(expected - actual))}")
     if actual - expected:
@@ -497,10 +539,24 @@ def _filesystem_manifest_issues(root: Path) -> list[str]:
     return issues
 
 
-def _read_regular(path: Path, limit: int | None = None) -> bytes:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    descriptor = os.open(path, flags)
+def _read_regular(root: Path, path: Path | str, limit: int | None = None) -> bytes:
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise ValueError("secure no-follow file traversal is unavailable")
+    candidate = Path(path)
     try:
+        relative = candidate.relative_to(root) if candidate.is_absolute() else candidate
+    except ValueError as exc:
+        raise ValueError("path is outside the distribution root") from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError("path is not a safe relative distribution path")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+    descriptors = [os.open(root, directory_flags)]
+    try:
+        for component in relative.parts[:-1]:
+            descriptors.append(os.open(component, directory_flags, dir_fd=descriptors[-1]))
+        descriptor = os.open(relative.parts[-1], file_flags, dir_fd=descriptors[-1])
+        descriptors.append(descriptor)
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError("not a regular file")
@@ -516,11 +572,12 @@ def _read_regular(path: Path, limit: int | None = None) -> bytes:
             chunks.append(chunk)
         return b"".join(chunks)
     finally:
-        os.close(descriptor)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
-def _hash_regular(path: Path) -> str:
-    return hashlib.sha256(_read_regular(path)).hexdigest()
+def _hash_regular(root: Path, path: Path | str) -> str:
+    return hashlib.sha256(_read_regular(root, path)).hexdigest()
 
 
 def _manifest_records(encoded: bytes) -> tuple[dict[str, str], list[str]]:
@@ -549,7 +606,7 @@ def verify_manifest(root: Path, manifest: Path | None = None) -> list[str]:
     root = root.resolve()
     path = manifest or root / "MANIFEST.sha256"
     try:
-        encoded = _read_regular(path, MAX_MANIFEST_BYTES)
+        encoded = _read_regular(root, path, MAX_MANIFEST_BYTES)
     except (OSError, ValueError) as exc:
         return [f"MANIFEST.sha256: control file is unavailable or unsafe: {exc}"]
     records, issues = _manifest_records(encoded)
@@ -562,7 +619,7 @@ def verify_manifest(root: Path, manifest: Path | None = None) -> list[str]:
         issues.append(f"MANIFEST.sha256: extra {', '.join(sorted(actual - expected))}")
     for relative in sorted(expected & actual):
         try:
-            digest = _hash_regular(root / relative)
+            digest = _hash_regular(root, relative)
         except (OSError, ValueError) as exc:
             issues.append(f"{relative}: distributed file is unavailable or unsafe: {exc}")
             continue
@@ -578,7 +635,7 @@ def _manifest_bytes(root: Path) -> bytes:
     lines: list[str] = []
     for relative in expected_manifest_paths():
         try:
-            digest = _hash_regular(root / relative)
+            digest = _hash_regular(root, relative)
         except (OSError, ValueError) as exc:
             raise ValueError(f"{relative}: distributed file is unavailable or unsafe: {exc}") from exc
         lines.append(f"{digest}  {relative}\n")
@@ -624,7 +681,7 @@ def validate(root: Path) -> list[str]:
     agents_skills = _skill_inventory(root, ".agents")
     claude_agents = _agent_inventory(root, ".claude", ".md")
     codex_agents = _agent_inventory(root, ".codex", ".toml")
-    issues: list[str] = []
+    issues = _distribution_parent_issues(root)
     for label, actual, expected in (
         (".claude/skills", set(claude_skills), expected_skills),
         (".agents/skills", set(agents_skills), expected_skills),

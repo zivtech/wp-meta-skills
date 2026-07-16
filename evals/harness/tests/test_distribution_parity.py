@@ -149,6 +149,14 @@ def test_skill_body_drift_fails(tmp_path: Path) -> None:
     _assert_failure(root, str(path.relative_to(root)), "body")
 
 
+def test_lone_carriage_returns_are_not_normalized_as_newlines(tmp_path: Path) -> None:
+    root = _copy_surfaces(tmp_path)
+    for path in _skill_paths(root, "wordpress-planner"):
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r"))
+
+    _assert_failure(root, "wordpress-planner", "parse")
+
+
 def test_model_family_drift_fails(tmp_path: Path) -> None:
     root = _copy_surfaces(tmp_path)
     path = root / ".agents/skills/wordpress-planner/SKILL.md"
@@ -166,6 +174,14 @@ def test_codex_agent_drift_fails(tmp_path: Path, field: str) -> None:
     _replace(path, old, new)
 
     _assert_failure(root, str(path.relative_to(root)), field)
+
+
+def test_paired_agent_name_must_match_inventory(tmp_path: Path) -> None:
+    root = _copy_surfaces(tmp_path)
+    for path in _agent_paths(root, "wordpress-planner"):
+        _replace(path, "wordpress-planner", "wrong-agent")
+
+    _assert_failure(root, "wordpress-planner.md", "name does not match inventory")
 
 
 @pytest.mark.parametrize("mutation", ["duplicate", "omitted", "wrong_group"])
@@ -276,6 +292,46 @@ def test_agent_side_shared_contract_drift_fails(
     root = _copy_surfaces(tmp_path)
     for path in _agent_paths(root, "wordpress-planner"):
         _replace(path, old, new)
+
+    _assert_failure(root, "wordpress-planner", section)
+
+
+@pytest.mark.parametrize(
+    ("section", "skill_old", "agent_old"),
+    [
+        (
+            "Protocol",
+            "    Phase 1 - Repository and runtime triage",
+            "    Phase 1 - Repository and runtime triage",
+        ),
+        (
+            "Hard Gates",
+            "    - Do not store secrets",
+            "    - Do not store secrets",
+        ),
+        (
+            "Exact API",
+            "Every recommendation, decision, remediation",
+            "    Every recommendation, decision, remediation",
+        ),
+        ("Output", "- `## Scope Summary`", "    ## Scope Summary"),
+    ],
+)
+@pytest.mark.parametrize("side", ["skill", "agent"])
+def test_shared_contract_whitespace_drift_fails(
+    tmp_path: Path,
+    section: str,
+    skill_old: str,
+    agent_old: str,
+    side: str,
+) -> None:
+    root = _copy_surfaces(tmp_path)
+    paths = _skill_paths(root, "wordpress-planner") if side == "skill" else _agent_paths(
+        root, "wordpress-planner"
+    )
+    old = skill_old if side == "skill" else agent_old
+    for path in paths:
+        _replace(path, old, f"    {old}")
 
     _assert_failure(root, "wordpress-planner", section)
 
@@ -435,6 +491,59 @@ def test_manifest_rejects_symlinked_distributed_file(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "unsafe" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [".codex/agents", ".claude/skills/wordpress-planner"],
+)
+def test_manifest_rejects_symlinked_distribution_parent(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    root = _copy_install_tree(tmp_path)
+    path = root / relative
+    outside = root.parent / f"outside-{path.name}"
+    path.rename(outside)
+    path.symlink_to(outside, target_is_directory=True)
+
+    result = _install(root, "--verify")
+
+    assert result.returncode != 0
+    assert "distribution parent" in result.stdout or "unsafe" in result.stdout
+
+
+def test_default_install_accepts_complete_verified_distribution(tmp_path: Path) -> None:
+    root = _copy_install_tree(tmp_path)
+
+    result = _install(root)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (root.parent / "synthetic-home/.claude/skills/wordpress-planner").is_symlink()
+
+
+@pytest.mark.parametrize("kind", ["missing", "corrupt", "symlink"])
+def test_default_install_aborts_before_links_on_unsafe_manifest(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    root = _copy_install_tree(tmp_path)
+    manifest = root / "MANIFEST.sha256"
+    if kind == "missing":
+        manifest.unlink()
+    elif kind == "corrupt":
+        manifest.write_bytes(manifest.read_bytes() + b"corrupt\n")
+    else:
+        target = root.parent / "outside-manifest"
+        manifest.rename(target)
+        manifest.symlink_to(target)
+
+    result = _install(root)
+
+    assert result.returncode != 0
+    assert "failed" in result.stdout.lower() or "mismatch" in result.stdout.lower()
+    home = root.parent / "synthetic-home"
+    assert not any(path.is_symlink() for path in home.rglob("*"))
 
 
 def test_manifest_rejects_unexpected_distribution_entry(tmp_path: Path) -> None:
