@@ -81,10 +81,12 @@ committed pip export is a tested installation escape hatch for the general
 partition only:
 
 ```bash
-python3.13 -m venv /tmp/wp-meta-skills-validation
-/tmp/wp-meta-skills-validation/bin/python -m pip install --require-hashes \
+validation_venv="$(mktemp -d "${TMPDIR:-/tmp}/wp-meta-skills-validation.XXXXXX")"
+trap 'rm -rf "$validation_venv"' EXIT
+python3.13 -m venv "$validation_venv"
+"$validation_venv/bin/python" -m pip install --require-hashes \
   -r requirements-validation.txt
-/tmp/wp-meta-skills-validation/bin/python -m pytest \
+"$validation_venv/bin/python" -m pytest \
   -m "not docker_boundary and not live_provider" evals/harness/tests -q
 ```
 

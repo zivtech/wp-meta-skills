@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import copy
 import importlib.util
 import itertools
 import os
@@ -38,6 +39,14 @@ OPTIONAL_IMPORTS = {
     ),
 }
 REQUIRED_EXTERNAL_IMPORTS = {"pytest", "yaml"}
+REQUIRED_VALIDATORS = {
+    "measure-plan010-artifact-path.py",
+    "validate-agent-frontmatter.py",
+    "validate-distribution-parity.py",
+    "validate-eval-suite-integrity.py",
+    "validate-wordpress-exact-api-contract.py",
+}
+NO_SECRETS_ACTIONS = {"actions/setup-python", "astral-sh/setup-uv"}
 
 
 def _project() -> dict:
@@ -50,15 +59,34 @@ def _workflow() -> tuple[str, dict]:
     return source, parsed
 
 
-def _top_level_imports(path: Path) -> set[str]:
+class _ModuleImportVisitor(ast.NodeVisitor):
+    """Visit imports executed at module load while skipping callable bodies."""
+
+    def __init__(self):
+        self.imports: set[str] = set()
+
+    def visit_Import(self, node):
+        self.imports.update(alias.name.split(".")[0] for alias in node.names)
+
+    def visit_ImportFrom(self, node):
+        if node.level == 0 and node.module:
+            self.imports.add(node.module.split(".")[0])
+
+    def visit_FunctionDef(self, node):
+        return None
+
+    def visit_AsyncFunctionDef(self, node):
+        return None
+
+    def visit_ClassDef(self, node):
+        self.generic_visit(node)
+
+
+def _module_scope_imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    imports = set()
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            imports.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            imports.add(node.module.split(".")[0])
-    return imports
+    visitor = _ModuleImportVisitor()
+    visitor.visit(tree)
+    return visitor.imports
 
 
 def _all_imports(path: Path) -> set[str]:
@@ -72,9 +100,51 @@ def _all_imports(path: Path) -> set[str]:
     return imports
 
 
-def _external_import_inventory() -> dict[str, set[str]]:
+def _python_paths() -> list[Path]:
     roots = (ROOT / "evals/harness", ROOT / "scripts")
-    paths = [path for root in roots for path in root.rglob("*.py")]
+    return [path for root in roots for path in root.rglob("*.py")]
+
+
+def _local_module_index() -> dict[str, Path]:
+    candidates: dict[str, list[Path]] = {}
+    for path in _python_paths():
+        candidates.setdefault(path.stem, []).append(path)
+    duplicates = {name: paths for name, paths in candidates.items() if len(paths) != 1}
+    assert not duplicates, f"ambiguous local module names: {duplicates}"
+    return {name: paths[0] for name, paths in candidates.items()}
+
+
+def _required_roots() -> set[Path]:
+    tests = set((ROOT / "evals/harness/tests").glob("test_*.py"))
+    tests.add(ROOT / "evals/harness/tests/conftest.py")
+    validators = {ROOT / "scripts" / name for name in REQUIRED_VALIDATORS}
+    assert all(path.is_file() for path in tests | validators)
+    return tests | validators
+
+
+def _required_import_closure() -> tuple[set[str], dict[str, set[str]]]:
+    roots = _required_roots()
+    local = _local_module_index()
+    pending = list(roots)
+    visited: set[Path] = set()
+    external: dict[str, set[str]] = {}
+    while pending:
+        path = pending.pop()
+        if path in visited:
+            continue
+        visited.add(path)
+        imports = _all_imports(path) if path in roots else _module_scope_imports(path)
+        for name in imports:
+            if name in local:
+                pending.append(local[name])
+            elif name not in sys.stdlib_module_names and name != "__future__":
+                external.setdefault(name, set()).add(str(path.relative_to(ROOT)))
+    return {str(path.relative_to(ROOT)) for path in visited}, external
+
+
+def _external_import_inventory() -> dict[str, set[str]]:
+    paths = _python_paths()
+    roots = (ROOT / "evals/harness", ROOT / "scripts")
     local = {path.stem for path in paths}
     local.update(path.name for root in roots for path in root.iterdir() if path.is_dir())
     inventory: dict[str, set[str]] = {}
@@ -114,6 +184,66 @@ def _normalized_shell(source: str) -> str:
     return " ".join(source.replace("\\\n", " ").split())
 
 
+def _without_heredoc_bodies(script: str) -> str:
+    kept = []
+    delimiter = None
+    for line in script.splitlines():
+        if delimiter is not None:
+            if line.strip() == delimiter:
+                delimiter = None
+            continue
+        kept.append(line)
+        match = re.search(r"<<-?['\"]?([A-Z][A-Z0-9_]*)['\"]?", line)
+        if match:
+            delimiter = match.group(1)
+    return "\n".join(kept)
+
+
+def _python_command_violations(workflow: dict) -> list[str]:
+    allowed = re.compile(r"\buv\s+run\s+--locked\s+--extra\s+test\s+python\b")
+    forbidden = re.compile(r"\bpython(?:3(?:\.\d+)*)?\b")
+    violations = []
+    for job_name, job in workflow["jobs"].items():
+        for step in job["steps"]:
+            script = step.get("run")
+            if not script:
+                continue
+            shell_only = _without_heredoc_bodies(script)
+            remainder = allowed.sub("", shell_only)
+            if forbidden.search(remainder):
+                violations.append(f"{job_name}: {step.get('name', '<unnamed>')}")
+    return violations
+
+
+def _string_values(value):
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _string_values(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _string_values(item)
+    elif isinstance(value, str):
+        yield value
+
+
+def _no_secrets_job_violations(job: dict) -> list[str]:
+    violations = []
+    actions = [step["uses"].split("@")[0] for step in job["steps"] if "uses" in step]
+    if len(actions) != 2 or set(actions) != NO_SECRETS_ACTIONS:
+        violations.append(f"unexpected actions: {actions}")
+    if job.get("permissions") != {}:
+        violations.append("permissions must be empty")
+    if "container" in job or "services" in job:
+        violations.append("job-level helper container or service is forbidden")
+    credential = re.compile(
+        r"\$\{\{[^}]*?(?:\bsecrets\b|\bgithub\s*(?:\.|\[\s*['\"]?)\s*token\b)",
+        re.IGNORECASE,
+    )
+    if any(credential.search(value) for value in _string_values(job)):
+        violations.append("credential expression is forbidden")
+    return violations
+
+
 def test_python_pin_and_direct_dependencies_match_green_baseline():
     project = _project()["project"]
     assert (ROOT / ".python-version").read_text(encoding="utf-8").strip() == "3.13.9"
@@ -142,9 +272,16 @@ def test_required_and_optional_import_inventories_are_complete():
     assert all(declared[module] in project_text for module in REQUIRED_EXTERNAL_IMPORTS)
 
 
+def test_required_import_closure_is_recursive_and_operator_bounded():
+    closure, external = _required_import_closure()
+    assert set(external) == REQUIRED_EXTERNAL_IMPORTS
+    assert OPTIONAL_IMPORTS["anthropic"][0] in closure
+    assert OPTIONAL_IMPORTS["gepa"][0] not in closure
+
+
 def test_optional_provider_import_is_lazy_and_fails_before_network(monkeypatch):
     judge_path = ROOT / OPTIONAL_IMPORTS["anthropic"][0]
-    assert "anthropic" not in _top_level_imports(judge_path)
+    assert "anthropic" not in _module_scope_imports(judge_path)
     real_import = builtins.__import__
 
     def blocked_import(name, *args, **kwargs):
@@ -165,16 +302,9 @@ def test_optional_provider_import_is_lazy_and_fails_before_network(monkeypatch):
 
 def test_optional_gepa_import_stays_owned_by_operator_cli():
     gepa_path = ROOT / OPTIONAL_IMPORTS["gepa"][0]
-    assert "gepa" in _top_level_imports(gepa_path)
-    this_test = Path(__file__).resolve()
-    collected_imports = set().union(
-        *(
-            _all_imports(path)
-            for path in (ROOT / "evals/harness/tests").glob("test_*.py")
-            if path.resolve() != this_test
-        )
-    )
-    assert "run_gepa_executor_optimization" not in collected_imports
+    assert "gepa" in _module_scope_imports(gepa_path)
+    closure, _external = _required_import_closure()
+    assert str(gepa_path.relative_to(ROOT)) not in closure
 
 
 def test_marker_registry_is_centralized_in_pyproject():
@@ -216,12 +346,27 @@ def test_workflow_actions_are_immutable_and_bootstraps_are_bounded():
     assert observed == {action: {pin} for action, pin in ACTION_PINS.items()}
     for job_name in ("sandbox-feasibility", "generated-runtime-boundary"):
         job = workflow["jobs"][job_name]
-        assert job["permissions"] == {}
+        assert _no_secrets_job_violations(job) == []
         steps = {step.get("uses", "").split("@")[0]: step for step in job["steps"]}
         assert steps["actions/setup-python"]["with"]["token"] == ""
         assert steps["astral-sh/setup-uv"]["with"]["github-token"] == ""
         assert steps["astral-sh/setup-uv"]["with"]["enable-cache"] == "false"
         assert steps["astral-sh/setup-uv"]["with"]["version"] == "0.9.27"
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        {"name": "checkout", "uses": f"actions/checkout@{ACTION_PINS['actions/checkout']}"},
+        {"name": "cache", "uses": f"actions/cache@{ACTION_PINS['actions/cache']}"},
+        {"name": "secret", "run": "echo '${{ secrets.UNSAFE }}'"},
+    ],
+)
+def test_no_secrets_job_policy_rejects_action_and_credential_regressions(addition):
+    _source, workflow = _workflow()
+    job = copy.deepcopy(workflow["jobs"]["sandbox-feasibility"])
+    job["steps"].append(addition)
+    assert _no_secrets_job_violations(job)
 
 
 def test_workflow_uses_locked_directory_wide_corpus_commands():
@@ -243,15 +388,39 @@ def test_workflow_uses_locked_directory_wide_corpus_commands():
 
 
 def test_every_actions_python_command_uses_locked_uv_runner():
-    source, _workflow_data = _workflow()
-    raw_python_commands = re.findall(
-        r"(?m)^\s+(?:(?:[A-Z_][A-Z0-9_]*=[^\s]+)\s+)*python(?:\s|$)",
-        source,
-    )
-    assert raw_python_commands == []
-    for line in source.splitlines():
-        if "python -m pytest" in line:
-            assert "uv run --locked --extra test python -m pytest" in line
+    _source, workflow = _workflow()
+    assert _python_command_violations(workflow) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 scripts/check.py",
+        "env SAFE=1 python scripts/check.py",
+        "timeout 30s python -m pytest -q",
+        "uv run python scripts/check.py",
+        "uv run --locked python scripts/check.py",
+    ],
+)
+def test_actions_python_policy_rejects_unlocked_wrapped_commands(command):
+    workflow = {"jobs": {"test": {"steps": [{"name": "bad", "run": command}]}}}
+    assert _python_command_violations(workflow) == ["test: bad"]
+
+
+def test_actions_python_policy_accepts_exact_locked_runner():
+    workflow = {
+        "jobs": {
+            "test": {
+                "steps": [
+                    {
+                        "name": "good",
+                        "run": "env SAFE=1 uv run --locked --extra test python -m pytest -q",
+                    }
+                ]
+            }
+        }
+    }
+    assert _python_command_violations(workflow) == []
 
 
 def test_contributor_and_security_docs_publish_canonical_commands():
@@ -265,6 +434,9 @@ def test_contributor_and_security_docs_publish_canonical_commands():
         for selector in (GENERAL, SANDBOX, GENERATED):
             assert selector in source
             assert "uv run --locked --extra test python -m pytest" in source
+        assert 'mktemp -d "${TMPDIR:-/tmp}/wp-meta-skills-validation.XXXXXX"' in source
+        assert 'trap \'rm -rf "$validation_venv"\' EXIT' in source
+        assert '"$validation_venv/bin/python" -m pip install --require-hashes' in source
 
 
 def test_requirements_export_is_byte_identical(tmp_path):
