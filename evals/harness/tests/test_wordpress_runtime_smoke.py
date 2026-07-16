@@ -534,6 +534,23 @@ def test_write_result_uses_exact_custom_root_and_identity(tmp_path):
     assert not (out / ".runtime-smoke.json.tmp").exists()
 
 
+def test_write_result_persists_isolated_prerequisite_block_without_legacy_fixture(tmp_path):
+    summary = {
+        "status": "blocked",
+        "pass": False,
+        "artifact_kind": "block",
+        "reason": "block prerequisite did not pass; isolated runtime was not started",
+        "negative_space": ["isolated runtime not executed"],
+    }
+
+    out = smoke.write_result(summary, "blocked-isolated-run", tmp_path)
+
+    assert (out / "runtime-smoke.json").is_file()
+    report = (out / "scorecard.md").read_text(encoding="utf-8")
+    assert "- Status: `blocked`" in report
+    assert "- Fixture retained: `false`" in report
+
+
 def test_write_result_refuses_existing_run(tmp_path):
     summary = {"status": "pass", "fixture_retained": False, "negative_space": []}
     smoke.write_result(summary, "same-run", tmp_path)

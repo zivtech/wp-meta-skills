@@ -56,7 +56,7 @@ artifact_oracle:
   type: deterministic_wordpress_artifact_static
   command: "python3 evals/harness/validate_wordpress_artifact.py --artifact-type block --path <generated-block-dir>"
   status: available
-  runtime_command: "python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --block-build-smoke --editor-insert-render-smoke --provision-full-profile --write --run-id <run-id> --timeout-sec 300"
-  interactivity_runtime_command: "python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --block-build-smoke --editor-insert-render-smoke --interactivity-smoke --provision-full-profile --write --run-id <run-id> --timeout-sec 300"
-  deprecation_runtime_command: "python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --block-build-smoke --deprecation-smoke --provision-full-profile --write --run-id <run-id> --timeout-sec 300"
+  runtime_command: "python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --expected-artifact-digest <artifact-digest> --evidence-id <evidence-id> --block-build-smoke --block-name acme/runtime-card --editor-insert-render-smoke --expected-frontend-selector .wp-block-acme-runtime-card --expected-frontend-text 'Runtime block smoke' --provision-full-profile --strict-full-profile --write --run-id <run-id> --timeout-sec 300"
+  interactivity_runtime_status: "unsupported for external generated-block artifacts; historical built-in fixture results are diagnostic-only"
+  deprecation_runtime_status: "unsupported for external generated-block artifacts; historical built-in fixture results are diagnostic-only"
   runtime_status: environment_dependent

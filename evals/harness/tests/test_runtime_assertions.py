@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -9,6 +10,8 @@ import pytest
 import yaml
 
 HARNESS = Path(__file__).resolve().parents[1]
+ROOT = HARNESS.parents[1]
+SUITES = ROOT / "evals" / "suites"
 sys.path.insert(0, str(HARNESS))
 
 import runtime_assertions  # noqa: E402
@@ -168,3 +171,122 @@ def test_rejects_parent_symlink_containment_escape(tmp_path):
         runtime_assertions.load_block_runtime_fixture(
             root, "wordpress-block-executor", "card"
         )
+
+
+def test_tracked_block_executor_fixture_is_exact_runtime_card_contract():
+    pair = runtime_assertions.load_block_runtime_fixture(
+        SUITES, "wordpress-block-executor", "smoke-wordpress-v1"
+    )
+    assert pair.assertion.block_name == "acme/runtime-card"
+    assert pair.assertion.frontend_selector == ".wp-block-acme-runtime-card"
+    assert pair.assertion.expected_frontend_text == "Runtime block smoke"
+
+    fixture = pair.fixture_path.read_text(encoding="utf-8")
+    required_fixture_contract = (
+        "# Smoke Fixture: Acme Runtime Card",
+        "`acme/runtime-card`",
+        "`blocks/runtime-card/block.json`",
+        "`blocks/runtime-card/index.asset.php`",
+        "`blocks/runtime-card/index.js`",
+        "`blocks/runtime-card/render.php`",
+        "`block-scripts-32.4.1-smoke`",
+        "`990d9a67783977a5a4c54035666ebc48f7aaac8cdf69f2313caf2a17b317fa33`",
+        "`e2259282345ac90cb5645507efd0daba536b2742be3eab676db10fd7fc1fb4f6`",
+        "`get_block_wrapper_attributes()`",
+        "`.wp-block-acme-runtime-card`",
+        "`Runtime block smoke`",
+        "--strict-full-profile",
+    )
+    for marker in required_fixture_contract:
+        assert marker in fixture
+
+    rubric_path = (
+        SUITES / "wordpress-block-executor" / "rubrics"
+        / "smoke-wordpress-v1.rubric.yaml"
+    )
+    rubric = yaml.safe_load(rubric_path.read_text(encoding="utf-8"))
+    assert rubric["max_score"] == 10
+    assert [criterion["id"] for criterion in rubric["criteria"]] == [
+        "exact_runtime_card_contract",
+        "materializable_packet_contract",
+        "wordpress_safety_and_quality",
+        "bound_runtime_evidence",
+        "calibration_and_handoff",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "block_name", "selector", "text"),
+    (
+        ("README.md", "acme/runtime-card", ".wp-block-acme-runtime-card", "Runtime block smoke"),
+        (
+            "examples/smoke-wordpress-v1.materializable-packet.md",
+            "acme/runtime-card", ".wp-block-acme-runtime-card", "Runtime block smoke",
+        ),
+        (
+            "examples/interactivity-wordpress-v1.materializable-packet.md",
+            "acme/interactive-counter", ".wp-block-acme-interactive-counter",
+            "Runtime block smoke",
+        ),
+        (
+            "examples/deprecation-wordpress-v1.materializable-packet.md",
+            "acme/deprecated-card", ".wp-block-acme-deprecated-card",
+            "Runtime block smoke:",
+        ),
+    ),
+)
+def test_current_block_runtime_docs_bind_identity_digest_and_full_profile(
+    relative_path, block_name, selector, text,
+):
+    suite = SUITES / "wordpress-block-executor"
+    document = (suite / relative_path).read_text(encoding="utf-8")
+    commands = [
+        block for block in re.findall(r"```bash\n(.*?)```", document, re.DOTALL)
+        if "run_wordpress_runtime_smoke.py" in block
+    ]
+    assert len(commands) == 1
+    command = commands[0]
+    for marker in (
+        'artifact="<generated-block-dir>"',
+        '--expected-artifact-digest "$digest"',
+        "--evidence-id ",
+        "--artifact-kind block",
+        "--block-build-smoke",
+        f"--block-name {block_name}",
+        "--editor-insert-render-smoke",
+        f"--expected-frontend-selector {selector}",
+        f'--expected-frontend-text "{text}"',
+        "--provision-full-profile",
+        "--strict-full-profile",
+        "--write",
+        "--run-id ",
+        "--timeout-sec 300",
+    ):
+        assert marker in command
+
+    if "interactivity" in relative_path or "deprecation" in relative_path:
+        assert "unsupported by the current isolated artifact path" in document
+        assert "historical" in document
+    assert "--interactivity-smoke" not in command
+    assert "--deprecation-smoke" not in command
+
+
+def test_eval_config_exposes_only_supported_bound_external_runtime_command():
+    path = SUITES / "wordpress-block-executor" / "eval.yaml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    oracle = config["artifact_oracle"]
+    command = oracle["runtime_command"]
+    for marker in (
+        "--expected-artifact-digest <artifact-digest>",
+        "--evidence-id <evidence-id>",
+        "--block-name acme/runtime-card",
+        "--expected-frontend-selector .wp-block-acme-runtime-card",
+        "--expected-frontend-text 'Runtime block smoke'",
+        "--provision-full-profile",
+        "--strict-full-profile",
+    ):
+        assert marker in command
+    assert "unsupported" in oracle["interactivity_runtime_status"]
+    assert "historical" in oracle["interactivity_runtime_status"]
+    assert "unsupported" in oracle["deprecation_runtime_status"]
+    assert "historical" in oracle["deprecation_runtime_status"]

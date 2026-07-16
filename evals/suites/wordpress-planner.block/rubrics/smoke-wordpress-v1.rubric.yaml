@@ -1,19 +1,39 @@
 fixture: smoke-wordpress-v1
 skill_under_test: wordpress-planner.block
-max_score: 8
+max_score: 12
 criteria:
   - id: contract_compliance
     weight: 2
-    description: Output uses the skill-specific headings and lifecycle role.
-  - id: wordpress_native_quality
+    description: Output uses every required block-planner heading, emits each exact enumerated decision record once in its owning section, and treats the request as one bounded custom-block definition.
+  - id: exact_block_definition
+    weight: 3
+    description: Pins acme/runtime-card, apiVersion 3, no V1 attributes, editorScript, render.php, block-only registration, wrapper attributes, escaped Runtime block smoke output, and the approved build path.
+  - id: save_render_and_compatibility
     weight: 2
-    description: Names WordPress APIs, risks, and verification needs appropriate to the scenario.
-  - id: safety_and_provenance
-    weight: 1
-    description: Avoids secrets, unsafe writes, unsupported claims, and unattributed reuse.
-  - id: specificity
+    description: Classifies the block as dynamic, explains save() returning null, defines render failure behavior, and records why no V1 deprecation is needed plus what future changes would trigger deprecated/migrate/transforms.
+  - id: verification_separation
     weight: 2
-    description: Gives concrete handoff, remediation, generation, or review steps.
+    description: Defines distinct build/static, WP_Block_Type_Registry registration, editor insertion/save, and frontend selector/text oracles without converting static acceptance into runtime proof.
+  - id: ownership_and_handoff
+    weight: 2
+    description: Keeps source transformation, serialization, unsupported accounting, idempotence, and migration proof with wordpress-planner.migration while handing only the bounded block artifact to wordpress-block-executor.
   - id: calibration
     weight: 1
-    description: Calibrates uncertainty and avoids invented issues.
+    description: Separates supplied facts from assumptions and makes no runtime, benchmark, or migration-completion claim.
+domain_signals:
+  expected_wordpress_apis:
+    - "block.json"
+    - "register_block_type"
+    - "render.php"
+    - "get_block_wrapper_attributes"
+    - "esc_html__"
+  must_detect:
+    - "acme/runtime-card is dynamic"
+    - "V1 has no attributes"
+    - "save returns null and render.php owns frontend markup"
+    - "editor and frontend proof are separate from static validation"
+    - "source migration belongs to wordpress-planner.migration"
+  must_not_claim:
+    - "the block plan proves a runtime pass"
+    - "the block tools own bulk migration serialization"
+    - "the fixture establishes benchmark superiority"

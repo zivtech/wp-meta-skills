@@ -1,19 +1,39 @@
 fixture: smoke-wordpress-v1
 skill_under_test: wordpress-planner.migration
-max_score: 8
+max_score: 12
 criteria:
   - id: contract_compliance
     weight: 2
-    description: Output uses the skill-specific headings and lifecycle role.
-  - id: wordpress_native_quality
+    description: Output uses every required migration-planner heading, emits each exact enumerated Gutenberg decision record once in its owning section, and treats the existing repository importer as the implementation boundary.
+  - id: exact_source_to_block_mapping
+    weight: 3
+    description: Maps article-42 heading, paragraph link, promo embed, and legacy carousel to the exact destination block/attribute/link/accounting contract using WordPress block serialization surfaces.
+  - id: ownership_and_routing
     weight: 2
-    description: Names WordPress APIs, risks, and verification needs appropriate to the scenario.
-  - id: safety_and_provenance
-    weight: 1
-    description: Avoids secrets, unsafe writes, unsupported claims, and unattributed reuse.
-  - id: specificity
+    description: Keeps mapping, serialization, unsupported accounting, idempotence, and migration proof in the migration lane; revises ArticleImporter in place; does not invoke block tools or wordpress-plugin-executor for this unchanged target block.
+  - id: idempotence_and_failure
     weight: 2
-    description: Gives concrete handoff, remediation, generation, or review steps.
+    description: Requires zero unchanged body writes, exactly one owned changed-body write, fail-closed WP_Error/zero handling, dry run, and rollback evidence.
+  - id: semantic_editor_frontend_proof
+    weight: 2
+    description: Gives separate semantic gate IDs for every declared property plus disposable editor mutation/restore/final hash and independent frontend selector/text proof.
   - id: calibration
     weight: 1
-    description: Calibrates uncertainty and avoids invented issues.
+    description: Separates synthetic planning evidence from implementation, runtime, production-readiness, and benchmark claims.
+domain_signals:
+  expected_wordpress_apis:
+    - "parse_blocks"
+    - "serialize_blocks"
+    - "wp_update_post"
+    - "WP_Error"
+    - "wp_get_post_revisions"
+  must_detect:
+    - "ArticleImporter is revised in place"
+    - "article-42 maps to the exact three-block contract"
+    - "legacy-carousel is accounted manual_required"
+    - "unchanged import performs zero body writes"
+    - "semantic, editor, and frontend proof are independent"
+  must_not_claim:
+    - "wordpress-plugin-executor should regenerate the importer"
+    - "block order or parse stability proves semantic correctness"
+    - "the synthetic fixture proves a completed migration or benchmark advantage"
