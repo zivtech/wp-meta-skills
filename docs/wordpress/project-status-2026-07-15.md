@@ -12,11 +12,11 @@ the 2026-07-06 narrative without rewriting that historical record.
   `2b3d8bbbc17a8885a211b3b8e0df49e9b086d8a5` (Plan 018 review).
 - Plans 006–018 have `DONE` ledger rows and tracked review packets with
   `ACCEPT` verdicts.
-- Plan 019 is the documentation reconciliation containing this snapshot. The
-  first general-critic pass returned `REVISE` after reproducing three
-  fail-open validator cases. The empty-worktree, command-form inventory, and
-  missing pytest-directory cases now have regression tests; proposal review,
-  exact-tip re-review, and the tracked checkpoint remain before completion.
+- Plan 019 is the documentation reconciliation containing this snapshot. Its
+  critic passes exposed and remediated fail-open validator cases plus claim-to-
+  artifact and packaging-record gaps. Final disposition is controlled by the
+  Plan 019 row in `wp-hardening-2026-07-12-ledger.md` and the verdict in
+  `implementation-reviews/019-review.md`, not by this narrative alone.
 
 The exact commit containing this file is established by Git history rather
 than embedded as a self-referential hash.
@@ -75,18 +75,18 @@ The repository does not currently establish:
 The upstream candidate suite remains directional internal evidence. Deterministic
 contract and runtime gates prove only the exact checks and fixtures they record.
 
-## Plan 019 Validation After First Critic Remediation
+## Plan 019 Validation
 
 The direct public-document validator passed, its focused suite passed `26`
 tests, and the locked general partition passed `2205` tests with `3` skipped and
 `41` deselected. Manifest, distribution parity, frontmatter, exact WordPress API
-contract, and selected-suite integrity gates also passed. Final critic
-acceptances and the tracked review checkpoint still remain before the plan is
-complete.
+contract, and selected-suite integrity gates also passed. The final reviewed
+tip, critic dispositions, hosted result if required, and completion verdict are
+recorded mechanically in the Plan 019 review packet and ledger row.
 
-## Next Gate
+## Completion Control
 
-Finish Plan 019: stage the candidate control files, pass the public-document
-validator and locked validation sequence, obtain both required critic verdicts,
-remediate any findings, then add the tracked Plan 019 review packet and final
-ledger status. No tag or GitHub Release is authorized by this snapshot.
+Treat Plan 019 as complete only when its tracked ledger row says `DONE` and its
+review packet says `Verdict: ACCEPT`. Otherwise it remains in progress even if
+individual validators are green. Neither completion state authorizes a tag or
+GitHub Release.

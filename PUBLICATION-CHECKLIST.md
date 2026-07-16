@@ -24,9 +24,10 @@ documentation validator. The public repository and skills directory listing do
 not imply a semantic version, immutable release artifact, production support
 commitment, or benchmark approval.
 
-## Controls Completed for the Public Cutover
+## Current Publication Controls
 
-- Clean-root history was used instead of publishing the staging history.
+- The public cutover used clean-root history instead of publishing the staging
+  history.
 - GPL-3.0 licensing, trademark language, security-reporting instructions, and
   provenance boundaries are present.
 - Distribution parity and the checksum manifest bind the shipped skill and
