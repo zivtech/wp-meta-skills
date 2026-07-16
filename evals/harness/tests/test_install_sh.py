@@ -47,8 +47,14 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     run_env = _env(home)
     run_env.update(extra_env or {})
+    run_args = list(args)
+    manifest_modes = {"--no-verify", "--verify", "--generate-manifest", "--remove"}
+    if not manifest_modes.intersection(run_args):
+        # This fixture isolates link ownership with a deliberately minimal repo.
+        # Distribution verification is exercised by test_distribution_parity.py.
+        run_args.append("--no-verify")
     return subprocess.run(
-        ["/bin/bash", str(script_path or repo / "install.sh"), *args],
+        ["/bin/bash", str(script_path or repo / "install.sh"), *run_args],
         cwd=repo,
         env=run_env,
         text=True,
