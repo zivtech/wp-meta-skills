@@ -110,15 +110,16 @@ if ( ! defined( 'ABSPATH' ) ) {
 ?>
 <div
 	<?php
-	// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- get_block_wrapper_attributes() returns escaped attributes and data-wp directives must remain intact.
-	echo get_block_wrapper_attributes(
-		array(
-			'data-wp-interactive' => 'acmeInteractiveCounter',
-			'data-wp-context'     => wp_json_encode(
-				array(
-					'count' => 0,
-				)
-			),
+	echo wp_kses_data(
+		get_block_wrapper_attributes(
+			array(
+				'data-wp-interactive' => 'acmeInteractiveCounter',
+				'data-wp-context'     => wp_json_encode(
+					array(
+						'count' => 0,
+					)
+				),
+			)
 		)
 	);
 	?>
@@ -135,10 +136,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 ```
 
 ## Compatibility Notes
-This packet targets block API version 3 and WordPress 6.5 or newer, where `viewScriptModule` and the `@wordpress/interactivity` Script Module are available. The `build` and `start` scripts use `--experimental-modules` because WordPress script modules require that `wp-scripts` path. The generated tree is not a standalone plugin; runtime activation requires a host that calls `register_block_type()` with the block directory. The deterministic `wp-env` proof may synthesize that host as a disposable wrapper, but that wrapper is not part of the generated block artifact.
+This packet is designed for block API version 3 and WordPress 6.5 or newer, where `viewScriptModule` and the `@wordpress/interactivity` Script Module are available; the static artifact oracle does not prove that compatibility floor, and a current-runtime pass does not substitute for a 6.5 matrix run. The `build` and `start` scripts use `--experimental-modules` because WordPress script modules require that `wp-scripts` path. The generated tree is not a standalone plugin; runtime activation requires a host that calls `register_block_type()` with the block directory. The deterministic `wp-env` proof may synthesize that host as a disposable wrapper, but that wrapper is not part of the generated block artifact.
 
 ## Security Performance And Accessibility Notes
-The block has no user-supplied attributes, SQL, REST, AJAX, uploads, remote HTTP calls, or persistent options. Frontend output is dynamic and escaped with `esc_html__()` for text while `get_block_wrapper_attributes()` supplies escaped wrapper attributes. The visible text includes `Runtime block smoke` so the existing frontend smoke can assert server rendering, and the Interactivity API state uses local `data-wp-context` plus a `data-wp-on--click` action that increments `context.count` from `0` to `1`.
+The block has no user-supplied attributes, SQL, REST, AJAX, uploads, remote HTTP calls, or persistent options. Frontend output is dynamic and escaped with `esc_html__()` for text while wrapper attributes are constrained through `wp_kses_data( get_block_wrapper_attributes() )`. The visible text includes `Runtime block smoke` so the existing frontend smoke can assert server rendering, and the Interactivity API state uses local `data-wp-context` plus a `data-wp-on--click` action that increments `context.count` from `0` to `1`.
 
 ## Deviation Log
 No deviations from the Interactivity API smoke spec. The packet intentionally omits a permanent plugin wrapper so block executor outputs remain block-only.
@@ -147,9 +148,37 @@ No deviations from the Interactivity API smoke spec. The packet intentionally om
 - Run `python3 evals/harness/validate_wordpress_executor_packet.py --executor block --packet <candidate-output.md>` for the deterministic packet contract.
 - Run `python3 evals/harness/materialize_wordpress_executor_packet.py --executor block --packet <candidate-output.md> --out-dir <generated-block-dir> --overwrite` to materialize the block files.
 - Run `python3 evals/harness/certify_wordpress_executor_artifact.py --executor block --packet <candidate-output.md> --out-dir <generated-block-dir> --result-dir <result-dir> --overwrite` for the saved-packet artifact gate.
-- Run `npm install` and `npm run build` before claiming `viewScriptModule` readiness; the build must produce `blocks/interactive-counter/build/block.json`, `blocks/interactive-counter/build/view.js`, and `blocks/interactive-counter/build/view.asset.php`.
-- Run block validation, editor smoke, frontend smoke, and Interactivity API frontend smoke. The live `wp-env` proof is `python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --block-build-smoke --editor-insert-render-smoke --interactivity-smoke --write --run-id <run-id>`.
-- Use Playwright-backed editor smoke before claiming the block can be inserted, published, rendered, and updated through Interactivity API directives.
+- Use the current direct-artifact command below for the supported standard build, registration, editor insertion, and frontend render profile. It does not prove the Interactivity click/state contract.
+
+```bash
+artifact="<generated-block-dir>"
+digest="$(PYTHONPATH=evals/harness python3 - "$artifact" <<'PY'
+import sys
+from pathlib import Path
+from artifact_staging import digest_regular_tree
+print(digest_regular_tree(Path(sys.argv[1])))
+PY
+)"
+python3 evals/harness/run_wordpress_runtime_smoke.py \
+  --artifact-path "$artifact" \
+  --artifact-kind block \
+  --expected-artifact-digest "$digest" \
+  --evidence-id generated-interactive-counter-standard-full-profile-YYYYMMDD \
+  --block-build-smoke \
+  --block-name acme/interactive-counter \
+  --editor-insert-render-smoke \
+  --expected-frontend-selector .wp-block-acme-interactive-counter \
+  --expected-frontend-text "Runtime block smoke" \
+  --provision-full-profile \
+  --strict-full-profile \
+  --write \
+  --run-id generated-interactive-counter-standard-full-profile-YYYYMMDD \
+  --timeout-sec 300
+```
+
+- External generated-block Interactivity runtime mode is unsupported by the current isolated artifact path. The 2026-06-21 built-in fixture result is historical diagnostic evidence only and cannot establish current support for this packet.
+- Inside the supported isolated command, `--block-build-smoke` runs the approved `npm run build`; the execution artifact then undergoes block validation against `block.json`, editor smoke that inserts/edits the block in wp-admin, and frontend smoke that renders the selector-scoped block on a page.
+- Do not claim `viewScriptModule` directive execution or click/state behavior until a fixture-owned external-artifact Interactivity adapter is implemented and re-proved.
 
 ## Critic Handoff
 Send the materialized files, certification output, and runtime smoke output to `wordpress-critic` for block architecture and release calibration, then to `wordpress-performance-critic` for build, editor, frontend, and Interactivity API performance review.

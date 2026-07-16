@@ -5,7 +5,13 @@ skill_type: executor
 difficulty_tier: smoke
 provenance: synthetic
 expected_behavior:
-  - Uses the required output contract
-  - Applies WordPress-native gates
-  - Separates evidence from assumptions
-  - Provides specific verification or review handoff
+  - Emits the exact Acme Runtime Card block-only artifact as a materializable executor packet
+  - Registers acme/runtime-card with dynamic render output and no saved attributes
+  - Binds runtime proof to the reviewed block name, wrapper selector, and visible text
+  - Separates packet and static evidence from the digest-bound isolated runtime profile
+  - Marks external generated-block Interactivity and deprecation modes historical-only and unsupported
+  - Provides WordPress and performance critic handoff without unsupported release claims
+runtime_assertions:
+  block_name: acme/runtime-card
+  frontend_selector: .wp-block-acme-runtime-card
+  expected_frontend_text: Runtime block smoke

@@ -2813,7 +2813,10 @@ def write_result(summary: dict[str, Any], run_id: str, results_root: Path = RESU
     os.replace(temporary, out_dir / "runtime-smoke.json")
 
     full_status = (summary.get("full_plugin_runtime_profile") or {}).get("status", "not_run")
-    fixture_retained = str(summary["fixture_retained"]).lower()
+    # Isolated generated-artifact runs do not create the legacy wp-env fixture.
+    # A prerequisite-blocked result may therefore omit this legacy field; the
+    # artifact_retention payload remains the authoritative cleanup evidence.
+    fixture_retained = str(summary.get("fixture_retained", False)).lower()
     lines = [
         f"# WordPress Runtime Smoke ({run_id})",
         "",

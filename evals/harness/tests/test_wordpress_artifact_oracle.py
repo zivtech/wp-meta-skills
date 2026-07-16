@@ -595,6 +595,559 @@ def test_good_block_static_artifact_passes(tmp_path):
     result = oracle.validate_artifact("block", block_dir, args())
 
     assert result["status"] == "pass"
+    entrypoint = next(
+        check for check in result["checks"] if check["id"] == "block_registration"
+    )
+    assert "registration is not statically proven" in entrypoint["detail"]
+
+
+def write_block_contract(root, metadata, build="wp-scripts build"):
+    root.mkdir()
+    (root / "block.json").write_text(json.dumps(metadata), encoding="utf-8")
+    if build is not None:
+        (root / "package.json").write_text(
+            json.dumps(
+                {
+                    "scripts": {"build": build},
+                    "devDependencies": {"@wordpress/scripts": "latest"},
+                }
+            ),
+            encoding="utf-8",
+        )
+    return root
+
+
+def block_contract_statuses(path):
+    return {
+        check.id: check.status
+        for check in oracle.structural_checks("block", path)
+    }
+
+
+def valid_block_metadata(**updates):
+    metadata = {
+        "apiVersion": 3,
+        "name": "acme/card",
+        "title": "Card",
+        "category": "widgets",
+    }
+    return {**metadata, **updates}
+
+
+def test_block_metadata_name_gate_requires_wordpress_namespace(tmp_path):
+    block = write_block_contract(
+        tmp_path / "invalid-name",
+        valid_block_metadata(name="card"),
+    )
+
+    statuses = block_contract_statuses(block)
+
+    assert statuses["block_metadata_name"] == "fail"
+    assert statuses["block_metadata_types"] == "pass"
+    assert statuses["block_metadata_api_version"] == "pass"
+    assert statuses["unsafe_commands"] == "pass"
+    assert statuses["hardcoded_secrets"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("title", ["Card"]),
+        ("category", {"slug": "widgets"}),
+        ("attributes", []),
+        ("supports", []),
+    ],
+)
+def test_block_metadata_types_gate_rejects_wrong_field_shapes(
+    tmp_path, field, value
+):
+    block = write_block_contract(
+        tmp_path / field,
+        valid_block_metadata(**{field: value}),
+    )
+
+    statuses = block_contract_statuses(block)
+
+    assert statuses["block_metadata_types"] == "fail"
+    assert statuses["block_metadata_name"] == "pass"
+    assert statuses["block_metadata_api_version"] == "pass"
+    assert statuses["unsafe_commands"] == "pass"
+
+
+@pytest.mark.parametrize("api_version", [True, 0, -1, 65_536, 3.0])
+def test_block_metadata_api_version_gate_is_positive_and_bounded(
+    tmp_path, api_version
+):
+    block = write_block_contract(
+        tmp_path / f"api-{str(api_version).replace('.', '-')}",
+        valid_block_metadata(apiVersion=api_version),
+    )
+
+    statuses = block_contract_statuses(block)
+
+    assert statuses["block_metadata_api_version"] == "fail"
+    assert statuses["block_metadata_name"] == "pass"
+    assert statuses["block_metadata_types"] == "pass"
+    assert statuses["unsafe_commands"] == "pass"
+
+
+def test_block_metadata_file_gate_accepts_handles_and_local_file_arrays(tmp_path):
+    block = write_block_contract(
+        tmp_path / "valid-assets",
+        valid_block_metadata(
+            editorScript=["file:./index.js", "wp-element", "@wordpress/interactivity"],
+            style=["wp-components", "file:./style.css"],
+            render="file:./render.php",
+        ),
+    )
+    (block / "index.js").write_text("export default {};", encoding="utf-8")
+    (block / "style.css").write_text(".card {}", encoding="utf-8")
+    (block / "render.php").write_text("<?php return '';", encoding="utf-8")
+
+    statuses = block_contract_statuses(block)
+
+    assert statuses["block_metadata_file_references"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "handle",
+    ["./missing.js", "../outside.js", "blocks/card/index.js", "https//cdn.example/x.js", "index.js"],
+)
+def test_block_metadata_file_gate_rejects_path_like_registered_handles(
+    tmp_path, handle
+):
+    block = write_block_contract(
+        tmp_path / "path-like-handle",
+        valid_block_metadata(editorScript=handle),
+    )
+
+    result = oracle.validate_artifact("block", block, args())
+    references = next(
+        check for check in result["checks"]
+        if check["id"] == "block_metadata_file_references"
+    )
+
+    assert references["status"] == "fail"
+    assert result["status"] == "fail"
+
+
+def test_block_metadata_count_limit_fails_before_json_parsing(monkeypatch):
+    validator = oracle.block_metadata_validator
+    monkeypatch.setattr(validator, "MAX_BLOCK_METADATA_FILES", 2)
+    files = {
+        f"blocks/card-{index}/block.json": b"not-json"
+        for index in range(3)
+    }
+
+    checks = validator.validate_block_artifact(files)
+    metadata = next(check for check in checks if check.id == "block_metadata")
+
+    assert metadata.status == "fail"
+    assert "count exceeds 2 files" in metadata.detail
+
+
+def test_block_metadata_aggregate_limit_fails_before_json_parsing(monkeypatch):
+    validator = oracle.block_metadata_validator
+    monkeypatch.setattr(validator, "MAX_BLOCK_METADATA_TOTAL_BYTES", 10)
+    files = {
+        "blocks/one/block.json": b"not-json-one",
+        "blocks/two/block.json": b"not-json-two",
+    }
+
+    checks = validator.validate_block_artifact(files)
+    metadata = next(check for check in checks if check.id == "block_metadata")
+
+    assert metadata.status == "fail"
+    assert "aggregate limit" in metadata.detail
+
+
+def test_block_metadata_deep_json_fails_across_shared_and_full_paths(tmp_path):
+    block = tmp_path / "deep-json"
+    block.mkdir()
+    deep = (
+        '{"apiVersion":3,"name":"acme/deep","title":"Deep",'
+        '"category":"widgets","extra":'
+        + "[" * 10_000
+        + "0"
+        + "]" * 10_000
+        + "}"
+    )
+    (block / "block.json").write_text(deep, encoding="utf-8")
+    (block / "package.json").write_text(
+        '{"scripts":{"build":"wp-scripts build"},'
+        '"devDependencies":{"@wordpress/scripts":"latest"}}',
+        encoding="utf-8",
+    )
+
+    direct = oracle.check_block_contract(block)
+    snapshot = artifact_staging.snapshot_regular_tree(block)
+    view = oracle.artifact_snapshot_scan.from_snapshot(snapshot)
+    captured = oracle.artifact_snapshot_scan.structural_checks("block", view)
+    result = oracle.validate_artifact("block", block, args())
+
+    assert next(check for check in direct if check.id == "block_metadata").status == "fail"
+    assert next(check for check in captured if check.id == "block_metadata").status == "fail"
+    assert result["status"] == "fail"
+
+
+def test_block_metadata_rejects_escaped_lone_surrogate_across_full_path(tmp_path):
+    block = write_block_contract(
+        tmp_path / "surrogate",
+        valid_block_metadata(editorScript="placeholder"),
+    )
+    metadata = (block / "block.json").read_text(encoding="utf-8")
+    (block / "block.json").write_text(
+        metadata.replace('"placeholder"', '"\\ud800"'), encoding="utf-8"
+    )
+
+    result = oracle.validate_artifact("block", block, args())
+    block_metadata = next(
+        check for check in result["checks"] if check["id"] == "block_metadata"
+    )
+
+    assert block_metadata["status"] == "fail"
+    assert "Unicode scalar values" in block_metadata["detail"]
+    assert result["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    "reference",
+    ["file:./missing.js", "file:../../outside.js"],
+)
+def test_block_metadata_file_gate_rejects_missing_or_escaping_targets(
+    tmp_path, reference
+):
+    (tmp_path / "outside.js").write_text("outside", encoding="utf-8")
+    block = write_block_contract(
+        tmp_path / "invalid-assets",
+        valid_block_metadata(editorScript=["wp-element", reference]),
+    )
+
+    statuses = block_contract_statuses(block)
+
+    assert statuses["block_metadata_file_references"] == "fail"
+    assert statuses["block_metadata_name"] == "pass"
+    assert statuses["unsafe_commands"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        "wp-scripts lint-js",
+        "wp-scripts test-unit-js",
+        "echo build complete",
+        "wp-scripts build && echo complete",
+        "wp-scripts build --help",
+        "wp-scripts build -h",
+        "wp-scripts build --version",
+        "wp-scripts build -v",
+        "wp-scripts build -V",
+        "wp-scripts build --output-path=../../outside",
+        "wp-scripts build\nid",
+        "wp-scripts build\rwhoami",
+        "wp-scripts build\t--help",
+    ],
+)
+def test_block_registration_gate_rejects_non_build_package_scripts(
+    tmp_path, build
+):
+    block = write_block_contract(
+        tmp_path / f"fake-{build.split()[0].replace('/', '-')}",
+        valid_block_metadata(),
+        build=build,
+    )
+
+    statuses = block_contract_statuses(block)
+
+    assert statuses["block_registration"] == "fail"
+    assert statuses["block_metadata"] == "pass"
+    assert statuses["unsafe_commands"] == "pass"
+    result = oracle.validate_artifact("block", block, args())
+    assert result["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        "wp-scripts build",
+        "wp-scripts build blocks/card/index.js --output-path=blocks/card/build",
+        "wp-scripts build --source-path=blocks/card --output-path=blocks/card/build",
+        "wp-scripts build --experimental-modules",
+        "wp-scripts build --webpack-copy-php",
+        "wp-scripts build --webpack-no-externals",
+        "wp-scripts build --blocks-manifest",
+        "wp-scripts build --webpack-bundle-analyzer",
+    ],
+)
+def test_block_registration_gate_accepts_pinned_wp_scripts_build_grammar(
+    tmp_path, build
+):
+    block = write_block_contract(
+        tmp_path / "admitted-build",
+        valid_block_metadata(),
+        build=build,
+    )
+
+    result = oracle.validate_artifact("block", block, args())
+
+    assert result["status"] == "pass"
+
+
+def test_block_registration_gate_accepts_concrete_php_registration(tmp_path):
+    block = write_block_contract(
+        tmp_path / "php-registration",
+        valid_block_metadata(),
+        build=None,
+    )
+    (block / "register.php").write_text(
+        "<?php\nregister_block_type( __DIR__ );\n",
+        encoding="utf-8",
+    )
+
+    legacy = oracle.check_block_registration(block)
+    snapshot = artifact_staging.snapshot_regular_tree(block)
+    view = oracle.artifact_snapshot_scan.from_snapshot(snapshot)
+    observed = next(
+        check
+        for check in oracle.artifact_snapshot_scan.structural_checks("block", view)
+        if check.id == "block_registration"
+    )
+
+    assert legacy.status == "pass"
+    assert observed.status == "pass"
+
+
+@pytest.mark.parametrize(
+    "decoy",
+    [
+        "<?php\n$decoy = <<<'PHP'\nregister_block_type(\nPHP;\n",
+        "<?php\n$decoy = <<<PHP\nregister_block_type(\nPHP;\n",
+    ],
+    ids=("nowdoc", "heredoc"),
+)
+def test_block_registration_rejects_heredoc_decoys_across_all_paths(
+    tmp_path, decoy
+):
+    block = write_block_contract(
+        tmp_path / "php-registration-decoy",
+        valid_block_metadata(),
+        build=None,
+    )
+    (block / "decoy.php").write_text(decoy, encoding="utf-8")
+
+    legacy = oracle.check_block_registration(block)
+    snapshot = artifact_staging.snapshot_regular_tree(block)
+    view = oracle.artifact_snapshot_scan.from_snapshot(snapshot)
+    observed = next(
+        check
+        for check in oracle.artifact_snapshot_scan.structural_checks("block", view)
+        if check.id == "block_registration"
+    )
+    result = oracle.validate_artifact("block", block, args())
+    full = next(
+        check for check in result["checks"] if check["id"] == "block_registration"
+    )
+
+    assert legacy.status == "fail"
+    assert observed.status == "fail"
+    assert full["status"] == "fail"
+    assert result["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    "decoy",
+    [
+        "<?php\nnamespace Acme; function register_block_type( $path ) {} register_block_type( __DIR__ );\n",
+        "<?php\nnamespace Acme; use function Vendor\\fake as register_block_type; register_block_type( __DIR__ );\n",
+        "<?php // ?>\nregister_block_type( __DIR__ );\n",
+        "<?php\n$callback = register_block_type(...);\n",
+        "<?php\nclass register_block_type {} new register_block_type();\n",
+        "<?php\nfunction &register_block_type( $path ) {}\n",
+        "<?php\n$object->register_block_type( __DIR__ );\n",
+        "<?php\nThing::register_block_type( __DIR__ );\n",
+        "<?php\n$register_block_type( __DIR__ );\n",
+    ],
+    ids=(
+        "namespace-shadow",
+        "function-alias",
+        "comment-close-tag",
+        "first-class-callable",
+        "class-construction",
+        "by-reference-declaration",
+        "method-call",
+        "static-method-call",
+        "variable-function",
+    ),
+)
+def test_block_registration_rejects_non_core_call_shapes_full_oracle(
+    tmp_path, decoy
+):
+    block = write_block_contract(
+        tmp_path / "non-core-call",
+        valid_block_metadata(),
+        build=None,
+    )
+    (block / "decoy.php").write_text(decoy, encoding="utf-8")
+
+    result = oracle.validate_artifact("block", block, args())
+    registration = next(
+        check for check in result["checks"] if check["id"] == "block_registration"
+    )
+
+    assert registration["status"] == "fail"
+    assert result["status"] == "fail"
+
+
+def test_block_registration_accepts_explicit_global_call_in_namespace(tmp_path):
+    block = write_block_contract(
+        tmp_path / "qualified-core-call",
+        valid_block_metadata(),
+        build=None,
+    )
+    (block / "register.php").write_text(
+        "<?php\nnamespace Acme; \\register_block_type( __DIR__ );\n",
+        encoding="utf-8",
+    )
+
+    result = oracle.validate_artifact("block", block, args())
+
+    assert result["status"] == "pass"
+
+
+def test_block_registration_scan_rejects_oversized_php_before_tokenization(tmp_path):
+    block = write_block_contract(
+        tmp_path / "oversized-registration",
+        valid_block_metadata(),
+        build=None,
+    )
+    (block / "oversized.php").write_bytes(
+        b"<?php\n" + b"a " * (512 * 1024)
+    )
+
+    check = oracle.check_block_registration(block)
+
+    assert check.status == "fail"
+    assert "exceeds the 1 MiB PHP registration scan limit" in check.detail
+
+
+def test_block_registration_rejects_cross_file_global_shadow(tmp_path):
+    block = write_block_contract(
+        tmp_path / "cross-file-shadow",
+        valid_block_metadata(),
+        build=None,
+    )
+    (block / "a-shadow.php").write_text(
+        "<?php\nfunction register_block_type( $path ) { return false; }\n",
+        encoding="utf-8",
+    )
+    (block / "b-call.php").write_text(
+        "<?php\nregister_block_type( __DIR__ );\n",
+        encoding="utf-8",
+    )
+
+    result = oracle.validate_artifact("block", block, args())
+    registration = next(
+        check for check in result["checks"] if check["id"] == "block_registration"
+    )
+
+    assert registration["status"] == "fail"
+    assert "global register_block_type() shadow" in registration["detail"]
+    assert result["status"] == "fail"
+
+
+def test_explicit_global_registration_survives_unrelated_namespaced_shadow(tmp_path):
+    block = write_block_contract(
+        tmp_path / "qualified-with-namespaced-shadow",
+        valid_block_metadata(),
+        build=None,
+    )
+    (block / "a-shadow.php").write_text(
+        "<?php\nnamespace Acme; function register_block_type( $path ) { return false; }\n",
+        encoding="utf-8",
+    )
+    (block / "b-call.php").write_text(
+        "<?php\nnamespace Other; \\register_block_type( __DIR__ );\n",
+        encoding="utf-8",
+    )
+
+    result = oracle.validate_artifact("block", block, args())
+
+    assert result["status"] == "pass"
+
+
+def test_block_registration_ignores_data_after_halt_compiler(tmp_path):
+    block = write_block_contract(
+        tmp_path / "halted-compiler-data",
+        valid_block_metadata(),
+        build=None,
+    )
+    (block / "halt.php").write_text(
+        "<?php\n__halt_compiler(); register_block_type( __DIR__ );\n",
+        encoding="utf-8",
+    )
+
+    result = oracle.validate_artifact("block", block, args())
+    registration = next(
+        check for check in result["checks"] if check["id"] == "block_registration"
+    )
+
+    assert registration["status"] == "fail"
+    assert result["status"] == "fail"
+
+
+def test_block_metadata_rejects_duplicate_names_across_all_paths(tmp_path):
+    block = write_block_contract(
+        tmp_path / "duplicate-names",
+        valid_block_metadata(),
+    )
+    duplicate = block / "nested"
+    duplicate.mkdir()
+    (duplicate / "block.json").write_text(
+        json.dumps(valid_block_metadata()), encoding="utf-8"
+    )
+
+    direct = {
+        check.id: (check.status, check.detail)
+        for check in oracle.check_block_contract(block)
+    }
+    snapshot = artifact_staging.snapshot_regular_tree(block)
+    view = oracle.artifact_snapshot_scan.from_snapshot(snapshot)
+    captured = {
+        check.id: (check.status, check.detail)
+        for check in oracle.artifact_snapshot_scan.structural_checks("block", view)
+        if check.id.startswith("block_")
+    }
+    result = oracle.validate_artifact("block", block, args())
+
+    assert direct == captured
+    assert direct["block_metadata_name"][0] == "fail"
+    assert "duplicates block name acme/card" in direct["block_metadata_name"][1]
+    assert result["status"] == "fail"
+
+
+def test_block_contract_paths_share_exact_gate_results(tmp_path):
+    block = write_block_contract(
+        tmp_path / "shared-validator",
+        valid_block_metadata(
+            editorScript=["wp-element", "file:./missing.js"]
+        ),
+        build="echo not-a-build",
+    )
+    direct = {
+        check.id: (check.status, check.detail)
+        for check in oracle.check_block_contract(block)
+    }
+    snapshot = artifact_staging.snapshot_regular_tree(block)
+    view = oracle.artifact_snapshot_scan.from_snapshot(snapshot)
+    captured = {
+        check.id: (check.status, check.detail)
+        for check in oracle.artifact_snapshot_scan.structural_checks("block", view)
+        if check.id.startswith("block_")
+    }
+
+    assert direct == captured
+    assert direct["block_metadata_file_references"][0] == "fail"
+    assert direct["block_registration"][0] == "fail"
 
 
 def test_block_npm_build_without_approved_lock_blocks_without_host_command(tmp_path, monkeypatch):

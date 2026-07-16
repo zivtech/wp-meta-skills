@@ -23,6 +23,7 @@ from typing import Any
 import artifact_staging
 import artifact_execution
 import artifact_snapshot_scan
+import block_metadata_validator
 import runtime_artifact_pipeline
 import wp_api_lint
 import wp_security_gate
@@ -275,34 +276,39 @@ def load_json_file(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     return data, None
 
 
-def check_block_metadata(path: Path) -> Check:
-    block_files = [file_path for file_path in iter_files(path, {".json"}) if file_path.name == "block.json"]
-    if not block_files:
-        return fail_check("block_metadata", "no block.json file found")
-    errors: list[str] = []
-    for block_file in block_files:
-        data, error = load_json_file(block_file)
-        if error:
-            errors.append(error)
+def _block_byte_view(path: Path) -> dict[str, bytes]:
+    if path.is_file():
+        return {path.name: path.read_bytes()}
+    ignored = {".git", ".wp-env", "coverage", "node_modules", "vendor"}
+    files = {}
+    for child in path.rglob("*"):
+        relative = child.relative_to(path)
+        if any(part in ignored for part in relative.parts[:-1]):
             continue
-        missing = [key for key in ("name", "title", "category") if not data.get(key)]
-        if missing:
-            errors.append(f"{repo_relative(block_file)} missing keys: {', '.join(missing)}")
-    if errors:
-        return fail_check("block_metadata", "; ".join(errors))
-    return pass_check("block_metadata", f"{len(block_files)} block.json file(s) parsed with required keys")
+        if child.is_file() and not child.is_symlink():
+            files[relative.as_posix()] = child.read_bytes()
+    return files
+
+
+def check_block_contract(path: Path) -> list[Check]:
+    return [
+        Check(item.id, item.status, True, item.detail)
+        for item in block_metadata_validator.validate_block_artifact(
+            _block_byte_view(path)
+        )
+    ]
+
+
+def _block_contract_check(path: Path, check_id: str) -> Check:
+    return next(check for check in check_block_contract(path) if check.id == check_id)
+
+
+def check_block_metadata(path: Path) -> Check:
+    return _block_contract_check(path, "block_metadata")
 
 
 def check_block_registration(path: Path) -> Check:
-    text = aggregate_text(path)
-    package_json = path / "package.json" if path.is_dir() else None
-    package_has_scripts = False
-    if package_json and package_json.exists():
-        data, _error = load_json_file(package_json)
-        package_has_scripts = bool(data and data.get("scripts"))
-    if "register_block_type" in text or package_has_scripts:
-        return pass_check("block_registration", "server registration or build scripts present")
-    return fail_check("block_registration", "no register_block_type call or package scripts found")
+    return _block_contract_check(path, "block_registration")
 
 
 def check_theme_metadata(path: Path) -> Check:
@@ -536,7 +542,7 @@ def structural_checks(
             check_plugin_ai_surface_heuristics(path),
         ]
     elif artifact_type == "block":
-        checks += [check_block_metadata(path), check_block_registration(path)]
+        checks += check_block_contract(path)
     elif artifact_type == "theme":
         checks.append(check_theme_metadata(path))
     elif artifact_type == "blueprint":

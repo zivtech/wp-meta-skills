@@ -54,6 +54,197 @@ Use WordPress APIs, use nonces, use capabilities, and run tests.
 """
 
 
+GOOD_BLOCK_PLANNER = """\
+## Block Scope
+Build one dynamic `acme/runtime-card` block. This does not claim cross-browser coverage.
+
+Block identity: acme/runtime-card
+Primary serialization: dynamic
+Interaction pattern: server-rendered block
+
+## Current-State Evidence
+The plugin registers blocks from `block.json` with `register_block_type()`.
+
+## Metadata And Attribute Plan
+`block.json` declares the block name, title, and category. The block has no
+attributes and no saved content; its saved-markup contract is intentionally empty.
+
+Metadata file: block.json
+Attributes: none
+Saved markup: self-closing
+
+## Render And Interaction Plan
+Use `render_callback` for dynamic output. A missing record is a render failure
+that returns empty output after logging an error.
+
+Render surface: render_callback
+Failure behavior: log-and-return-empty
+
+## Compatibility And Migration Plan
+There is no existing saved content. Keep a saved-content fixture containing the
+self-closing block delimiter so future metadata changes can be checked.
+
+Compatibility decision: new-contract
+Saved-content fixture: required
+
+## Security Performance And Accessibility Notes
+The callback uses `esc_html()` and has no REST, SQL, upload, or remote-call path.
+
+## Assumption Register
+Assumption: the host loads the plugin before editor smoke; the runtime oracle verifies it.
+
+## Test Strategy
+Run a Playwright editor smoke for insertion/save and a separate frontend smoke
+for the `.wp-block-acme-runtime-card` output, plus PHPUnit for the callback.
+
+Editor oracle: required
+Editor oracle method: playwright-insert-save-reload
+Editor oracle block: acme/runtime-card
+Frontend oracle: required
+Frontend oracle method: playwright-selector-visible-text
+Frontend oracle selector: .wp-block-acme-runtime-card
+Frontend expected text: Runtime block smoke
+
+## Acceptance Criteria
+The editor saves the block and the front end renders the fixture-owned text.
+
+## Executor Handoff
+Generate the exact block files and recorded verification packet.
+
+## Critic Handoff
+Send the packet to wordpress-critic after the runtime evidence exists.
+"""
+
+
+UNRELATED_BLOCK_PLANNER = """\
+## Block Scope
+Create a content feature for an existing WordPress site. This does not claim release readiness.
+
+## Current-State Evidence
+The site has `register_post_type()` and `WP_Query` usage.
+
+## Metadata And Attribute Plan
+Keep the content type fields in post meta.
+
+## Render And Interaction Plan
+Render the archive with a PHP template and show a friendly error.
+
+## Compatibility And Migration Plan
+Keep old posts available in a fixture export.
+
+## Security Performance And Accessibility Notes
+Use `current_user_can()` for admin access.
+
+## Assumption Register
+Assumption: the content owner supplies sample data.
+
+## Test Strategy
+Use PHPUnit and Playwright for a browser check.
+
+## Acceptance Criteria
+The archive lists published records.
+
+## Executor Handoff
+Implement the content feature.
+
+## Critic Handoff
+Send it to wordpress-critic.
+"""
+
+
+GOOD_GUTENBERG_MIGRATION_PLANNER = """\
+## Migration Scope
+Migrate Contentful Rich Text into Gutenberg blocks. This does not prove production cutover readiness.
+
+## Current-State Evidence
+The importer writes `post_content` and has a disposable wp-env fixture.
+
+## Source Audit
+Inspect the Rich Text document/container schema and localized fields.
+
+## Target Mapping
+Map source nodes to core block mappings in `post_content`; use an explicit
+custom block allowlist and record every unsupported or unmapped node.
+
+Gutenberg target: post_content
+Block mapping: core+custom
+Unsupported content: accounted
+
+## Transform And Execution Plan
+Use WordPress block serialization, stable source identity, and an idempotent,
+rerunnable two-pass import.
+
+Serialization API: serialize_blocks
+Rerun policy: idempotent
+
+## Validation Plan
+Use `parse_blocks()` for block validation, a semantic oracle for expected text
+and href values, a Playwright editor smoke, and a separate frontend smoke.
+
+Block validation oracle: parse_blocks
+Semantic oracle: required
+Semantic oracle fields: text,href,attributes,unsupported,freeform
+Editor oracle: required
+Editor oracle method: playwright-clone-save-reload-restore
+Frontend oracle: required
+Frontend oracle method: playwright-selector-visible-text
+
+## Rollback And Monitoring
+Keep run-scoped before-images and execute a rollback test in wp-env.
+
+## Assumption Register
+Assumption: only the mapped locales are in scope.
+
+## Test Strategy
+Use a canonical source fixture plus malformed-container negative fixtures.
+
+Fixture: required
+Fixture identity: article-42-rich-text
+
+## Acceptance Criteria
+Every mapped node is present and every unsupported node is accounted for.
+
+## Critic Handoff
+Review serialization, idempotence, editor evidence, and rollback evidence.
+"""
+
+
+GOOD_CLASSIC_MIGRATION_PLANNER = """\
+## Migration Scope
+Import CSV article rows into classic WordPress posts. Gutenberg and the Block Editor are explicitly out of scope. This does not prove production cutover readiness.
+
+## Current-State Evidence
+The importer uses `wp_insert_post()` and writes sanitized HTML into `post_content`.
+
+## Source Audit
+Inspect the CSV header, UTF-8 encoding, stable source ID, and required columns.
+
+## Target Mapping
+Map title, body, and publication state to `post_title`, `post_content`, and `post_status`; log unsupported columns.
+
+## Transform And Execution Plan
+Use `wp_kses_post()` before `wp_insert_post()`, retain the stable source ID, and make reruns idempotent.
+
+## Validation Plan
+Use `wp post list`, exact expected title and body assertions, and a front-end browser smoke.
+
+## Rollback And Monitoring
+Keep run-scoped before-images and execute a rollback test in the disposable environment.
+
+## Assumption Register
+Assumption: the supplied CSV is the authoritative locale for this import.
+
+## Test Strategy
+Use a canonical CSV fixture plus malformed-row and duplicate-ID fixtures.
+
+## Acceptance Criteria
+Every valid row maps once, unsupported columns are accounted for, and rollback restores the prior posts.
+
+## Critic Handoff
+Review sanitization, idempotence, semantic evidence, and rollback evidence.
+"""
+
+
 GOOD_CRITIC = """\
 **VERDICT: REVISE**
 
@@ -209,6 +400,481 @@ def test_good_planner_output_passes():
 
     assert result["pass"] is True
     assert result["score"] == 1.0
+
+
+def test_good_block_planner_passes_section_local_contract():
+    result = oracle.validate_output("wordpress-planner.block", GOOD_BLOCK_PLANNER)
+    checks = {check["id"]: check for check in result["checks"]}
+
+    assert result["pass"] is True
+    assert checks["block_scope_contract"]["passed"] is True
+    assert checks["block_metadata_attribute_contract"]["passed"] is True
+    assert checks["block_render_contract"]["passed"] is True
+    assert checks["block_compatibility_contract"]["passed"] is True
+    assert checks["block_editor_frontend_contract"]["passed"] is True
+
+
+def test_unrelated_wordpress_apis_cannot_pass_block_planner_contract():
+    result = oracle.validate_output("wordpress-planner.block", UNRELATED_BLOCK_PLANNER)
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert result["pass"] is False
+    assert {
+        "block_scope_contract",
+        "block_metadata_attribute_contract",
+        "block_render_contract",
+        "block_compatibility_contract",
+        "block_editor_frontend_contract",
+    } <= failed
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expected_gate"),
+    [
+        ("Primary serialization: dynamic", "Primary serialization: not defined", "block_scope_contract"),
+        ("Metadata file: block.json", "Metadata file: not defined", "block_metadata_attribute_contract"),
+        ("Render surface: render_callback", "Render surface: not defined", "block_render_contract"),
+        ("Compatibility decision: new-contract", "Compatibility decision: not-defined", "block_compatibility_contract"),
+        ("Frontend oracle: required", "Frontend oracle: skipped", "block_editor_frontend_contract"),
+    ],
+)
+def test_block_plan_single_fact_mutants_kill_the_intended_gate(old, new, expected_gate):
+    candidate = GOOD_BLOCK_PLANNER.replace(old, new)
+    result = oracle.validate_output("wordpress-planner.block", candidate)
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert expected_gate in failed
+    domain_gates = {
+        "block_scope_contract",
+        "block_metadata_attribute_contract",
+        "block_render_contract",
+        "block_compatibility_contract",
+        "block_editor_frontend_contract",
+    }
+    assert failed & domain_gates == {expected_gate}
+
+
+def test_static_block_negative_space_does_not_create_dynamic_classification():
+    candidate = (
+        GOOD_BLOCK_PLANNER
+        .replace(
+            "Build one dynamic `acme/runtime-card` block.",
+            "Build one static `acme/runtime-card` block; it is not a dynamic block.",
+        )
+        .replace("Primary serialization: dynamic", "Primary serialization: static")
+        .replace("Render surface: render_callback", "Render surface: save()")
+    )
+
+    result = oracle.validate_output("wordpress-planner.block", candidate)
+
+    assert result["pass"] is True
+
+
+def test_interactivity_pattern_is_orthogonal_to_static_serialization():
+    candidate = (
+        GOOD_BLOCK_PLANNER
+        .replace("Primary serialization: dynamic", "Primary serialization: static")
+        .replace("Interaction pattern: server-rendered block", "Interaction pattern: Interactivity API")
+        .replace("Render surface: render_callback", "Render surface: save()")
+    )
+
+    result = oracle.validate_output("wordpress-planner.block", candidate)
+
+    assert result["pass"] is True
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "gate"),
+    [
+        (
+            "Failure behavior: log-and-return-empty",
+            "Failure behavior: not-defined",
+            "block_render_contract",
+        ),
+        (
+            "Saved-content fixture: required",
+            "Saved-content fixture: never",
+            "block_compatibility_contract",
+        ),
+        (
+            "Editor oracle: required",
+            "Editor oracle: skipped",
+            "block_editor_frontend_contract",
+        ),
+    ],
+)
+def test_negated_block_decision_records_fail_their_owning_gate(old, new, gate):
+    result = oracle.validate_output("wordpress-planner.block", GOOD_BLOCK_PLANNER.replace(old, new))
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert gate in failed
+
+
+def test_duplicate_decision_record_is_rejected():
+    candidate = GOOD_BLOCK_PLANNER.replace(
+        "Editor oracle: required",
+        "Editor oracle: required\nEditor oracle: skipped",
+    )
+
+    result = oracle.validate_output("wordpress-planner.block", candidate)
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert "block_editor_frontend_contract" in failed
+
+
+def test_decision_record_inside_example_fence_is_not_contract_evidence():
+    candidate = GOOD_BLOCK_PLANNER.replace(
+        "Primary serialization: dynamic",
+        "```text\nPrimary serialization: dynamic\n```",
+    )
+
+    result = oracle.validate_output("wordpress-planner.block", candidate)
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert "block_scope_contract" in failed
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "```text\nPrimary serialization: dynamic\n````",
+        "```text\nPrimary serialization: dynamic",
+        "    Primary serialization: dynamic",
+        "   \tPrimary serialization: dynamic",
+        "<!-- Primary serialization: dynamic -->",
+    ],
+    ids=(
+        "longer-closing-fence", "unclosed-fence", "indented-code",
+        "mixed-tab-indented-code", "html-comment",
+    ),
+)
+def test_hidden_decision_record_variants_are_not_contract_evidence(replacement):
+    candidate = GOOD_BLOCK_PLANNER.replace(
+        "Primary serialization: dynamic", replacement
+    )
+
+    result = oracle.validate_output("wordpress-planner.block", candidate)
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert "block_scope_contract" in failed
+
+
+@pytest.mark.parametrize(
+    ("skill", "document", "wrapper"),
+    [
+        ("wordpress-planner.block", GOOD_BLOCK_PLANNER, "```markdown\n{}\n````"),
+        ("wordpress-planner.migration", GOOD_GUTENBERG_MIGRATION_PLANNER, "~~~~md\n{}\n~~~~"),
+        ("wordpress-planner.block", GOOD_BLOCK_PLANNER, "<!--\n{}\n-->"),
+        ("wordpress-planner.migration", GOOD_GUTENBERG_MIGRATION_PLANNER, "<!--\n{}\n-->"),
+    ],
+)
+def test_whole_hidden_document_cannot_satisfy_output_contract(skill, document, wrapper):
+    result = oracle.validate_output(skill, wrapper.format(document))
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert result["pass"] is False
+    assert "required_output_headings" in failed
+
+
+@pytest.mark.parametrize("tag", ["pre", "script", "style", "textarea", "template"])
+def test_whole_raw_html_code_block_cannot_satisfy_output_contract(tag):
+    result = oracle.validate_output(
+        "wordpress-planner.block",
+        f"<{tag}>\n{GOOD_BLOCK_PLANNER}\n</{tag}>",
+    )
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert result["pass"] is False
+    assert "required_output_headings" in failed
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    [
+        "<![CDATA[\n{}\n]]>",
+        "<?raw\n{}\n?>",
+        "<!DOCTYPE html\n{}\n>",
+    ],
+    ids=("cdata", "processing-instruction", "declaration"),
+)
+def test_whole_commonmark_raw_block_cannot_satisfy_output_contract(wrapper):
+    result = oracle.validate_output(
+        "wordpress-planner.block", wrapper.format(GOOD_BLOCK_PLANNER)
+    )
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert result["pass"] is False
+    assert "required_output_headings" in failed
+
+
+@pytest.mark.parametrize("tag", ["div", "section", "table", "details", "custom-element"])
+def test_raw_html_block_opening_hides_following_contract_section(tag):
+    result = oracle.validate_output(
+        "wordpress-planner.block", f"<{tag}>\n{GOOD_BLOCK_PLANNER}\n</{tag}>"
+    )
+    headings = next(
+        check for check in result["checks"] if check["id"] == "required_output_headings"
+    )
+
+    assert result["pass"] is False
+    assert headings["passed"] is False
+
+
+@pytest.mark.parametrize("tag", ["div", "section", "table"])
+def test_type_six_raw_html_prefix_with_trailing_content_hides_record(tag):
+    candidate = GOOD_BLOCK_PLANNER.replace(
+        "Primary serialization: dynamic",
+        f'<{tag} style="display:none">hidden\nPrimary serialization: dynamic\n</{tag}>',
+    )
+
+    result = oracle.validate_output("wordpress-planner.block", candidate)
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert "block_scope_contract" in failed
+
+
+@pytest.mark.parametrize(
+    ("opening", "closing"),
+    [
+        ('<span style="display:none">hidden', "</span>"),
+        ("<a hidden>", "</a>"),
+        ("<custom-element hidden>", "</custom-element>"),
+    ],
+)
+def test_inline_html_wrapper_cannot_hide_authoritative_record(opening, closing):
+    candidate = GOOD_BLOCK_PLANNER.replace(
+        "Primary serialization: dynamic",
+        f"{opening}\nPrimary serialization: dynamic\n{closing}",
+    )
+
+    result = oracle.validate_output("wordpress-planner.block", candidate)
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert "block_scope_contract" in failed
+
+
+def test_list_continuation_cannot_supply_authoritative_decision_record():
+    candidate = GOOD_BLOCK_PLANNER.replace(
+        "Primary serialization: dynamic",
+        "- <span hidden>hidden\n  Primary serialization: dynamic\n  </span>",
+    )
+
+    result = oracle.validate_output("wordpress-planner.block", candidate)
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert "block_scope_contract" in failed
+
+
+def test_midline_html_opener_cannot_hide_authoritative_record():
+    candidate = GOOD_BLOCK_PLANNER.replace(
+        "Primary serialization: dynamic",
+        "Prose <span hidden>\nPrimary serialization: dynamic\n</span>",
+    )
+
+    result = oracle.validate_output("wordpress-planner.block", candidate)
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert "block_scope_contract" in failed
+
+
+@pytest.mark.parametrize(
+    ("skill", "document", "duplicate"),
+    [
+        (
+            "wordpress-planner.block",
+            GOOD_BLOCK_PLANNER,
+            "## Block Scope\nBlock identity: acme/wrong\nPrimary serialization: static\n\n",
+        ),
+        (
+            "wordpress-planner.migration",
+            GOOD_GUTENBERG_MIGRATION_PLANNER,
+            "## Target Mapping\nGutenberg target: post_content\nBlock mapping: core-only\nUnsupported content: accounted\n\n",
+        ),
+    ],
+)
+def test_duplicate_required_heading_is_rejected(skill, document, duplicate):
+    result = oracle.validate_output(skill, duplicate + document)
+    headings = next(
+        check for check in result["checks"] if check["id"] == "required_output_headings"
+    )
+
+    assert result["pass"] is False
+    assert headings["passed"] is False
+    assert "duplicate headings" in headings["detail"]
+
+
+def test_gutenberg_migration_plan_passes_domain_contract():
+    result = oracle.validate_output(
+        "wordpress-planner.migration", GOOD_GUTENBERG_MIGRATION_PLANNER
+    )
+    domain = {
+        check["id"]: check["passed"]
+        for check in result["checks"]
+        if check["id"].startswith("gutenberg_migration_")
+    }
+
+    assert result["pass"] is True
+    assert domain == {
+        "gutenberg_migration_mapping_contract": True,
+        "gutenberg_migration_serialization_contract": True,
+        "gutenberg_migration_oracle_contract": True,
+    }
+
+
+def test_gutenberg_migration_plan_cannot_omit_semantic_or_editor_frontend_oracles():
+    candidate = (
+        GOOD_GUTENBERG_MIGRATION_PLANNER
+        .replace("Semantic oracle: required", "Semantic oracle: skipped")
+        .replace("Editor oracle: required", "Editor oracle: skipped")
+        .replace("Frontend oracle: required", "Frontend oracle: skipped")
+    )
+    assert candidate != GOOD_GUTENBERG_MIGRATION_PLANNER
+    result = oracle.validate_output("wordpress-planner.migration", candidate)
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert result["pass"] is False
+    assert "gutenberg_migration_oracle_contract" in failed
+
+
+def test_generic_semantic_and_fixture_flags_do_not_replace_bound_contract():
+    candidate = (
+        GOOD_GUTENBERG_MIGRATION_PLANNER
+        .replace(
+            "Semantic oracle fields: text,href,attributes,unsupported,freeform",
+            "Semantic oracle fields: required",
+        )
+        .replace(
+            "Fixture identity: article-42-rich-text",
+            "Fixture identity: required",
+        )
+    )
+    assert candidate != GOOD_GUTENBERG_MIGRATION_PLANNER
+
+    result = oracle.validate_output("wordpress-planner.migration", candidate)
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+
+    assert result["pass"] is False
+    assert "gutenberg_migration_oracle_contract" in failed
+
+
+def test_negated_gutenberg_decision_records_fail_all_domain_gates():
+    candidate = (
+        GOOD_GUTENBERG_MIGRATION_PLANNER
+        .replace("Gutenberg target: post_content", "Gutenberg target: not defined")
+        .replace("Block mapping: core+custom", "Block mapping: forbidden")
+        .replace("Unsupported content: accounted", "Unsupported content: ignored")
+        .replace("Serialization API: serialize_blocks", "Serialization API: forbidden")
+        .replace("Rerun policy: idempotent", "Rerun policy: non-idempotent")
+        .replace("Block validation oracle: parse_blocks", "Block validation oracle: skipped")
+        .replace("Semantic oracle: required", "Semantic oracle: skipped")
+        .replace("Editor oracle: required", "Editor oracle: skipped")
+        .replace("Frontend oracle: required", "Frontend oracle: skipped")
+    )
+
+    result = oracle.validate_output("wordpress-planner.migration", candidate)
+    failed = {
+        check["id"] for check in result["checks"]
+        if check["id"].startswith("gutenberg_migration_") and not check["passed"]
+    }
+
+    assert failed == {
+        "gutenberg_migration_mapping_contract",
+        "gutenberg_migration_serialization_contract",
+        "gutenberg_migration_oracle_contract",
+    }
+
+
+def test_negative_block_prose_outside_decision_records_does_not_activate_migration_lane():
+    candidate = (
+        GOOD_CLASSIC_MIGRATION_PLANNER
+        .replace(
+            "Map title, body, and publication state",
+            "Custom block mapping is out of scope. Map title, body, and publication state",
+        )
+        .replace(
+            "Use `wp_kses_post()`",
+            "Do not use serialize_blocks(). Use `wp_kses_post()`",
+        )
+        .replace(
+            "Use `wp post list`",
+            "parse_blocks and block validation are out of scope. Use `wp post list`",
+        )
+    )
+
+    result = oracle.validate_output("wordpress-planner.migration", candidate)
+    domain = [
+        check["id"] for check in result["checks"]
+        if check["id"].startswith("gutenberg_migration_")
+    ]
+
+    assert result["pass"] is True
+    assert domain == ["gutenberg_migration_scope"]
+
+
+def test_classic_post_content_migration_does_not_activate_gutenberg_contract():
+    result = oracle.validate_output(
+        "wordpress-planner.migration", GOOD_CLASSIC_MIGRATION_PLANNER
+    )
+    domain = {
+        check["id"]: check["passed"]
+        for check in result["checks"]
+        if check["id"].startswith("gutenberg_migration_")
+    }
+
+    assert result["pass"] is True
+    assert domain == {"gutenberg_migration_scope": True}
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        "This is not a Gutenberg or Block Editor migration.",
+        "No Gutenberg transformation is planned; import classic posts.",
+        "Import classic posts, not Gutenberg content.",
+        "Import classic posts rather than Gutenberg blocks.",
+    ],
+)
+def test_negative_gutenberg_scope_phrasings_do_not_activate_domain_contract(scope):
+    candidate = GOOD_CLASSIC_MIGRATION_PLANNER.replace(
+        "Gutenberg and the Block Editor are explicitly out of scope.", scope
+    )
+
+    result = oracle.validate_output("wordpress-planner.migration", candidate)
+    domain = [
+        check for check in result["checks"]
+        if check["id"].startswith("gutenberg_migration_")
+    ]
+
+    assert result["pass"] is True
+    assert [check["id"] for check in domain] == ["gutenberg_migration_scope"]
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        "Migrate article rows into Gutenberg without changing permalinks.",
+        "Migrate article rows into Gutenberg blocks but exclude media.",
+        "Migrate article rows into the Block Editor and do not change authors.",
+    ],
+)
+def test_affirmative_gutenberg_target_survives_unrelated_negative_qualifier(scope):
+    candidate = GOOD_CLASSIC_MIGRATION_PLANNER.replace(
+        "Import CSV article rows into classic WordPress posts. Gutenberg and the Block Editor are explicitly out of scope.",
+        scope,
+    )
+
+    result = oracle.validate_output("wordpress-planner.migration", candidate)
+    failed = {
+        check["id"] for check in result["checks"]
+        if check["id"].startswith("gutenberg_migration_") and not check["passed"]
+    }
+
+    assert result["pass"] is False
+    assert failed == {
+        "gutenberg_migration_mapping_contract",
+        "gutenberg_migration_serialization_contract",
+        "gutenberg_migration_oracle_contract",
+    }
 
 
 def test_blanket_non_applicability_cannot_replace_exact_surfaces():

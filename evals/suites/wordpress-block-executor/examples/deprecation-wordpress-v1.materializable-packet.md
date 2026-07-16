@@ -144,7 +144,7 @@ registerBlockType( 'acme/deprecated-card', {
 ```
 
 ## Compatibility Notes
-This packet targets block API version 3 and WordPress 6.5 or newer. It follows the WordPress Deprecation API shape: the current `save()` emits the current markup, the deprecated version defines its own `attributes` and `save()`, and `migrate()` renames the old `text` attribute to the current `content` attribute. The generated tree is not a standalone plugin; runtime activation requires a host that calls `register_block_type()` with the block directory. The deterministic `wp-env` proof may synthesize that host as a disposable wrapper, but that wrapper is not part of the generated block artifact.
+This packet is designed for block API version 3 and WordPress 6.5 or newer; the static artifact oracle does not prove that compatibility floor, and a current-runtime pass does not substitute for a 6.5 matrix run. It follows the WordPress Deprecation API shape: the current `save()` emits the current markup, the deprecated version defines its own `attributes` and `save()`, and `migrate()` renames the old `text` attribute to the current `content` attribute. The generated tree is not a standalone plugin; runtime activation requires a host that calls `register_block_type()` with the block directory. The deterministic `wp-env` proof may synthesize that host as a disposable wrapper, but that wrapper is not part of the generated block artifact.
 
 ## Security Performance And Accessibility Notes
 The block has no user-supplied SQL, REST, AJAX, uploads, remote HTTP calls, persistent options, or server-side rendering. The legacy fixture is static serialized block content used only by the runtime oracle. The current saved output keeps the default `wp-block-acme-deprecated-card` wrapper class and plain text content so the editor migration and frontend assertions can inspect the exact migrated result.
@@ -156,9 +156,37 @@ No deviations from the deprecation smoke spec. The packet intentionally omits a 
 - Run `python3 evals/harness/validate_wordpress_executor_packet.py --executor block --packet <candidate-output.md>` for the deterministic packet contract.
 - Run `python3 evals/harness/materialize_wordpress_executor_packet.py --executor block --packet <candidate-output.md> --out-dir <generated-block-dir> --overwrite` to materialize the block files.
 - Run `python3 evals/harness/certify_wordpress_executor_artifact.py --executor block --packet <candidate-output.md> --out-dir <generated-block-dir> --result-dir <result-dir> --overwrite` for the saved-packet artifact gate.
-- Run `npm install` and `npm run build` before claiming compiled editor-script readiness.
-- Run block validation, editor smoke, frontend smoke, and block deprecation runtime smoke. The live `wp-env` proof is `python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --block-build-smoke --deprecation-smoke --provision-full-profile --write --run-id <run-id>`.
-- Use Playwright-backed editor smoke before claiming the legacy fixture opens cleanly, migrates, saves as current markup, and renders the migrated frontend text.
+- Use the current direct-artifact command below for the supported standard build, registration, editor insertion, and current-markup frontend render profile. It does not exercise the legacy fixture or `migrate()` path.
+
+```bash
+artifact="<generated-block-dir>"
+digest="$(PYTHONPATH=evals/harness python3 - "$artifact" <<'PY'
+import sys
+from pathlib import Path
+from artifact_staging import digest_regular_tree
+print(digest_regular_tree(Path(sys.argv[1])))
+PY
+)"
+python3 evals/harness/run_wordpress_runtime_smoke.py \
+  --artifact-path "$artifact" \
+  --artifact-kind block \
+  --expected-artifact-digest "$digest" \
+  --evidence-id generated-deprecated-card-standard-full-profile-YYYYMMDD \
+  --block-build-smoke \
+  --block-name acme/deprecated-card \
+  --editor-insert-render-smoke \
+  --expected-frontend-selector .wp-block-acme-deprecated-card \
+  --expected-frontend-text "Runtime block smoke:" \
+  --provision-full-profile \
+  --strict-full-profile \
+  --write \
+  --run-id generated-deprecated-card-standard-full-profile-YYYYMMDD \
+  --timeout-sec 300
+```
+
+- External generated-block deprecation runtime mode is unsupported by the current isolated artifact path. The 2026-06-21 built-in fixture result is historical diagnostic evidence only and cannot establish current support for this packet.
+- Inside the supported isolated command, `--block-build-smoke` runs the approved `npm run build`; the execution artifact then undergoes block validation against `block.json`, editor smoke that inserts/edits the current block in wp-admin, and frontend smoke that renders the selector-scoped current block on a page.
+- Do not claim legacy markup migration, attribute migration, or post-save current serialization until a fixture-owned external-artifact deprecation adapter is implemented and re-proved.
 
 ## Critic Handoff
 Send the materialized files, certification output, and runtime smoke output to `wordpress-critic` for block deprecation architecture and release calibration, then to `wordpress-performance-critic` for build, editor, and migration-path performance review.

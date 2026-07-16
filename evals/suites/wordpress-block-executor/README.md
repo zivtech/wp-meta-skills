@@ -46,41 +46,61 @@ python3 evals/harness/validate_wordpress_artifact.py \
   --path <generated-block-dir>
 ```
 
-Runtime proof requires explicit tooling, for example:
+Current generated-block runtime proof requires the direct artifact, its exact
+pre-stage digest, an opaque evidence ID, and the fixture-owned block assertions.
+For the tracked Acme Runtime Card packet, run:
 
 ```bash
+artifact="<generated-block-dir>"
+digest="$(PYTHONPATH=evals/harness python3 - "$artifact" <<'PY'
+import sys
+from pathlib import Path
+from artifact_staging import digest_regular_tree
+print(digest_regular_tree(Path(sys.argv[1])))
+PY
+)"
 python3 evals/harness/run_wordpress_runtime_smoke.py \
-  --artifact-path <generated-block-dir> \
+  --artifact-path "$artifact" \
   --artifact-kind block \
+  --expected-artifact-digest "$digest" \
+  --evidence-id generated-runtime-card-full-profile-YYYYMMDD \
   --block-build-smoke \
+  --block-name acme/runtime-card \
   --editor-insert-render-smoke \
+  --expected-frontend-selector .wp-block-acme-runtime-card \
+  --expected-frontend-text "Runtime block smoke" \
   --provision-full-profile \
+  --strict-full-profile \
   --write \
-  --run-id generated-block-full-profile-YYYYMMDD \
+  --run-id generated-runtime-card-full-profile-YYYYMMDD \
   --timeout-sec 300
 ```
 
 The runtime harness wraps the generated block-only artifact in a disposable
-plugin, infers the block name from `block.json` when `--block-name` is omitted,
-and verifies npm build, WPCS/PHPCS, Plugin Check, editor insertion, and frontend
-render. The repository smoke packet example is
+plugin and verifies the digest before staging, npm build, the exact registered
+block identity, WPCS/PHPCS, Plugin Check, selector-scoped editor insertion, and
+frontend text. The reviewed assertion values are not inferred from generated
+prose. The repository smoke packet example is
 `examples/smoke-wordpress-v1.materializable-packet.md`; its first local proof is
 recorded at
 `evals/results/wordpress-skill-candidate-eval/generated-block-full-profile-20260620/`.
+That directory is historical evidence; rerun the command above on the current
+artifact before making a current runtime claim.
 
-For an Interactivity API generated-block proof, use
-`examples/interactivity-wordpress-v1.materializable-packet.md` and add
-`--interactivity-smoke` to the runtime command. The first local proof is
-recorded at
+`examples/interactivity-wordpress-v1.materializable-packet.md` remains a
+materializable static example. External generated-block Interactivity runtime
+mode is unsupported by the current isolated artifact path. The result at
 `evals/results/wordpress-skill-candidate-eval/generated-block-interactivity-full-profile-20260621/`;
-it verifies the compiled `viewScriptModule`, Interactivity API directives, and a
-frontend click that changes the rendered count from `0` to `1`.
+is historical built-in-fixture evidence only; it does not prove the current
+external packet's Interactivity behavior. The packet may use the standard bound
+build/editor/frontend command documented inside it, without an Interactivity
+claim.
 
-For a block deprecation generated-block proof, use
-`examples/deprecation-wordpress-v1.materializable-packet.md` and add
-`--deprecation-smoke` to the runtime command. The first local proof is recorded
-at
+`examples/deprecation-wordpress-v1.materializable-packet.md` likewise remains a
+materializable static example. External generated-block deprecation runtime
+mode is unsupported by the current isolated artifact path. The result at
 `evals/results/wordpress-skill-candidate-eval/generated-block-deprecation-full-profile-20260621/`;
-it creates a post from the legacy serialized fixture, verifies the migrated
-current-block attribute, saves current serialized markup, and checks frontend
-rendered text.
+is historical built-in-fixture evidence only and does not establish current
+external-packet migration behavior. The packet may prove only the standard
+bound build/editor/frontend profile until the isolated artifact adapter gains a
+fixture-owned deprecation contract.

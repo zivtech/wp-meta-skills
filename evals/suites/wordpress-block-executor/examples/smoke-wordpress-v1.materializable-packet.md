@@ -94,7 +94,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 ```
 
 ## Compatibility Notes
-This packet targets block API version 3 and WordPress 6.5 or newer. The generated tree is not a standalone plugin; runtime activation requires a host that calls `register_block_type()` with the block directory. The deterministic wp-env proof may synthesize that host as a disposable wrapper, but that wrapper is not part of the generated block artifact.
+This packet is designed for block API version 3 and WordPress 6.5 or newer; the static artifact oracle does not prove that compatibility floor, and a current-runtime pass does not substitute for a 6.5 matrix run. The generated tree is not a standalone plugin; runtime activation requires a host that calls `register_block_type()` with the block directory. The deterministic wp-env proof may synthesize that host as a disposable wrapper, but that wrapper is not part of the generated block artifact.
 
 ## Security Performance And Accessibility Notes
 The block has no user-supplied attributes, SQL, REST, AJAX, uploads, remote HTTP calls, or persistent options. Frontend output is dynamic and escaped with `esc_html__()` while wrapper attributes are constrained through `wp_kses_data( get_block_wrapper_attributes() )`. The visible text is plain text so the frontend smoke can assert both the `wp-block-acme-runtime-card` wrapper class and the rendered copy. The package uses `@wordpress/scripts` for the standard WordPress build path.
@@ -106,9 +106,37 @@ No deviations from the smoke spec. The packet intentionally omits a permanent pl
 - Run `python3 evals/harness/validate_wordpress_executor_packet.py --executor block --packet <candidate-output.md>` for the deterministic packet contract.
 - Run `python3 evals/harness/materialize_wordpress_executor_packet.py --executor block --packet <candidate-output.md> --out-dir <generated-block-dir> --overwrite` to materialize the block files.
 - Run `python3 evals/harness/certify_wordpress_executor_artifact.py --executor block --packet <candidate-output.md> --out-dir <generated-block-dir> --result-dir <result-dir> --overwrite` for the saved-packet artifact gate.
-- Run `npm run build` before claiming compiled asset readiness. This smoke artifact ships an `index.asset.php` file so the runtime oracle can run without a build step.
-- Run block validation, editor smoke, and frontend smoke. The live wp-env proof is `python3 evals/harness/run_wordpress_runtime_smoke.py --artifact-path <generated-block-dir> --artifact-kind block --editor-insert-render-smoke --write --run-id <run-id>`.
-- Use Playwright-backed editor smoke before claiming the block can be inserted and rendered from the editor.
+- Use the current direct-artifact runtime command below. It binds the exact pre-stage digest and evidence ID, requires the build plus provisioned strict full profile, and supplies the reviewed block name, selector, and visible text instead of inferring them from the artifact or packet prose.
+
+```bash
+artifact="<generated-block-dir>"
+digest="$(PYTHONPATH=evals/harness python3 - "$artifact" <<'PY'
+import sys
+from pathlib import Path
+from artifact_staging import digest_regular_tree
+print(digest_regular_tree(Path(sys.argv[1])))
+PY
+)"
+python3 evals/harness/run_wordpress_runtime_smoke.py \
+  --artifact-path "$artifact" \
+  --artifact-kind block \
+  --expected-artifact-digest "$digest" \
+  --evidence-id generated-runtime-card-full-profile-YYYYMMDD \
+  --block-build-smoke \
+  --block-name acme/runtime-card \
+  --editor-insert-render-smoke \
+  --expected-frontend-selector .wp-block-acme-runtime-card \
+  --expected-frontend-text "Runtime block smoke" \
+  --provision-full-profile \
+  --strict-full-profile \
+  --write \
+  --run-id generated-runtime-card-full-profile-YYYYMMDD \
+  --timeout-sec 300
+```
+
+- A green packet, materializer, or static artifact result is not runtime proof. Current runtime claims require the command above and its matching evidence record.
+- Inside the isolated command, `--block-build-smoke` runs the approved `npm run build`; the execution artifact then undergoes block validation against `block.json`, editor smoke that inserts/edits the block in wp-admin, and frontend smoke that renders the selector-scoped block on a page.
+- External generated-block Interactivity and deprecation modes are unsupported by the current isolated artifact path; historical built-in fixture results do not prove this packet.
 
 ## Critic Handoff
 Send the materialized files, certification output, and runtime smoke output to `wordpress-critic` for block architecture and release calibration, then to `wordpress-performance-critic` for build, editor, and frontend performance review.

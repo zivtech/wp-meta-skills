@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+import block_metadata_validator
+
 
 TEXT_SUFFIXES = {".php", ".js", ".jsx", ".ts", ".tsx", ".json", ".css", ".scss", ".md", ".txt", ".html"}
 IGNORED = {".git", "node_modules", "vendor", ".wp-env", "coverage", "dist", "build"}
@@ -129,21 +131,11 @@ def _plugin_ai(view: ArtifactSnapshotView) -> SnapshotCheck:
 
 
 def _block(view: ArtifactSnapshotView) -> list[SnapshotCheck]:
-    blocks = [entry for entry in view.files({".json"}) if entry.path.name == "block.json"]; errors = []
-    for entry in blocks:
-        try: data = json.loads(entry.text())
-        except json.JSONDecodeError as exc: errors.append(f"{entry.path} is invalid JSON: {exc}"); continue
-        if not isinstance(data, dict): errors.append(f"{entry.path} must contain a JSON object"); continue
-        missing = [key for key in ("name", "title", "category") if not data.get(key)]
-        if missing: errors.append(f"{entry.path} missing keys: {', '.join(missing)}")
-    metadata = _check("block_metadata", bool(blocks) and not errors, f"{len(blocks)} block.json file(s) parsed with required keys" if blocks and not errors else "; ".join(errors) or "no block.json file found")
-    scripts = False
-    package = next((entry for entry in view.entries if entry.path == PurePosixPath("package.json")), None)
-    if package is not None:
-        try: scripts = bool(json.loads(package.text()).get("scripts"))
-        except (json.JSONDecodeError, AttributeError): pass
-    registered = "register_block_type" in view.aggregate() or scripts
-    return [metadata, _check("block_registration", registered, "server registration or build scripts present" if registered else "no register_block_type call or package scripts found")]
+    files = {entry.path.as_posix(): entry.content for entry in view.entries}
+    return [
+        SnapshotCheck(check.id, check.status, check.detail)
+        for check in block_metadata_validator.validate_block_artifact(files)
+    ]
 
 
 def _theme(view: ArtifactSnapshotView) -> SnapshotCheck:

@@ -477,25 +477,413 @@ def _non_applicability(text: str) -> tuple[int, bool]:
     return len(statements), True
 
 
-def found_headings(text: str) -> set[str]:
-    headings = {match.group(1).strip() for match in MD_HEADING_RE.finditer(text)}
+def _leading_markdown_columns(line: str) -> int:
+    columns = 0
+    for character in line:
+        if character == " ":
+            columns += 1
+        elif character == "\t":
+            columns += 4 - (columns % 4)
+        else:
+            break
+    return columns
+
+
+def _strip_non_authoritative_markdown(text: str) -> str:
+    text = re.sub(
+        r"(?is)<(?P<tag>pre|script|style|textarea|template|code|xmp|iframe|"
+        r"noembed|noframes|plaintext)\b[^>]*>.*?(?:</(?P=tag)\s*>|$)",
+        lambda match: "\n" * match.group(0).count("\n"),
+        text,
+    )
+    text = re.sub(
+        r"(?s)<!--.*?(?:-->|$)",
+        lambda match: "\n" * match.group(0).count("\n"),
+        text,
+    )
+    for pattern in (
+        r"(?s)<!\[CDATA\[.*?(?:\]\]>|$)",
+        r"(?s)<\?.*?(?:\?>|$)",
+        r"(?s)<![A-Z].*?(?:>|$)",
+    ):
+        text = re.sub(
+            pattern,
+            lambda match: "\n" * match.group(0).count("\n"),
+            text,
+        )
+    output = []
+    fence_character = None
+    fence_length = 0
+    raw_html_block = False
+    for line in text.splitlines():
+        if raw_html_block:
+            if not line.strip():
+                raw_html_block = False
+            output.append("")
+            continue
+        if fence_character is not None:
+            closing = re.match(r"^ {0,3}(`+|~+)\s*$", line)
+            if (
+                closing
+                and closing.group(1)[0] == fence_character
+                and len(closing.group(1)) >= fence_length
+            ):
+                fence_character = None
+                fence_length = 0
+            output.append("")
+            continue
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(?:[^\n]*)$", line)
+        if opening:
+            fence_character = opening.group(1)[0]
+            fence_length = len(opening.group(1))
+            output.append("")
+        elif (
+            re.match(
+                r"(?i)^ {0,3}</?(?:address|article|aside|base|basefont|blockquote|"
+                r"body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|"
+                r"fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|"
+                r"header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|"
+                r"noframes|ol|optgroup|option|p|param|search|section|summary|table|"
+                r"tbody|td|tfoot|th|thead|title|tr|track|ul)(?:\s|/?>|$)",
+                line,
+            )
+            or re.match(
+                r"^ {0,3}<[A-Za-z][A-Za-z0-9-]*(?:\s+[^<>]*)?>",
+                line,
+            )
+            or re.search(
+                r"<[A-Za-z][A-Za-z0-9-]*(?:\s+[^<>]*)?>",
+                line,
+            )
+            or re.match(
+                r"^ {0,3}</?[A-Za-z][A-Za-z0-9-]*(?:\s+[^<>]*)?/?>\s*$",
+                line,
+            )
+        ):
+            raw_html_block = True
+            output.append("")
+        elif _leading_markdown_columns(line) >= 4:
+            output.append("")
+        else:
+            output.append(line)
+    return "\n".join(output)
+
+
+def _heading_names(text: str) -> list[str]:
+    text = _strip_non_authoritative_markdown(text)
+    headings = [match.group(1).strip() for match in MD_HEADING_RE.finditer(text)]
     for match in BOLD_HEADING_RE.finditer(text):
         heading = match.group(1).strip()
         if heading.upper().startswith("VERDICT:"):
-            headings.add("VERDICT")
+            headings.append("VERDICT")
         else:
-            headings.add(heading)
+            headings.append(heading)
     return headings
 
 
+def found_headings(text: str) -> set[str]:
+    return set(_heading_names(text))
+
+
+def markdown_sections(text: str) -> dict[str, str]:
+    """Return level-two Markdown sections without borrowing adjacent prose."""
+    text = _strip_non_authoritative_markdown(text)
+    matches = list(MD_HEADING_RE.finditer(text))
+    sections: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        sections.setdefault(match.group(1).strip(), text[match.end():end].strip())
+    return sections
+
+
+def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
+    normalized = _norm(text)
+    return any(_norm(term) in normalized for term in terms)
+
+
+NEGATED_DECISION_RE = re.compile(
+    r"\b(?:do not|does not|not (?:defined|planned|kept|run|used|required)|"
+    r"out of scope)\b",
+    re.IGNORECASE,
+)
+
+
+def _decision_value(section: str, label: str) -> str | None:
+    section = _strip_non_authoritative_markdown(section)
+    matches = list(re.finditer(
+        rf"(?im)^(?:\*\*)?{re.escape(label)}\s*:"
+        rf"(?:\*\*)?\s*(?P<value>\S.*?)\s*$",
+        section,
+    ))
+    return matches[0].group("value").strip() if len(matches) == 1 else None
+
+
+def _usable_decision(value: str | None, *, allow_none: bool = False) -> bool:
+    if not value or NEGATED_DECISION_RE.search(value):
+        return False
+    terminal = _norm(value)
+    return allow_none or terminal not in {"none", "missing", "undefined", "omitted"}
+
+
+def _decision_has(section: str, label: str, terms: tuple[str, ...]) -> bool:
+    value = _decision_value(section, label)
+    return _usable_decision(value) and _contains_any(value or "", terms)
+
+
+def _decision_exact(section: str, label: str, allowed: set[str]) -> bool:
+    value = _decision_value(section, label)
+    return bool(value and value.strip().lower() in allowed)
+
+
+def _literal_text_decision(section: str, label: str) -> str | None:
+    value = _decision_value(section, label)
+    if not value or not 1 <= len(value.encode("utf-8")) <= 2_000:
+        return None
+    if any(ord(character) < 32 for character in value) or re.search(r"[<>]", value):
+        return None
+    if value.strip().lower() in {"required", "none", "missing", "undefined", "skipped"}:
+        return None
+    return value
+
+
+SEMANTIC_ORACLE_FIELDS = frozenset({
+    "text", "href", "alt", "attributes", "media", "unsupported", "order",
+    "heading-level", "caption", "list-count", "freeform",
+})
+
+
+def _semantic_oracle_fields(section: str) -> frozenset[str]:
+    value = _decision_value(section, "Semantic oracle fields")
+    fields = [item.strip().lower() for item in (value or "").split(",")]
+    if len(fields) < 2 or len(fields) != len(set(fields)):
+        return frozenset()
+    if any(field not in SEMANTIC_ORACLE_FIELDS for field in fields):
+        return frozenset()
+    return frozenset(fields)
+
+
+def _fixture_identity(section: str) -> str | None:
+    value = _decision_value(section, "Fixture identity")
+    if value and re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", value):
+        return value
+    return None
+
+
+def _primary_serialization(scope: str) -> str | None:
+    value = _decision_value(scope, "Primary serialization")
+    normalized = value.lower() if value else None
+    return normalized if normalized in {"static", "dynamic", "hybrid"} else None
+
+
+def check_block_plan_contract(text: str) -> list[Check]:
+    """Require affirmative block decision records in their owning sections."""
+    sections = markdown_sections(text)
+    scope = sections.get("Block Scope", "")
+    metadata = sections.get("Metadata And Attribute Plan", "")
+    render = sections.get("Render And Interaction Plan", "")
+    compatibility = sections.get("Compatibility And Migration Plan", "")
+    strategy = sections.get("Test Strategy", "")
+
+    primary = _primary_serialization(scope)
+    identity = _decision_value(scope, "Block identity")
+    identity_ok = bool(identity and re.fullmatch(
+        r"[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*", identity
+    ))
+    checks = [Check(
+        "block_scope_contract",
+        bool(primary and identity_ok),
+        3,
+        f"Block Scope identifies {identity} with {primary} primary serialization"
+        if primary and identity_ok else "Block Scope needs `Block identity:` and `Primary serialization: static|dynamic|hybrid` records",
+    )]
+
+    metadata_file = _decision_value(metadata, "Metadata file")
+    attribute_ok = _decision_exact(metadata, "Attributes", {"none", "schema"})
+    saved_contract = _decision_exact(
+        metadata, "Saved markup", {"empty", "self-closing", "html", "parent-owned"}
+    )
+    metadata_ok = (
+        metadata_file == "block.json"
+        and attribute_ok
+        and saved_contract
+    )
+    checks.append(Check(
+        "block_metadata_attribute_contract",
+        metadata_ok,
+        3,
+        "block.json, attribute decision, and saved-markup contract are section-local"
+        if metadata_ok else "Metadata And Attribute Plan needs block.json, an attribute schema/no-attributes decision, and a saved-markup decision",
+    ))
+
+    render_surface = (_decision_value(render, "Render surface") or "").lower()
+    has_save = render_surface in {"save()", "save()+render.php", "save()+render_callback"}
+    has_render = render_surface in {
+        "render.php", "render_callback", "save()+render.php", "save()+render_callback",
+    }
+    if primary == "hybrid":
+        render_shape = has_save and has_render
+    elif primary == "dynamic":
+        render_shape = has_render
+    elif primary == "static":
+        render_shape = has_save
+    else:
+        # Classification ownership belongs to block_scope_contract. Keep this
+        # gate mutation-specific by checking only that a render surface exists.
+        render_shape = has_save or has_render
+    failure_behavior = _decision_exact(
+        render,
+        "Failure behavior",
+        {"return-empty", "fallback", "recover", "throw", "error-object", "log-and-return-empty"},
+    )
+    checks.append(Check(
+        "block_render_contract",
+        render_shape and failure_behavior,
+        3,
+        "render surface matches the classification and names failure behavior"
+        if render_shape and failure_behavior else "Render And Interaction Plan lacks classification-matched save/render surfaces or failure behavior",
+    ))
+
+    compatibility_decision = _decision_exact(
+        compatibility,
+        "Compatibility decision",
+        {"new-contract", "unchanged", "deprecate", "migrate", "transform", "accept-breakage"},
+    )
+    compatibility_fixture = _decision_exact(
+        compatibility, "Saved-content fixture", {"required"}
+    )
+    checks.append(Check(
+        "block_compatibility_contract",
+        compatibility_decision and compatibility_fixture,
+        3,
+        "compatibility decision and saved-content fixture are explicit"
+        if compatibility_decision and compatibility_fixture else "Compatibility And Migration Plan needs a deprecation/no-change decision and a saved-content fixture",
+    ))
+
+    expected_selector = f".wp-block-{identity.replace('/', '-')}" if identity_ok else None
+    editor = all((
+        _decision_exact(strategy, "Editor oracle", {"required"}),
+        _decision_exact(
+            strategy, "Editor oracle method", {"playwright-insert-save-reload"}
+        ),
+        _decision_value(strategy, "Editor oracle block") == identity,
+    ))
+    frontend = all((
+        _decision_exact(strategy, "Frontend oracle", {"required"}),
+        _decision_exact(
+            strategy, "Frontend oracle method", {"playwright-selector-visible-text"}
+        ),
+        _decision_value(strategy, "Frontend oracle selector") == expected_selector,
+        _literal_text_decision(strategy, "Frontend expected text") is not None,
+    ))
+    checks.append(Check(
+        "block_editor_frontend_contract",
+        editor and frontend,
+        3,
+        "separate editor and frontend oracles are present in Test Strategy"
+        if editor and frontend else "Test Strategy must name separate editor and frontend smoke oracles",
+    ))
+    return checks
+
+
+def _claims_gutenberg_migration(sections: dict[str, str]) -> bool:
+    scope = sections.get("Migration Scope", "")
+    target = sections.get("Target Mapping", "")
+    transform = sections.get("Transform And Execution Plan", "")
+    validation = sections.get("Validation Plan", "")
+    affirmative_scope = bool(re.search(
+        r"(?im)(?:^|[.;]\s*|\n\s*|\b(?:will|must|should|shall|plans?\s+to)\s+)"
+        r"(?:migrat(?:e|es)|convert(?:s)?|transform(?:s)?|import(?:s)?|map(?:s)?|writ(?:e|es))\b"
+        r"[^.;\n]{0,160}\b(?:to|into|as)\s+(?:the\s+)?(?:gutenberg|block editor)\b",
+        scope,
+    ))
+    return (
+        affirmative_scope
+        or _decision_exact(target, "Gutenberg target", {"post_content"})
+        or _decision_exact(target, "Block mapping", {"core-only", "custom-only", "core+custom"})
+        or _decision_exact(transform, "Serialization API", {"serialize_blocks"})
+        or _decision_exact(validation, "Block validation oracle", {"parse_blocks"})
+    )
+
+
+def check_gutenberg_migration_contract(text: str) -> list[Check]:
+    """Apply the migration-to-block contract only when the plan claims that lane."""
+    sections = markdown_sections(text)
+    if not _claims_gutenberg_migration(sections):
+        return [Check(
+            "gutenberg_migration_scope",
+            True,
+            1,
+            "plan does not affirmatively claim a Gutenberg/block transformation",
+        )]
+    target = sections.get("Target Mapping", "")
+    transform = sections.get("Transform And Execution Plan", "")
+    validation = sections.get("Validation Plan", "")
+    test_strategy = sections.get("Test Strategy", "")
+
+    mapping_ok = all((
+        _decision_exact(target, "Gutenberg target", {"post_content"}),
+        _decision_exact(target, "Block mapping", {"core-only", "custom-only", "core+custom"}),
+        _decision_exact(target, "Unsupported content", {"accounted"}),
+    ))
+    transform_ok = all((
+        _decision_exact(transform, "Serialization API", {"serialize_blocks"}),
+        _decision_exact(transform, "Rerun policy", {"idempotent"}),
+    ))
+    validation_ok = all((
+        _decision_exact(validation, "Block validation oracle", {"parse_blocks"}),
+        _decision_exact(validation, "Semantic oracle", {"required"}),
+        bool(_semantic_oracle_fields(validation)),
+        _decision_exact(validation, "Editor oracle", {"required"}),
+        _decision_exact(
+            validation,
+            "Editor oracle method",
+            {"playwright-clone-save-reload-restore"},
+        ),
+        _decision_exact(validation, "Frontend oracle", {"required"}),
+        _decision_exact(
+            validation,
+            "Frontend oracle method",
+            {"playwright-selector-visible-text"},
+        ),
+        _decision_exact(test_strategy, "Fixture", {"required"}),
+        _fixture_identity(test_strategy) is not None,
+    ))
+    return [
+        Check(
+            "gutenberg_migration_mapping_contract", mapping_ok, 3,
+            "post_content mapping and unsupported-content accounting are explicit"
+            if mapping_ok else "Target Mapping needs post_content, block mapping, and unsupported-content accounting",
+        ),
+        Check(
+            "gutenberg_migration_serialization_contract", transform_ok, 3,
+            "serialization and rerun/idempotence are explicit"
+            if transform_ok else "Transform And Execution Plan needs serialization and rerun/idempotence decisions",
+        ),
+        Check(
+            "gutenberg_migration_oracle_contract", validation_ok, 4,
+            "block, semantic, editor, frontend, and fixture oracles are explicit"
+            if validation_ok else "Validation/Test Strategy needs block, semantic, editor, frontend, and fixture oracles",
+        ),
+    ]
+
+
 def check_headings(text: str, contract: dict[str, Any]) -> Check:
-    found = found_headings(text)
+    names = _heading_names(text)
+    found = set(names)
     missing = [heading for heading in contract["headings"] if heading not in found]
+    duplicates = [
+        heading for heading in contract["headings"] if names.count(heading) > 1
+    ]
     return Check(
         "required_output_headings",
-        not missing,
+        not missing and not duplicates,
         4,
-        "all required headings present" if not missing else f"missing headings: {', '.join(missing)}",
+        "all required headings present exactly once"
+        if not missing and not duplicates
+        else "; ".join(filter(None, (
+            f"missing headings: {', '.join(missing)}" if missing else "",
+            f"duplicate headings: {', '.join(duplicates)}" if duplicates else "",
+        ))),
     )
 
 
@@ -739,17 +1127,22 @@ def validate_output(skill: str, text: str, security_gate: dict[str, Any] | None 
     if skill not in CONTRACTS:
         raise KeyError(f"unknown WordPress skill: {requested_skill}")
     contract = CONTRACTS[skill]
+    authoritative = _strip_non_authoritative_markdown(text)
     checks = [
-        check_headings(text, contract),
-        check_verdict(text, contract),
-        check_exact_surfaces(text, contract),
-        check_verification_specificity(text),
-        check_negative_space(text),
+        check_headings(authoritative, contract),
+        check_verdict(authoritative, contract),
+        check_exact_surfaces(authoritative, contract),
+        check_verification_specificity(authoritative),
+        check_negative_space(authoritative),
         check_no_placeholders(text),
-        check_no_generic_labels(text),
+        check_no_generic_labels(authoritative),
     ]
+    if skill == "wordpress-block-planner":
+        checks.extend(check_block_plan_contract(authoritative))
+    if skill == "wordpress-migration-planner":
+        checks.extend(check_gutenberg_migration_contract(authoritative))
     if skill == "wordpress-security-critic" and security_gate is not None:
-        checks.append(check_security_gate_consumption(text, security_gate))
+        checks.append(check_security_gate_consumption(authoritative, security_gate))
     total = sum(check.weight for check in checks)
     earned = sum(check.weight for check in checks if check.passed)
     return {

@@ -1,6 +1,6 @@
 # WordPress Runtime Oracle Runbook
 
-Updated: 2026-07-15.
+Updated: 2026-07-16.
 
 The WordPress executor evidence stack has three deterministic layers before any LLM judge or critic review:
 
@@ -338,6 +338,10 @@ certify the block packet, then pass the generated block directory with
 name, frontend selector, expected text, evidence ID, and pre-stage artifact
 digest; none is inferred:
 
+The supplied artifact path must be canonical and contain no symlink component.
+On macOS, use `/private/tmp/...` rather than the `/tmp` symlink. A path-boundary
+rejection occurs before WordPress and is not a block failure.
+
 ```bash
 python3 evals/harness/certify_wordpress_executor_artifact.py \
   --executor block \
@@ -385,6 +389,18 @@ run and pass. The first local proofs are recorded at
 `evals/results/wordpress-skill-candidate-eval/generated-block-artifact-cert-20260620/`
 and
 `evals/results/wordpress-skill-candidate-eval/generated-block-full-profile-20260620/`.
+
+The pre-build static block contract is intentionally narrower than runtime
+registration proof. It parses at most 128 `block.json` files and 8 MiB of block
+metadata, requires unique valid block names and resolved `file:` edges, and
+labels non-`file:` asset values as external handle/module IDs whose registration
+is not statically proven. Direct PHP registration evidence is a bounded lexical
+candidate only; runtime `WP_Block_Type_Registry` is authoritative. The admitted
+package entrypoint grammar is `wp-scripts build`, safe positional paths,
+`--source-path=...`, `--output-path=...`, and the pinned boolean options
+`--experimental-modules`, `--webpack-copy-php`, `--webpack-no-externals`,
+`--blocks-manifest`, and `--webpack-bundle-analyzer`. Unknown options, control
+characters, shell operators, traversal, and help/version commands fail.
 
 External generated-block Interactivity and deprecation runtime modes are not
 supported by the isolated artifact path. The historical built-in fixture modes
@@ -507,10 +523,12 @@ browser smoke require Blueprint-specific landing and expected-text inputs; the
 repair loop does not infer them from generated prose and does not silently
 downgrade Blueprint runtime to static.
 
-At this checkpoint, no tracked block-executor fixture metadata declares the
-optional `runtime_assertions` mapping. The block-runtime adapter and hosted
-model-free fixture prove the capability, but current repair fixtures remain
-ineligible and are rejected before a run directory or provider call.
+The tracked `wordpress-block-executor/smoke-wordpress-v1` fixture now declares
+the reviewed `runtime_assertions` mapping for `acme/runtime-card`,
+`.wp-block-acme-runtime-card`, and `Runtime block smoke`. That exact fixture is
+eligible for the conditional block-runtime adapter. Other block fixtures remain
+ineligible unless their own reviewed metadata supplies all three assertion
+values; the adapter never borrows or infers them.
 
 Repair certification is fail closed. Each repair run atomically leases its
 `evals/results/<run-id>` directory and refuses an existing run ID. Every

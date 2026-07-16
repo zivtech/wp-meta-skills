@@ -4,8 +4,26 @@ skill_under_test: wordpress-planner.block
 skill_type: planner
 difficulty_tier: smoke
 provenance: synthetic
-expected_behavior:
-  - Uses the required output contract
-  - Applies WordPress-native gates
-  - Separates evidence from assumptions
-  - Provides specific verification or review handoff
+risk_class: custom_block_contract_routing
+expected_wordpress_apis:
+  - "block.json"
+  - "register_block_type"
+  - "render.php"
+  - "get_block_wrapper_attributes"
+  - "esc_html__"
+expected_verification_surfaces:
+  - "@wordpress/scripts build"
+  - "WP_Block_Type_Registry"
+  - "editor insertion and save"
+  - ".wp-block-acme-runtime-card"
+  - "Runtime block smoke"
+must_detect:
+  - "dynamic block with save returning null"
+  - "no V1 attributes"
+  - "new saved-content contract needs no V1 deprecated version"
+  - "static acceptance is not runtime proof"
+  - "migration transformation is out of block-planner scope"
+negative_space:
+  - "does not generate imported post_content"
+  - "does not replace a repository-owned migration"
+  - "does not claim runtime success or benchmark superiority"

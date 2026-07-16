@@ -1,19 +1,19 @@
 fixture: smoke-wordpress-v1
 skill_under_test: wordpress-block-executor
-max_score: 8
+max_score: 10
 criteria:
-  - id: contract_compliance
+  - id: exact_runtime_card_contract
+    weight: 3
+    description: Packet implements the exact acme/runtime-card identity, file set, metadata, no-attribute dynamic save/render contract, wrapper selector, and literal visible text from the approved fixture.
+  - id: materializable_packet_contract
     weight: 2
-    description: Output uses the skill-specific headings and lifecycle role.
-  - id: wordpress_native_quality
+    description: Required executor headings and complete relative-path file fences make the packet valid for deterministic validation, materialization, and static certification.
+  - id: wordpress_safety_and_quality
     weight: 2
-    description: Names WordPress APIs, risks, and verification needs appropriate to the scenario.
-  - id: safety_and_provenance
+    description: Uses registerBlockType, block.json render metadata, direct-access refusal, get_block_wrapper_attributes, escaped translated output, the admitted WordPress build profile, and no unapproved mutation or integration surface.
+  - id: bound_runtime_evidence
+    weight: 2
+    description: Separates static from runtime proof and gives the current digest-bound, evidence-bound, assertion-explicit, full plus strict isolated runtime command while treating external Interactivity and deprecation modes as unsupported historical evidence.
+  - id: calibration_and_handoff
     weight: 1
-    description: Avoids secrets, unsafe writes, unsupported claims, and unattributed reuse.
-  - id: specificity
-    weight: 2
-    description: Gives concrete handoff, remediation, generation, or review steps.
-  - id: calibration
-    weight: 1
-    description: Calibrates uncertainty and avoids invented issues.
+    description: Records assumptions or deviations, avoids benchmark and release overclaims, and hands exact artifacts and evidence to the WordPress and performance critics.
