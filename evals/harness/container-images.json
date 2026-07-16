@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "verified_at": "2026-07-15",
+  "images": {
+    "node": {"tag":"node:22-bookworm-slim","index":"sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3","amd64":"sha256:8607a9064d4a571140998ae9e52a3b3fcf9cff361d04642d5971e6cd76d39e27","arm64":"sha256:ef03a3d0e663b3c9d38c95be3fd31a100514d41df2599562b68a58a57f979adf","license":"MIT","purpose":"generated npm commands"},
+    "composer": {"tag":"composer:2.8","index":"sha256:5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c","amd64":"sha256:0d264a0f1e5be23ba363447768df7b30c33d542711ea12e37770ed7b13bf4eaa","arm64":"sha256:cc2fd435c5dd57485421bc19c3e9226c29417f8065c00dcef2b2e361090f3c2f","license":"MIT","purpose":"generated Composer commands"},
+    "python": {"tag":"python:3.13-slim-bookworm","index":"sha256:9d7f287598e1a5a978c015ee176d8216435aaf335ed69ac3c38dd1bbb10e8d64","amd64":"sha256:dd86541a59b252667f4c12f8b2ee17216de37dd65ac773bf097bef996fa78860","arm64":"sha256:56249d7a2f93306106f6d8bcdf6423afb73c1b747d874febcc778beee25cb8bb","license":"PSF-2.0","purpose":"trusted proxy"},
+    "playwright": {"tag":"mcr.microsoft.com/playwright:v1.58.0-noble","index":"sha256:35c7d48b4ccaf3aca5018f5f1bf7f50c7da7d61d176c530741f4f2e9ca336c34","amd64":"sha256:e3dca7b3c921ce1ebf45a50a6ac77982532c987e5926eb06535b5f56b363b94f","arm64":"sha256:a77fdf84adbfc1f42cc07c5ef38e6efeb495d91f35022ec41b0f7f85545e81e9","license":"Apache-2.0","purpose":"isolated browser"},
+    "wordpress": {"tag":"wordpress:7.0.1-php8.3-apache","index":"sha256:cc795f5862b2f3891a805106917089558eef28a56755bd8ac8308d1ab57b28d7","amd64":"sha256:8ac9547ff6da02ddd1d477b1e1e79fbe60af92d86af2d6ae043be3764d958f16","arm64":"sha256:e5260abaf84e9d4bae56adf1f54ab0b6228ae067f7e8c1f46896ecf0beb1150a","license":"GPL-2.0-or-later","purpose":"WordPress runtime"},
+    "wordpress_cli": {"tag":"wordpress:cli-2.12.0-php8.3","index":"sha256:f8aeb68164c6a04f5dcc91da30d8ffa096b0f7fafb7a65f144c2dd62587caca0","amd64":"sha256:0587fa20d1fce7880f4137ece2154c92ec948dab920f8d6ca3559a50c354efe8","arm64":"sha256:846f447063dcc0e6e8e997514cb5272578ffa67dacac7ecea906ec1cad11f87d","license":"GPL-2.0-or-later","purpose":"WP-CLI source"},
+    "database": {"tag":"mariadb:11.8.5","index":"sha256:345fa26d595e8c7fe298e0c4098ed400356f502458769c8902229b3437d6da2b","amd64":"sha256:3a730f41f00d261df28a0bc1bc2845f9c0901c2e2f05e5005c7713cc43ebc1fe","arm64":"sha256:4ab5d5e770624a5fcaa5894208576ed5088f12482c1cce9b3ab419416a4b2c3c","license":"GPL-2.0-only","purpose":"seeded database"}
+  },
+  "wordpress_core":{"version":"7.0.1","url":"https://wordpress.org/wordpress-7.0.1.tar.gz","sha256":"dc10592da9b580c7525632850e0cced371b13081853ac29afe93b5d5bb00db98"},
+  "plugin_check":{"version":"2.0.0","url":"https://downloads.wordpress.org/plugin/plugin-check.2.0.0.zip","sha256":"d744ee1f93866527aedf7d0a73df40bd87018f02cd5465fa39230bf4c2b3a3fa","license":"GPL-2.0-or-later"},
+  "wp_cli_binary":{"version":"2.12.0","source":"https://github.com/wp-cli/wp-cli/releases/download/v2.12.0/wp-cli-2.12.0.phar","sha256":"ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c"},
+  "build_inputs": {
+    "runtime-images/wordpress/Dockerfile":"3263a8fa4e39434dfd681e9a3150f59257205489d68ed5f11cd85e61801c157c",
+    "runtime-images/wordpress/entrypoint.sh":"ffe844571f89bf8189dfc9d9aac7a0b7e4498e61c8b4e76e1c79ba5d834d2262",
+    "runtime-images/database/Dockerfile":"5cb0389069587863b53fb72ee1200ba2bfd042ba87902f834c2a8b3a78567de6",
+    "runtime-images/database/entrypoint.sh":"b4c411091e27d9272215eebd4cd66b8f797c5ba77dbb84569025c35af39193da",
+    "runtime-images/browser/Dockerfile":"dcf6455d0d9c6a99bd36df55430afa9ea56b17fa6987cbb869001841b2dab35f",
+    "runtime-images/browser/browser-policy.js":"dd921e3f43ad28af25931f2e5f47d2a5bf576a77c44802acffb9134735c40ca2",
+    "runtime-images/browser/gateway-policy.js":"eae600e11050979e14e7acdde769defd53cab1ee5be7a2385c0a36501020f97f",
+    "runtime-images/browser/request-policy.js":"068b0daa6235b17eceaa96037c2487b39a482a85d732c65c5669f92d8e4a186a",
+    "runtime-images/browser/package.json":"7f042cf3f2f762348f245ffdc6a643b9cd9b35fa44e90cad9574bd45c4872a9f",
+    "runtime-images/browser/package-lock.json":"6a426213612fe1ed9a6914c39cc5106b721d0ca21bbd301517c23ffd8d8dabb1"
+  }
+}

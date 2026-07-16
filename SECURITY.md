@@ -30,16 +30,21 @@ report. Use redacted snippets and reproduction steps.
 ## Validation Expectations
 
 Run the standalone package validation bundle before release-facing changes.
-The optional first command installs the pinned PHP toolchain for the
-API-existence lint; without it, lint-dependent tests skip and the lint gate
-reports `blocked` (honest evidence, never a pass):
+Python 3.13.9 and uv 0.9.27 are exact bootstrap prerequisites. The Composer
+command installs the pinned PHP toolchain for the real API and security gates;
+without it, tool-dependent checks skip or report `blocked` (honest evidence,
+never a pass):
 
 ```bash
-composer install --working-dir evals/harness/php-tools  # optional, needs PHP >= 8.1
+uv lock --check
+uv sync --locked --extra test
+composer install --no-interaction --no-progress --no-scripts --no-plugins \
+  --prefer-dist --working-dir evals/harness/php-tools
 ./install.sh --verify
-python3 scripts/validate-agent-frontmatter.py
-python3 scripts/validate-wordpress-exact-api-contract.py
-python3 scripts/validate-eval-suite-integrity.py \
+uv run --locked --extra test python scripts/validate-distribution-parity.py
+uv run --locked --extra test python scripts/validate-agent-frontmatter.py
+uv run --locked --extra test python scripts/validate-wordpress-exact-api-contract.py
+uv run --locked --extra test python scripts/validate-eval-suite-integrity.py \
   --strict-suites wordpress-plugin-executor \
   --strict-suites wordpress-block-executor \
   --strict-suites wordpress-security-critic \
@@ -48,25 +53,47 @@ python3 scripts/validate-eval-suite-integrity.py \
   --strict-suites wordpress-blueprint-executor \
   --strict-suites wordpress-skill-candidate-eval \
   --allow-known-gaps
-python3 -m pytest \
-  evals/harness/tests/test_invoke_claude_command.py \
-  evals/harness/tests/test_wordpress_runtime_smoke.py \
-  evals/harness/tests/test_wordpress_artifact_oracle.py \
-  evals/harness/tests/test_wordpress_blueprint_launch_readiness.py \
-  evals/harness/tests/test_wordpress_executor_packet_oracle.py \
-  evals/harness/tests/test_wordpress_exact_api_contract.py \
-  evals/harness/tests/test_wordpress_executor_artifact_certifier.py \
-  evals/harness/tests/test_wordpress_packet_materializer.py \
-  evals/harness/tests/test_wordpress_high_risk_answer_keys.py \
-  evals/harness/tests/test_wordpress_high_risk_saved_outputs.py \
-  evals/harness/tests/test_wordpress_skill_output_contract.py \
-  evals/harness/tests/test_answer_key_score.py \
-  evals/harness/tests/test_pairwise_pilot.py \
-  evals/harness/tests/test_wordpress_candidate_pilot_generation.py \
-  evals/harness/tests/test_wp_api_lint.py \
-  evals/harness/tests/test_wp_security_gate.py \
-  -q
+uv run --locked --extra test python scripts/validate-public-docs.py
+uv run --locked --extra test python -m pytest \
+  -m "not docker_boundary and not live_provider" evals/harness/tests -q
+uv run --locked --extra test python -m pytest \
+  -m "docker_boundary and docker_sandbox and not live_provider" evals/harness/tests -q
+uv run --locked --extra test python -m pytest \
+  -m "docker_boundary and docker_generated_runtime and not live_provider" evals/harness/tests -q
 ```
+
+The two Docker commands require the reviewed Linux Docker boundary and run in
+separate no-secrets jobs. They are not host-Docker substitutes for one another.
+The `live_provider` marker requires explicit operator authorization and is not
+run in ordinary CI.
+
+`uv.lock` is the canonical Python validation resolution. The committed
+`requirements-validation.txt` is only a hash-pinned fallback when uv bootstrap
+is unavailable:
+
+```bash
+validation_venv="$(mktemp -d "${TMPDIR:-/tmp}/wp-meta-skills-validation.XXXXXX")"
+trap 'rm -rf "$validation_venv"' EXIT
+python3.13 -m venv "$validation_venv"
+"$validation_venv/bin/python" -m pip install --require-hashes \
+  -r requirements-validation.txt
+"$validation_venv/bin/python" -m pytest \
+  -m "not docker_boundary and not live_provider" evals/harness/tests -q
+```
+
+Dependency updates require `uv lock --python 3.13.9` followed by a reviewed,
+byte-identical export:
+
+```bash
+uv export --locked --extra test --no-emit-project --format requirements-txt \
+  --output-file requirements-validation.txt
+```
+
+The parity command is local and network-free. It compares the five published
+skill/agent/index surfaces, while the deterministic 57-file manifest binds
+their exact bytes. Manifest verification fails closed when a listed surface is
+missing, changed, symlinked, or not a regular file; it does not authenticate a
+release or replace review of the prompt contracts.
 
 ## Non-Claims
 
@@ -74,3 +101,5 @@ Passing this validation bundle does not prove generated WordPress artifacts are
 production-ready, broadly integrated, credentialed against third-party AI
 providers, or secure in every deployment context. It proves only the explicit
 contracts and oracle gates named by the relevant test or runtime smoke.
+The Python lock does not lock Composer, Node, Docker, wp-env, browsers,
+provider SDKs, provider models, or operator-only optimization environments.

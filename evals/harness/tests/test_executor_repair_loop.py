@@ -8,12 +8,18 @@ Run: python3 evals/harness/tests/test_executor_repair_loop.py  (or via pytest)
 from __future__ import annotations
 
 import sys
+import json
+import copy
 from pathlib import Path
+
+import pytest
 
 HARNESS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HARNESS))
 
 import run_executor_repair_loop as loop  # noqa: E402
+import isolated_runtime_contract  # noqa: E402
+from wp_runtime_types import BlockRuntimeAssertion  # noqa: E402
 
 
 def _stub_generate(record):
@@ -124,6 +130,307 @@ def test_checks_with_status_normalises_passed_and_status():
     assert got == {"a": "pass", "b": "fail", "c": "fail"}
 
 
+def test_load_json_object_accepts_only_object(tmp_path):
+    result = tmp_path / "result.json"
+    result.write_text('{"status":"pass"}', encoding="utf-8")
+    assert loop._load_json_object(result) == {"status": "pass"}
+    result.write_text('[]', encoding="utf-8")
+    assert loop._load_json_object(result) is None
+
+
+def test_load_json_object_rejects_missing_empty_and_malformed(tmp_path):
+    result = tmp_path / "result.json"
+    assert loop._load_json_object(result) is None
+    result.write_text('', encoding="utf-8")
+    assert loop._load_json_object(result) is None
+    result.write_text('{', encoding="utf-8")
+    assert loop._load_json_object(result) is None
+
+
+def test_stage_failure_preserves_fail_and_blocked_gates():
+    result = loop._stage_failure("runtime_status", "blocked", [
+        {"id": "plugin_check", "status": "fail", "detail": "ERROR broken"},
+        {"id": "wp_env_smoke", "status": "blocked", "detail": "tool missing"},
+        {"id": "other", "status": "pass", "detail": "ok"},
+    ])
+    assert result["failing_gates"] == ["runtime_status"]
+    assert result["gate_vector"] == {"runtime_status": {"status": "fail", "checks": [
+        {"id": "plugin_check", "status": "fail"}, {"id": "wp_env_smoke", "status": "blocked"}
+    ]}}
+    assert "plugin_check" in result["failures"] and "wp_env_smoke" in result["failures"]
+    assert "other" not in result["failures"]
+
+
+def test_stage_failure_names_command_return_code():
+    result = loop._stage_failure("runtime_command", "return code 2")
+    assert result["failing_gates"] == ["runtime_command"]
+    assert "return code 2" in result["failures"]
+
+
+def test_stage_failure_sanitizes_and_bounds_subordinate_diagnostics():
+    checks = [{"id": "bad id/../../", "status": "blocked",
+               "detail": "ERROR /private/client/file.php token=supersecret " + "x" * 2000} for _ in range(40)]
+    result = loop._stage_failure("runtime_status", "blocked", checks)
+    assert result["failing_gates"] == ["runtime_status"]
+    assert "supersecret" not in result["failures"]
+    assert "/private/client" not in result["failures"]
+    assert "bad_id_.._.._" in result["failures"]
+    assert len(result["failures"].encode()) <= 12_100
+
+
+def test_contradictory_enclosing_pass_cannot_hide_blocked_or_failed_checks():
+    checks = [{"id": "ok", "status": "pass"}, {"id": "blocked", "status": "blocked"},
+              {"id": "failed", "status": "fail"}]
+    assert loop._nonpassing_check_ids(checks) == ["blocked", "failed"]
+
+
+def test_repair_runtime_contract_rejects_legacy_profile_without_isolated_oracles():
+    data = {
+            "schema_version": 1, "run_id": "run", "evidence_id": "evidence",
+            "artifact_kind": "plugin", "input_artifact_digest": "a" * 64,
+            "runtime_profile_id": isolated_runtime_contract.STANDARD_PROFILE,
+            "runtime_pre_command_manifest_digest": "b" * 64,
+        "post_command_manifest_digest": "b" * 64,
+        "status": "pass", "pass": True,
+        "full_plugin_runtime_profile": {"status": "pass", "checks": [
+            {"id": "plugin_check", "status": "pass"},
+            {"id": "wp_env_smoke", "status": "pass"},
+        ]},
+        "checks": [],
+    }
+    errors = isolated_runtime_contract.persisted_runtime_errors(
+        data, run_id="run", evidence_id="evidence",
+        artifact_kind="plugin", input_digest="a" * 64,
+        expected_profile=isolated_runtime_contract.STANDARD_PROFILE,
+    )
+    assert {
+        "wp_cli_activation did not pass", "plugin_check did not pass",
+        "container_browser did not pass", "runtime_identity did not pass",
+        "runtime check timing evidence invalid", "full plugin runtime profile did not pass",
+        "runtime topology inspection inventory mismatch", "runtime cleanup inventory mismatch",
+        "artifact retention cleanup did not converge", "sandbox posture did not pass",
+        "strict full profile was not requested",
+    } <= set(errors)
+
+
+def test_repair_runtime_command_uses_exact_isolated_contract_only(tmp_path):
+    adapter = loop.runtime_adapter("plugin", "runtime")
+    command = loop._isolated_runtime_command(
+        adapter, tmp_path / "plugin", tmp_path / "results", "run", "evidence",
+        "a" * 64, 300,
+    )
+    assert "--provision-full-profile" in command and "--strict-full-profile" in command
+    assert command[command.index("--evidence-id") + 1] == "evidence"
+    assert command[command.index("--expected-artifact-digest") + 1] == "a" * 64
+    assert command[command.index("--results-root") + 1] == str(tmp_path / "results")
+
+
+def test_runtime_parent_preserves_child_cleanup_budget(monkeypatch):
+    timeout = 300
+    expected = (timeout * 2) + 180 + 30
+    observed = []
+
+    def expire(_command, **kwargs):
+        observed.append(kwargs["timeout"])
+        raise loop.subprocess.TimeoutExpired(["runtime"], kwargs["timeout"])
+
+    monkeypatch.setattr(loop.subprocess, "run", expire)
+    process, detail = loop._run_isolated_runtime_process(["runtime"], timeout)
+    assert process is None and observed == [expected]
+    assert str(expected) in detail and "cleanup" in detail
+
+
+def _block_assertion():
+    return BlockRuntimeAssertion(
+        "acme/runtime-card", ".wp-block-acme-runtime-card", "Exact runtime card text"
+    )
+
+
+def test_executor_profile_matrix_is_exact_and_immutable():
+    assert loop.EXECUTOR_PROFILE_MATRIX == {
+        "plugin": {"static": "supported", "runtime": "supported"},
+        "block": {"static": "supported", "runtime": "conditional"},
+        "blueprint": {"static": "supported", "runtime": "rejected"},
+    }
+    with pytest.raises(TypeError):
+        loop.EXECUTOR_PROFILE_MATRIX["plugin"] = {}
+
+
+@pytest.mark.parametrize(
+    ("executor", "profile", "assertion"),
+    (
+        ("plugin", "static", None), ("plugin", "runtime", None),
+        ("block", "static", None), ("block", "runtime", _block_assertion()),
+        ("blueprint", "static", None),
+    ),
+)
+def test_supported_matrix_combinations(executor, profile, assertion):
+    assert loop.validate_compatibility(executor, profile, assertion) is assertion
+
+
+def test_conditional_and_rejected_runtime_are_direct_api_errors(tmp_path):
+    with pytest.raises(ValueError, match="assertion"):
+        loop.validate_compatibility("block", "runtime", None)
+    with pytest.raises(ValueError, match="Blueprint runtime"):
+        loop.validate_compatibility("blueprint", "runtime", None)
+    with pytest.raises(ValueError, match="Blueprint runtime"):
+        loop.make_certify("wordpress-blueprint-executor", "blueprint", tmp_path,
+                          "runtime", 60)
+
+
+def test_blueprint_runtime_cli_rejects_before_any_side_effect(monkeypatch):
+    monkeypatch.setattr(
+        loop, "create_named", lambda *_args, **_kwargs: pytest.fail("run directory created")
+    )
+    monkeypatch.setattr(
+        loop, "make_generate", lambda *_args, **_kwargs: pytest.fail("provider preflight reached")
+    )
+    with pytest.raises(SystemExit) as raised:
+        loop.main([
+            "--suite", "wordpress-blueprint-executor", "--fixture", "smoke-wordpress-v1",
+            "--executor", "blueprint", "--profile", "runtime", "--run-id", "rejected",
+        ])
+    assert raised.value.code == 2
+
+
+def test_block_runtime_cli_loads_assertions_before_run_directory(monkeypatch, tmp_path):
+    fixtures = tmp_path / "wordpress-block-executor" / "fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / "card.md").write_text("card", encoding="utf-8")
+    (fixtures / "card.metadata.yaml").write_text(
+        "name: card\nsuite: wordpress-block-executor\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(loop.invoke, "SUITES_ROOT", tmp_path)
+    monkeypatch.setattr(
+        loop, "create_named", lambda *_args, **_kwargs: pytest.fail("run directory created")
+    )
+    with pytest.raises(SystemExit) as raised:
+        loop.main([
+            "--suite", "wordpress-block-executor", "--fixture", "card",
+            "--executor", "block", "--profile", "runtime", "--run-id", "rejected",
+        ])
+    assert raised.value.code == 2
+
+
+def test_block_runtime_command_uses_named_adapter_and_exact_assertions(tmp_path):
+    assertion = _block_assertion()
+    adapter = loop.runtime_adapter("block", "runtime", assertion)
+    command = loop._isolated_runtime_command(
+        adapter, tmp_path / "block", tmp_path / "results", "run", "evidence",
+        "a" * 64, 300, assertion,
+    )
+    assert command[command.index("--artifact-kind") + 1] == "block"
+    assert "--block-build-smoke" in command
+    assert "--editor-insert-render-smoke" in command
+    assert command[command.index("--block-name") + 1] == assertion.block_name
+    assert command[command.index("--expected-frontend-selector") + 1] == assertion.frontend_selector
+    assert command[command.index("--expected-frontend-text") + 1] == assertion.expected_frontend_text
+
+
+def test_materialized_block_name_must_equal_fixture_assertion(tmp_path):
+    block = tmp_path / "block"
+    block.mkdir()
+    (block / "block.json").write_text(
+        '{"name":"acme/runtime-card","title":"Card","category":"widgets"}',
+        encoding="utf-8",
+    )
+    assert loop._materialized_block_name(block) == "acme/runtime-card"
+    with pytest.raises(ValueError, match="does not match"):
+        loop._require_materialized_block_name(block, BlockRuntimeAssertion(
+            "acme/other", ".wp-block-acme-other", "Other"
+        ))
+
+
+def test_repair_runtime_verdict_requires_exact_isolated_checks():
+    service_networks = {
+        "database": ("backend",), "wordpress": ("backend", "application"),
+        "cli": ("backend",), "gateway": ("application", "frontend"),
+        "browser": ("frontend",),
+    }
+    services = {
+        name: {"id": f"id-{name}", "image": f"sha256:{name}", "mounts": [],
+               "networks": [f"project_{network}" for network in networks],
+               "addresses": {f"project_{network}": "172.20.0.2" for network in networks},
+               "seccomp": 2}
+        for name, networks in service_networks.items()
+    }
+    created = copy.deepcopy(services)
+    for service in created.values():
+        service.pop("seccomp")
+        service["addresses"] = {name: "" for name in service["networks"]}
+    networks = {
+        f"project_{network}": {
+            "id": f"id-{network}", "internal": True,
+            "members": sorted(service["id"] for name, service in services.items()
+                              if network in service_networks[name]),
+            "gateway": [], "gateway_mode": "isolated", "subnet": "172.20.0.0/24",
+        }
+        for network in ("backend", "application", "frontend")
+    }
+    data = {
+        "schema_version": 1, "run_id": "run", "evidence_id": "evidence",
+        "artifact_kind": "plugin", "input_artifact_digest": "a" * 64,
+        "runtime_profile_id": isolated_runtime_contract.STANDARD_PROFILE,
+        "runtime_pre_command_manifest_digest": "b" * 64,
+        "post_command_manifest_digest": "b" * 64, "status": "pass", "pass": True,
+        "checks": [
+            {"id": "wp_cli_activation", "status": "pass", "duration_sec": 0.1},
+            {"id": "plugin_check", "status": "pass", "duration_sec": 0.2},
+            {"id": "container_browser", "status": "pass", "duration_sec": 0.3},
+            {"id": "runtime_identity", "status": "pass"},
+        ],
+        "provision_full_profile": True, "strict_full_profile": True,
+        "inspection": {
+            "normalized": {"services": sorted(services),
+                           "images": {name: value["image"] for name, value in services.items()},
+                           "networks": ["application", "backend", "frontend"]},
+            "created": {"services": created, "networks": {}, "require_running": False},
+            "started": {"services": services, "networks": networks, "require_running": True},
+            "post_oracle": {"services": copy.deepcopy(services),
+                            "networks": copy.deepcopy(networks), "require_running": True},
+            "artifact_seal": {"component": "runtime_artifact_image", "state": "sealed",
+                              "seed_started": False, "seed_removed": True,
+                              "artifact_mounts": 0, "base_image": "sha256:wordpress",
+                              "derived_image": "sha256:derived"},
+        },
+        "cleanup": {
+            "compose": {"component": "compose", "state": "removed", "errors": [],
+                        "remaining": {"containers": [], "networks": [], "volumes": []},
+                        "recovery": []},
+            "images": {"component": "runtime_images", "state": "removed", "error": None,
+                       "remaining": [], "recovery": []},
+            "export": {"component": "runtime_artifact_image", "state": "released",
+                       "error": None, "recovery": None},
+            "workspace": {"component": "runtime_workspace", "state": "removed", "error": None},
+        },
+        "artifact_execution_retained": False,
+        "artifact_retention": {"retained": False, "resources": [
+            {"component": component, "state": "removed", "exists": False,
+             "live": False, "resource_path": f"/tmp/{component}",
+             "error": None, "recovery_path": None}
+            for component in ("input_copy", "synthesized_runtime")
+        ]},
+        "sandbox_posture": {"host_fallback": False, "static_scan_root": "staged_copy",
+                            "generated_execution": {"php": "pass", "browser": "pass"}},
+        "full_plugin_runtime_profile": {"status": "pass", "pass": True, "checks": [
+            {"id": "phpcs_wpcs", "status": "pass"},
+            {"id": "plugin_check", "status": "pass"},
+            {"id": "wp_env_smoke", "status": "pass"},
+        ]},
+    }
+    adapter = loop.runtime_adapter("plugin", "runtime")
+    verdict = loop._isolated_runtime_verdict(
+        data, adapter=adapter, run_id="run", evidence_id="evidence",
+        expected_digest="a" * 64,
+    )
+    assert verdict["passed"] is True
+    data["post_command_manifest_digest"] = "c" * 64
+    assert loop._isolated_runtime_verdict(
+        data, adapter=adapter, run_id="run", evidence_id="evidence",
+        expected_digest="a" * 64,
+    )["failing_gates"] == ["runtime_result"]
+
+
 # --- new-this-sweep coverage: warning-inclusive feedback + cross-market providers ---
 
 
@@ -177,11 +484,106 @@ def test_run_gemini_without_key_is_graceful():
     try:
         rc, out, err = loop._run_gemini("prompt", "gemini-2.5-flash", 5)
         assert rc == 127 and out == ""
-        assert "API_KEY" in err
+        assert err == "credential_missing"
     finally:
         for k, v in saved.items():
             if v is not None:
                 os.environ[k] = v
+
+
+@pytest.mark.parametrize("provider_name", ("ollama", "gemini"))
+def test_external_provider_requires_model_before_run_directory(monkeypatch, provider_name):
+    monkeypatch.setattr(
+        loop, "create_named", lambda *_args, **_kwargs: pytest.fail("run directory created")
+    )
+    with pytest.raises(SystemExit) as raised:
+        loop.main([
+            "--suite", "wordpress-plugin-executor", "--fixture", "abilities-ai-surface-v1",
+            "--executor", "plugin", "--profile", "static", "--run-id", "missing-model",
+            "--provider", provider_name,
+        ])
+    assert raised.value.code == 2
+
+
+def _provider_result(status, error_code):
+    receipt = loop.provider_preflight.PreflightReceipt(
+        schema_version=1,
+        provider="gemini",
+        model="gemini-test-model",
+        timestamp="2026-07-15T00:00:00Z",
+        status=status,
+        endpoint_class="google_models_api",
+        error_code=error_code,
+    )
+    return loop.provider_preflight.PreflightResult(receipt, "")
+
+
+def test_failed_preflight_writes_only_sanitized_receipt(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    run_dir = tmp_path / "failed-preflight"
+
+    def create_run(*_args, **_kwargs):
+        run_dir.mkdir()
+        return SimpleNamespace(root=run_dir)
+
+    monkeypatch.setattr(loop, "create_named", create_run)
+    monkeypatch.setattr(
+        loop.provider_preflight, "preflight",
+        lambda *_args, **_kwargs: _provider_result("fail", "model_not_found"),
+    )
+    monkeypatch.setattr(
+        loop, "make_generate", lambda *_args, **_kwargs: pytest.fail("generation attempted")
+    )
+    result = loop.main([
+        "--suite", "wordpress-plugin-executor", "--fixture", "abilities-ai-surface-v1",
+        "--executor", "plugin", "--profile", "static", "--run-id", "failed-preflight",
+        "--provider", "gemini", "--model", "gemini-test-model",
+    ])
+    assert result == 2
+    assert [path.name for path in run_dir.iterdir()] == ["provider-preflight.json"]
+    receipt = json.loads((run_dir / "provider-preflight.json").read_text(encoding="utf-8"))
+    assert receipt["error_code"] == "model_not_found"
+    assert set(receipt) == {
+        "schema_version", "provider", "model", "timestamp", "status",
+        "endpoint_class", "error_code",
+    }
+
+
+def test_successful_preflight_occurs_before_generation_wiring(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    run_dir = tmp_path / "successful-preflight"
+    events = []
+
+    def create_run(*_args, **_kwargs):
+        run_dir.mkdir()
+        return SimpleNamespace(root=run_dir)
+
+    def preflight(*_args, **_kwargs):
+        events.append("preflight")
+        return _provider_result("pass", "none")
+
+    def make_generate(*_args, **_kwargs):
+        events.append("generate_wired")
+        return lambda *_inner: "packet"
+
+    monkeypatch.setattr(loop, "create_named", create_run)
+    monkeypatch.setattr(loop.provider_preflight, "preflight", preflight)
+    monkeypatch.setattr(loop, "make_generate", make_generate)
+    monkeypatch.setattr(loop, "make_certify", lambda *_args, **_kwargs: lambda *_inner: {})
+    monkeypatch.setattr(loop, "orchestrate", lambda *_args, **_kwargs: {
+        "green": True, "pass_at_1": True, "iterations_to_green": 0,
+        "generations": 1, "generation_failures": 0, "history": [],
+    })
+    result = loop.main([
+        "--suite", "wordpress-plugin-executor", "--fixture", "abilities-ai-surface-v1",
+        "--executor", "plugin", "--profile", "static", "--run-id", "success-preflight",
+        "--provider", "gemini", "--model", "gemini-test-model",
+    ])
+    assert result == 0
+    assert events == ["preflight", "generate_wired"]
+    assert (run_dir / "provider-preflight.json").exists()
 
 
 def test_provider_lane_assembles_persona_fixture_and_repair_feedback():

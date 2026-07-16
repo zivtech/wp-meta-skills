@@ -11,6 +11,7 @@ verification-oracle specificity.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
 import sys
@@ -20,136 +21,43 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = ROOT / "evals" / "harness" / "data"
+REGISTRY_PATH = DATA_DIR / "wp-exact-surfaces.json"
+SYMBOLS_PATH = DATA_DIR / "wp-symbols.json"
 
 VERDICTS = {"REJECT", "REVISE", "ACCEPT-WITH-RESERVATIONS", "ACCEPT"}
-
-EXACT_SURFACES = (
-    "$wpdb->prepare",
-    "@wordpress/scripts",
-    "@wordpress/abilities",
-    "@wordpress/core-abilities",
-    "Action Scheduler",
-    "Plugin Check",
-    "Query Monitor",
-    "WP-CLI",
-    "WP_Query",
-    "admin-ajax.php",
-    "block.json",
-    "check_admin_referer",
-    "check_ajax_referer",
-    "current_user_can",
-    "map_meta_cap",
-    "permission_callback",
-    "register_activation_hook",
-    "register_block_type",
-    "register_deactivation_hook",
-    "register_post_meta",
-    "register_post_type",
-    "register_rest_route",
-    "register_setting",
-    "register_taxonomy",
-    "render_callback",
-    "sanitize_key",
-    "sanitize_text_field",
-    "show_in_rest",
-    "theme.json",
-    "uninstall.php",
-    "wp cli",
-    "wp-env",
-    "wp_cache_get",
-    "wp_cache_set",
-    "wp_enqueue_script",
-    "wp_handle_upload",
-    "wp_interactivity_config",
-    "wp_interactivity_state",
-    "wp_kses_post",
-    "wp_next_scheduled",
-    "wp_safe_redirect",
-    "wp_schedule_event",
-    "wp_register_ability",
-    "wp_abilities_api_init",
-    "wp_ai_client_prompt",
-    "wp_connectors_init",
-    "wp_verify_nonce",
-    "wordpress/mcp-adapter",
-)
+CATEGORY_NAMES = {
+    "hooks": "hook", "wildcard_hooks": "hook", "argument_keys": "argument_key",
+    "capabilities": "capability", "wp_cli_commands": "wp_cli_command",
+    "packages": "package", "named_oracles": "named_oracle",
+    "file_surfaces": "file_glob", "reviewed_composed": "reviewed_composed",
+}
+CONTEXTUAL_ARGUMENT_KEYS = frozenset({"category", "description", "label"})
+IDENTIFIER_CATEGORIES = frozenset({"hook", "argument_key", "capability", "reviewed_composed"})
 
 VERIFICATION_TERMS = (
-    "apm",
-    "block validation",
-    "browser devtools",
-    "browser performance trace",
-    "core web vitals",
-    "crawl comparison",
-    "database query logs",
-    "dry run",
-    "dry-run",
-    "editor smoke",
-    "explain select",
-    "frontend smoke",
-    "import-log",
-    "launch rehearsal",
-    "network panel",
-    "object-cache metrics",
-    "php -l",
-    "phpcs",
-    "phpstan",
-    "phpunit",
-    "playground",
-    "playwright",
-    "plugin check",
-    "psalm",
-    "query monitor",
-    "redirect map",
-    "rollback test",
-    "screaming frog",
-    "site editor",
-    "theme check",
-    "wp cli",
-    "wp cron event list",
-    "wp-env",
-    "wp media import",
-    "wp option list",
-    "wp post list",
-    "wp profile",
-    "wp redirection",
-    "wp rewrite flush",
-    "wp rewrite list",
-    "wp search-replace",
-    "wpcs",
-    "security-gate.json",
-    "phpcs-suppression-diff",
-    "--ignore-annotations",
+    "apm", "block validation", "browser devtools", "browser performance trace",
+    "core web vitals", "crawl comparison", "database query logs", "dry run", "dry-run",
+    "editor smoke", "explain select", "frontend smoke", "import-log", "launch rehearsal",
+    "network panel", "object-cache metrics", "php -l", "phpcs", "phpstan", "phpunit",
+    "playground", "playwright", "plugin check", "psalm", "query monitor", "redirect map",
+    "rollback test", "screaming frog", "site editor", "theme check", "wp cli",
+    "wp cron event list", "wp-env", "wp media import", "wp option list", "wp post list",
+    "wp profile", "wp redirection", "wp rewrite flush", "wp rewrite list", "wp search-replace",
+    "wpcs", "security-gate.json", "phpcs-suppression-diff", "--ignore-annotations",
     "suppressed_annotations",
 )
 
 NEGATIVE_SPACE_TERMS = (
-    "does not prove",
-    "does not claim",
-    "is not claimed",
-    "not claimed",
-    "not claiming",
-    "not proven",
-    "outside scope",
-    "out of scope",
-    "negative space",
-    "cannot verify",
-    "assumption",
-    "open question",
-    "unknown",
+    "does not prove", "does not claim", "is not claimed", "not claimed", "not claiming",
+    "not proven", "outside scope", "out of scope", "negative space", "cannot verify",
+    "assumption", "open question", "unknown",
 )
 
 PLACEHOLDER_RE = re.compile(r"(\b(TBD|TODO|FIXME|PLACEHOLDER)\b|\[(?i:finding|todo|placeholder)\])")
 GENERIC_LABELS = (
-    "add security",
-    "check accessibility",
-    "ensure performance",
-    "fix the issue",
-    "run tests",
-    "use capabilities",
-    "use escaping",
-    "use nonces",
-    "use wordpress apis",
+    "add security", "check accessibility", "ensure performance", "fix the issue", "run tests",
+    "use capabilities", "use escaping", "use nonces", "use wordpress apis",
 )
 
 MD_HEADING_RE = re.compile(r"(?m)^##\s+(.+?)\s*$")
@@ -159,23 +67,14 @@ VERDICT_RE = re.compile(r"(?im)^\*\*VERDICT:\s*([A-Z-]+).*?\*\*")
 
 PLANNER_HEADINGS = {
     "wordpress-planner": [
-        "Scope Summary",
-        "Current-State Evidence",
-        "Architecture Plan",
-        "WordPress-Specific Decisions",
-        "Assumption Register",
-        "Test And Verification Strategy",
-        "Implementation Sequence",
-        "Executor Handoff",
-        "Critic Checkpoints",
-        "Acceptance Criteria",
+        "Scope Summary", "Current-State Evidence", "Architecture Plan",
+        "WordPress-Specific Decisions", "Assumption Register", "Test And Verification Strategy",
+        "Implementation Sequence", "Executor Handoff", "Critic Checkpoints", "Acceptance Criteria",
         "Assumptions And Open Questions",
     ],
     "wordpress-plugin-planner": [
-        "Plugin Scope",
-        "Current-State Evidence",
-        "Architecture And File Map",
-        "Hook And Data Flow",
+        "Plugin Scope", "Current-State Evidence",
+        "Architecture And File Map", "Hook And Data Flow",
         "Security And Data Integrity",
         "Operations And Release Plan",
         "Assumption Register",
@@ -363,6 +262,29 @@ class Check:
     detail: str
 
 
+@dataclass(frozen=True)
+class RegisteredSurface:
+    name: str
+    category: str
+    aliases: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SurfaceMatch:
+    name: str
+    category: str
+    text: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class SurfaceCatalog:
+    registered: tuple[RegisteredSurface, ...]
+    functions: frozenset[str]
+    classes: frozenset[str]
+
+
 def _norm(text: str) -> str:
     text = (text or "").lower()
     text = text.replace("->", " ")
@@ -370,10 +292,189 @@ def _norm(text: str) -> str:
     return " ".join(text.split())
 
 
-def _surface_present(surface: str, text: str) -> bool:
-    tokens = [tok for tok in _norm(surface).split() if tok]
-    normalized = _norm(text)
-    return bool(tokens) and all(tok in normalized for tok in tokens)
+def _entry(item: Any) -> tuple[str, tuple[str, ...]]:
+    if isinstance(item, str) and item.strip():
+        return item, ()
+    if isinstance(item, dict) and set(item) == {"name", "aliases"}:
+        aliases = item.get("aliases")
+        if isinstance(item.get("name"), str) and isinstance(aliases, list) and all(
+            isinstance(alias, str) and alias.strip() for alias in aliases
+        ):
+            return item["name"], tuple(aliases)
+    raise ValueError("malformed exact-surface registry entry")
+
+
+def _registry_value_valid(key: str, value: str) -> bool:
+    if key == "wildcard_hooks":
+        return bool(re.fullmatch(r"[a-z][a-z0-9_]*_\*", value))
+    if key == "file_surfaces":
+        if value.startswith(("/", "\\")) or "\\" in value or ".." in value.split("/"):
+            return False
+        grammar = r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*(?:/\*)?\.(?:php|json|html|txt)"
+        return bool(re.fullmatch(grammar, value))
+    if key in {"hooks", "argument_keys", "capabilities"}:
+        return bool(re.fullmatch(r"[a-z][a-z0-9_]+", value))
+    if key == "packages":
+        return bool(re.fullmatch(r"(?:@[a-z0-9_-]+|[a-z0-9_-]+)/[a-z0-9_-]+", value))
+    if key == "wp_cli_commands":
+        return value == "WP-CLI" or bool(re.fullmatch(r"wp [a-z0-9_-]+(?: [a-z0-9_.*:/-]+)*", value))
+    return value.isprintable() and len(value) <= 120 and ".." not in value
+
+
+@functools.lru_cache(maxsize=1)
+def _surface_catalog() -> SurfaceCatalog:
+    try:
+        registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+        symbols = json.loads(SYMBOLS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("exact-surface registry or symbol snapshot is unavailable") from exc
+    if registry.get("schema_version") != 1 or registry.get("wp_version") != symbols.get("wp_version"):
+        raise ValueError("exact-surface registry version is incompatible")
+    provenance = registry.get("provenance")
+    if not isinstance(registry.get("boundary"), str) or not registry["boundary"].strip():
+        raise ValueError("exact-surface registry boundary metadata is missing")
+    if not isinstance(provenance, dict) or set(provenance) != {"reviewed_for", "reviewed_at"} or not all(
+        isinstance(value, str) and value.strip() for value in provenance.values()
+    ):
+        raise ValueError("exact-surface registry provenance metadata is malformed")
+    categories = registry.get("categories")
+    if not isinstance(categories, dict) or set(categories) != set(CATEGORY_NAMES):
+        raise ValueError("exact-surface registry categories are malformed")
+    registered: list[RegisteredSurface] = []
+    seen: set[str] = set()
+    for key, category in CATEGORY_NAMES.items():
+        if not isinstance(categories[key], list):
+            raise ValueError("exact-surface registry category is malformed")
+        for item in categories[key]:
+            name, aliases = _entry(item)
+            if not all(_registry_value_valid(key, value) for value in (name, *aliases)):
+                raise ValueError(f"invalid exact-surface registry {key} entry")
+            normalized = {_norm(value) for value in (name, *aliases)}
+            if "" in normalized or seen & normalized:
+                raise ValueError("duplicate exact-surface registry entry")
+            seen.update(normalized)
+            registered.append(RegisteredSurface(name, category, aliases))
+    functions, classes = symbols.get("functions"), symbols.get("classes")
+    if not isinstance(functions, dict) or not isinstance(classes, dict):
+        raise ValueError("WordPress symbol snapshot is malformed")
+    return SurfaceCatalog(tuple(registered), frozenset(functions), frozenset(classes))
+
+
+def _surface_pattern(value: str, functions: frozenset[str], category: str) -> re.Pattern[str]:
+    pieces = []
+    for piece in value.strip().split():
+        token = re.escape(piece)
+        if piece.lower() in functions or "->" in piece:
+            token += r"(?:\s*\(\s*\))?"
+        pieces.append(token)
+    body = r"\s+".join(pieces)
+    left = r"(?<![A-Za-z0-9_$@>:])" if category in IDENTIFIER_CATEGORIES else r"(?<![A-Za-z0-9_])"
+    return re.compile(rf"{left}{body}(?![A-Za-z0-9_])", re.IGNORECASE)
+
+
+def _unsafe_php_context(text: str, start: int) -> bool:
+    prefix = text[max(0, start - 128):start]
+    return bool(re.search(r"(?:\?->|->|::|@)\s*$", prefix))
+
+
+def _has_global_rest_route(sentence: str) -> bool:
+    pattern = r"(?<![A-Za-z0-9_$@>:])register_rest_route(?:\s*\(\s*\))?(?![A-Za-z0-9_])"
+    return any(not _unsafe_php_context(sentence, match.start()) for match in re.finditer(pattern, sentence, re.I))
+
+
+def _registered_match_allowed(surface: RegisteredSurface, text: str, match: re.Match[str]) -> bool:
+    sentence_start = max(text.rfind(mark, 0, match.start()) for mark in ".!?\n") + 1
+    sentence_end_candidates = [text.find(mark, match.end()) for mark in ".!?\n"]
+    sentence_end = min((value for value in sentence_end_candidates if value >= 0), default=len(text))
+    sentence = text[sentence_start:sentence_end]
+    if surface.category in IDENTIFIER_CATEGORIES and _unsafe_php_context(text, match.start()):
+        return False
+    before = text[match.start() - 1] if match.start() else ""
+    after = text[match.end()] if match.end() < len(text) else ""
+    if surface.name.lower() == "wp-env" and (before in "./\\-" or after in "./\\-"):
+        return False
+    quoted = before in "`'\"" and after == before
+    assigned = bool(re.match(r"\s*(?::|=>)", text[match.end():]))
+    key_context = quoted or assigned
+    if surface.name.lower() == "permission_callback" and not (key_context or _has_global_rest_route(sentence)):
+        return False
+    if surface.category != "argument_key" or surface.name.lower() not in CONTEXTUAL_ARGUMENT_KEYS:
+        return True
+    return key_context
+
+
+def _candidate_matches(text: str, catalog: SurfaceCatalog) -> list[SurfaceMatch]:
+    matches: list[SurfaceMatch] = []
+    token_re = re.compile(
+        r"(?<![A-Za-z0-9_$@>:\\./-])([A-Za-z_][A-Za-z0-9_\\]*)(?:\s*\(\s*\))?"
+        r"(?![A-Za-z0-9_\\/-]|\.[A-Za-z0-9])"
+    )
+    for match in token_re.finditer(text):
+        if _unsafe_php_context(text, match.start()):
+            continue
+        name = match.group(1).lower()
+        category = "core_function" if name in catalog.functions else "core_class" if name in catalog.classes else None
+        if category:
+            matches.append(SurfaceMatch(name, category, match.group(0), match.start(), match.end()))
+    for surface in catalog.registered:
+        for alias in (surface.name, *surface.aliases):
+            for match in _surface_pattern(alias, catalog.functions, surface.category).finditer(text):
+                if _registered_match_allowed(surface, text, match):
+                    matches.append(SurfaceMatch(surface.name, surface.category, match.group(0), match.start(), match.end()))
+        if surface.category == "hook" and surface.name.endswith("*"):
+            pattern = re.compile(rf"(?<![A-Za-z0-9_$@>:]){re.escape(surface.name[:-1])}[a-z0-9_]+(?![A-Za-z0-9_])", re.I)
+            for match in pattern.finditer(text):
+                if not _unsafe_php_context(text, match.start()):
+                    matches.append(SurfaceMatch(match.group(0), "hook", match.group(0), match.start(), match.end()))
+    path_re = re.compile(r"(?<![A-Za-z0-9_./-])(?:[A-Za-z0-9._-]+/)+[A-Za-z0-9._-]+\.(?:php|json|html|txt)(?![A-Za-z0-9_/-]|\.[A-Za-z0-9])")
+    for match in path_re.finditer(text):
+        if ".." not in match.group(0).split("/"):
+            matches.append(SurfaceMatch(match.group(0), "file_glob", match.group(0), match.start(), match.end()))
+    basename_re = re.compile(
+        r"(?<![A-Za-z0-9_./-])(?<!\\)(?:render\.php|\.wp-env\.json)(?![A-Za-z0-9_./-])(?!\\)",
+        re.I,
+    )
+    for match in basename_re.finditer(text):
+        matches.append(SurfaceMatch(match.group(0), "file_glob", match.group(0), match.start(), match.end()))
+    return matches
+
+
+def find_surface_matches(text: str) -> tuple[SurfaceMatch, ...]:
+    candidates = sorted(_candidate_matches(text, _surface_catalog()), key=lambda item: (item.start, -(item.end - item.start)))
+    accepted: list[SurfaceMatch] = []
+    names: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        if any(candidate.start >= item.start and candidate.end <= item.end for item in accepted):
+            continue
+        identity = (candidate.category, candidate.name.lower())
+        if identity not in names:
+            accepted.append(candidate)
+            names.add(identity)
+    return tuple(accepted)
+
+
+def _non_applicability(text: str) -> tuple[int, bool]:
+    statements = re.findall(r"[^.!?]*no exact wordpress api applies[^.!?]*[.!?]?", text, re.IGNORECASE)
+    if not statements:
+        return 0, True
+    for statement in statements:
+        lower = " ".join(statement.lower().split())
+        scope = re.search(r"applies\s+to\s+(.+?)(?=\s+(?:because|since|as)\b|[;,]|$)", lower)
+        scope_words = re.findall(r"[a-z0-9]+", scope.group(1)) if scope else []
+        generic = {"foo", "bar", "thing", "things", "this", "that", "work", "problem"}
+        named = len(scope_words) >= 2 and not set(scope_words) <= generic
+        reason_match = re.search(r"\b(?:because|since|as)\b(.+?)(?=;|$)", lower)
+        reason_text = reason_match.group(1) if reason_match else ""
+        reason = len(reason_text.split()) >= 4 and bool(re.search(
+            r"wordpress.+(?:not|cannot|outside)|(?:external|vendor|owned|controlled)|system of record", reason_text
+        ))
+        oracle = bool(re.search(
+            r"\b(?!(?:the|a|an)\s)[a-z0-9_-]+\s+owner\b|vendor api(?: contract)?|system of record|(?:vendor|integration) (?:documentation|runbook)",
+            lower,
+        ))
+        if not (named and reason and oracle):
+            return len(statements), False
+    return len(statements), True
 
 
 def found_headings(text: str) -> set[str]:
@@ -414,14 +515,19 @@ def check_verdict(text: str, contract: dict[str, Any]) -> Check:
 
 
 def check_exact_surfaces(text: str, contract: dict[str, Any]) -> Check:
-    matched = sorted({surface for surface in EXACT_SURFACES if _surface_present(surface, text)})
-    has_non_applicability = "no exact wordpress api applies" in text.lower()
+    matched = find_surface_matches(text)
+    note_count, valid_notes = _non_applicability(text)
     min_surfaces = int(contract["min_surfaces"])
-    passed = len(matched) >= min_surfaces or has_non_applicability
+    passed = len(matched) >= min_surfaces and valid_notes
+    evidence = ", ".join(f"{item.category}:{item.text}" for item in matched)
     detail = f"matched {len(matched)} exact WordPress surfaces"
-    if has_non_applicability:
-        detail += "; explicit non-applicability statement present"
-    if not passed:
+    if evidence:
+        detail += f" ({evidence})"
+    if note_count and valid_notes:
+        detail += "; scoped non-applicability includes subproblem, reason, and oracle/owner"
+    elif note_count:
+        detail += "; invalid non-applicability (requires named subproblem, reason, and oracle/owner)"
+    if len(matched) < min_surfaces:
         detail += f"; expected at least {min_surfaces}"
     return Check("exact_wordpress_surfaces", passed, 3, detail)
 

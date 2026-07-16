@@ -12,11 +12,22 @@ The generated artifact is a pure block file tree. A host plugin, theme, or dispo
     "start": "wp-scripts start --source-path=blocks/interactive-counter --output-path=blocks/interactive-counter/build --experimental-modules"
   },
   "dependencies": {
-    "@wordpress/interactivity": "^6.48.1"
+    "@wordpress/interactivity": "6.48.1"
   },
   "devDependencies": {
-    "@wordpress/scripts": "^32.4.1"
+    "@wordpress/scripts": "32.4.1"
   }
+}
+```
+
+### package-lock.json
+```json
+{
+  "kind": "approved-lock-profile",
+  "version": 1,
+  "approved_lock_profile": "block-interactivity-6.48.1",
+  "sha256": "53f635a658e1e4504ec41a5c405aa3230566ecbd529f1d137b41c13b30ffc4cc",
+  "manifest_sha256": "71b29ec85d0ccffab3ef9d10616eb3ab61829546981e24a5ab17a844c8528c97"
 }
 ```
 

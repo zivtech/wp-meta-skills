@@ -17,6 +17,7 @@ Blueprint section and writes it as blueprint.json.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
@@ -29,6 +30,13 @@ import validate_wordpress_executor_packet
 
 
 ROOT = Path(__file__).resolve().parents[2]
+APPROVED_LOCK_ROOT = Path(__file__).resolve().parent / "approved-locks"
+APPROVED_LOCKS = {
+    "block-scripts-32.4.1-smoke": ("block-scripts-32.4.1-smoke.package-lock.json", "package-lock.json", "package.json"),
+    "block-interactivity-6.48.1": ("block-interactivity-6.48.1.package-lock.json", "package-lock.json", "package.json"),
+    "block-scripts-32.4.1-deprecation": ("block-scripts-32.4.1-deprecation.package-lock.json", "package-lock.json", "package.json"),
+    "plugin-phpunit-12.5.31": ("plugin-phpunit-12.5.31.composer.lock", "acme-runtime-tested/composer.lock", "acme-runtime-tested/composer.json"),
+}
 SECTION_RE = re.compile(r"(?m)^##\s+(.+?)\s*$")
 PATH_HEADING_RE = re.compile(r"(?m)^(?:#{3,6}|[-*])\s+`?([A-Za-z0-9_./-]+\.[A-Za-z0-9_+-]+)`?\s*$")
 SAFE_SUFFIXES = {
@@ -44,6 +52,7 @@ SAFE_SUFFIXES = {
     ".md",
     ".txt",
     ".html",
+    ".lock",
 }
 PACKET_SECTIONS = {
     "plugin": ("Implementation Packets",),
@@ -126,6 +135,35 @@ def extract_file_blocks(section_text: str) -> tuple[list[tuple[Path, str]], list
     return blocks, issues
 
 
+def resolve_approved_locks(blocks: list[tuple[Path, str]]) -> tuple[list[tuple[Path, str]], list[MaterializationIssue]]:
+    by_path = {str(path): content for path, content in blocks}
+    resolved = []
+    issues = []
+    for path, content in blocks:
+        if path.suffix != ".lock" and path.name != "package-lock.json":
+            resolved.append((path, content)); continue
+        try:
+            profile = json.loads(content)
+            if profile.get("kind") != "approved-lock-profile":
+                resolved.append((path, content)); continue
+            if set(profile) != {"kind","version","approved_lock_profile","sha256","manifest_sha256"} or profile["version"] != 1:
+                raise ValueError("approved lock profile envelope is not exact version 1")
+            profile_id = profile["approved_lock_profile"]
+            filename, expected_target, manifest_path = APPROVED_LOCKS[profile_id]
+            if str(path) != expected_target:
+                raise ValueError("approved lock target does not match registry")
+            canonical = (APPROVED_LOCK_ROOT / filename).read_bytes()
+            if hashlib.sha256(canonical).hexdigest() != profile["sha256"]:
+                raise ValueError("approved lock digest mismatch")
+            manifest = by_path.get(manifest_path)
+            if manifest is None or hashlib.sha256(manifest.encode()).hexdigest() != profile["manifest_sha256"]:
+                raise ValueError("approved lock manifest binding mismatch")
+            resolved.append((path, canonical.decode("utf-8")))
+        except (KeyError, ValueError, json.JSONDecodeError) as exc:
+            issues.append(MaterializationIssue("fail", f"invalid approved lock profile for {path}: {exc}"))
+    return resolved, issues
+
+
 def materialize_files(blocks: list[tuple[Path, str]], out_dir: Path) -> list[MaterializedFile]:
     written: list[MaterializedFile] = []
     for rel_path, content in blocks:
@@ -174,6 +212,8 @@ def materialize_packet(executor: str, packet_text: str, out_dir: Path, overwrite
             written = []
         else:
             blocks, issues = extract_file_blocks(section_text)
+            blocks, lock_issues = resolve_approved_locks(blocks)
+            issues.extend(lock_issues)
             written = materialize_files(blocks, out_dir) if not any(issue.status == "fail" for issue in issues) else []
 
     if not written and not issues:

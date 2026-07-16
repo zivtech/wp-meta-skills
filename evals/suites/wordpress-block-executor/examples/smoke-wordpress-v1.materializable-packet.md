@@ -12,8 +12,19 @@ The generated artifact is a pure block file tree. A host plugin, theme, or dispo
     "start": "wp-scripts start"
   },
   "devDependencies": {
-    "@wordpress/scripts": "^30.0.0"
+    "@wordpress/scripts": "32.4.1"
   }
+}
+```
+
+### package-lock.json
+```json
+{
+  "kind": "approved-lock-profile",
+  "version": 1,
+  "approved_lock_profile": "block-scripts-32.4.1-smoke",
+  "sha256": "990d9a67783977a5a4c54035666ebc48f7aaac8cdf69f2313caf2a17b317fa33",
+  "manifest_sha256": "e2259282345ac90cb5645507efd0daba536b2742be3eab676db10fd7fc1fb4f6"
 }
 ```
 

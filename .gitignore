@@ -10,6 +10,7 @@
 /plans/
 
 # Python caches and test state
+.venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/

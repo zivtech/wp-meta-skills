@@ -1,8 +1,12 @@
 """Tests for the WordPress executor artifact certification pipeline."""
 
 import sys
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 
 HARNESS = Path(__file__).resolve().parent.parent
@@ -347,3 +351,179 @@ def test_certifier_passes_materializable_block_packet(tmp_path):
     assert (out_dir / "blocks" / "runtime-card" / "block.json").exists()
     assert (out_dir / "package.json").exists()
     assert (result_dir / "certification.json").exists()
+
+
+def test_certifier_records_fresh_identity_and_digests(tmp_path):
+    packet = tmp_path / "candidate.md"
+    packet.write_text(GOOD_PLUGIN_PACKET, encoding="utf-8")
+    options = args(packet, tmp_path / "generated", tmp_path / "result")
+    options.evidence_id = "fresh-evidence"
+    result = certifier.certify_executor_artifact(options)
+    assert result["schema_version"] == 1
+    assert result["evidence_id"] == "fresh-evidence"
+    assert len(result["packet_sha256"]) == 64
+    assert len(result["artifact_digest"]) == 64
+
+
+def test_tree_digest_changes_with_content(tmp_path):
+    artifact = tmp_path / "artifact"; artifact.mkdir()
+    source = artifact / "plugin.php"; source.write_text("one", encoding="utf-8")
+    first = certifier.digest_regular_tree(artifact)
+    source.write_text("two", encoding="utf-8")
+    assert certifier.digest_regular_tree(artifact) != first
+
+
+def test_tree_digest_is_stable_across_creation_order(tmp_path):
+    left, right = tmp_path / "left", tmp_path / "right"
+    left.mkdir(); right.mkdir()
+    (left / "b").write_text("2", encoding="utf-8"); (left / "a").write_text("1", encoding="utf-8")
+    (right / "a").write_text("1", encoding="utf-8"); (right / "b").write_text("2", encoding="utf-8")
+    assert certifier.digest_regular_tree(left) == certifier.digest_regular_tree(right)
+
+
+def test_tree_digest_rejects_symlink(tmp_path):
+    artifact = tmp_path / "artifact"; artifact.mkdir()
+    (artifact / "target").write_text("secret", encoding="utf-8")
+    (artifact / "link").symlink_to(artifact / "target")
+    with pytest.raises(ValueError, match="symlink"):
+        certifier.digest_regular_tree(artifact)
+
+
+def test_tree_digest_rejects_symlink_root(tmp_path):
+    target = tmp_path / "target"; target.mkdir()
+    link = tmp_path / "link"; link.symlink_to(target)
+    with pytest.raises(ValueError, match="root is a symlink"):
+        certifier.digest_regular_tree(link)
+
+
+def test_tree_digest_supports_single_regular_file(tmp_path):
+    artifact = tmp_path / "blueprint.json"
+    artifact.write_text("{}", encoding="utf-8")
+    assert len(certifier.digest_regular_tree(artifact)) == 64
+
+
+def test_tree_digest_empty_tree_is_deterministic(tmp_path):
+    left, right = tmp_path / "left", tmp_path / "right"
+    left.mkdir(); right.mkdir()
+    assert certifier.digest_regular_tree(left) == certifier.digest_regular_tree(right)
+
+
+def test_standalone_certifier_keeps_identity_backward_compatible(tmp_path):
+    packet = tmp_path / "candidate.md"
+    packet.write_text(GOOD_PLUGIN_PACKET, encoding="utf-8")
+    result = certifier.certify_executor_artifact(args(packet, tmp_path / "generated"))
+    assert result["evidence_id"] is None
+
+
+def test_tree_digest_uses_versioned_canonical_jsonl(tmp_path):
+    artifact = tmp_path / "artifact"; artifact.mkdir()
+    source = artifact / "plugin.php"; source.write_bytes(b"php")
+    records = [{"path": "plugin.php", "size": 3, "sha256": hashlib.sha256(b"php").hexdigest()}]
+    encoded = ("\n".join(json.dumps(item, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+                           for item in records) + "\n").encode()
+    assert certifier.digest_regular_tree(artifact) == hashlib.sha256(encoded).hexdigest()
+
+
+def test_execution_closure_ignored_entries_do_not_change_digest(tmp_path):
+    artifact = tmp_path / "artifact"; artifact.mkdir()
+    (artifact / "plugin.php").write_text("stable", encoding="utf-8")
+    expected = certifier.digest_regular_tree(artifact)
+    for ignored in certifier.EXECUTION_CLOSURE_IGNORE:
+        directory = artifact / ignored; directory.mkdir()
+        (directory / "external.txt").write_text("ignored", encoding="utf-8")
+    assert certifier.digest_regular_tree(artifact) == expected
+
+
+def test_digest_symlink_swap_between_lstat_and_open_fails_closed(tmp_path, monkeypatch):
+    artifact = tmp_path / "artifact"; artifact.mkdir()
+    candidate = artifact / "plugin.php"; candidate.write_text("safe", encoding="utf-8")
+    external = tmp_path / "external"; external.write_text("DO-NOT-READ", encoding="utf-8")
+    original_open = certifier.os.open
+
+    swapped = False
+
+    def swapping_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if str(path) == candidate.name and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            candidate.unlink(); candidate.symlink_to(external)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(certifier.os, "open", swapping_open)
+    with pytest.raises(OSError):
+        certifier.digest_regular_tree(artifact)
+
+
+def test_plugin_execution_closure_rejects_unexpected_sibling(tmp_path):
+    out = tmp_path / "out"; out.mkdir(); (out / "plugin").mkdir()
+    (out / "unexpected.txt").write_text("no", encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly one"):
+        certifier.execution_closure_for("plugin", out)
+
+
+@pytest.mark.parametrize("kind", ["file-root", "directory-root", "intermediate"])
+def test_descriptor_traversal_rejects_component_swaps(tmp_path, monkeypatch, kind):
+    artifact = tmp_path / ("plugin.php" if kind == "file-root" else "artifact")
+    if kind == "file-root":
+        artifact.write_text("safe", encoding="utf-8")
+        swap_name = artifact.name
+    else:
+        artifact.mkdir()
+        sub = artifact / "sub"; sub.mkdir()
+        (sub / "plugin.php").write_text("safe", encoding="utf-8")
+        swap_name = artifact.name if kind == "directory-root" else "sub"
+    external = tmp_path / "external-dir"; external.mkdir()
+    (external / "secret").write_text("DO-NOT-READ", encoding="utf-8")
+    original_open = certifier.os.open
+    swapped = False
+
+    def swapping_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if str(path) == swap_name and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            target = artifact if kind != "intermediate" else artifact / "sub"
+            moved = tmp_path / f"moved-{kind}"
+            target.rename(moved)
+            target.symlink_to(external, target_is_directory=True)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(certifier.os, "open", swapping_open)
+    with pytest.raises(OSError):
+        certifier.digest_regular_tree(artifact)
+
+
+def test_descriptor_traversal_rejects_symlinked_ancestor(tmp_path):
+    real = tmp_path / "real"; real.mkdir()
+    artifact = real / "artifact"; artifact.mkdir()
+    (artifact / "plugin.php").write_text("safe", encoding="utf-8")
+    linked = tmp_path / "linked"; linked.symlink_to(real, target_is_directory=True)
+    with pytest.raises(OSError):
+        certifier.digest_regular_tree(linked / "artifact")
+
+
+def test_descriptor_traversal_rejects_symlinked_intermediate_parent(tmp_path):
+    real = tmp_path / "real"; real.mkdir()
+    nested = real / "nested"; nested.mkdir()
+    artifact = nested / "plugin.php"; artifact.write_text("safe", encoding="utf-8")
+    outer = tmp_path / "outer"; outer.mkdir()
+    (outer / "nested").symlink_to(nested, target_is_directory=True)
+    with pytest.raises(OSError):
+        certifier.digest_regular_tree(outer / "nested" / "plugin.php")
+
+
+def test_regular_file_root_replacement_is_detected_by_inode(tmp_path, monkeypatch):
+    artifact = tmp_path / "plugin.php"; artifact.write_text("safe", encoding="utf-8")
+    replacement = tmp_path / "replacement.php"; replacement.write_text("different", encoding="utf-8")
+    original_open = certifier.os.open
+    swapped = False
+
+    def swapping_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if str(path) == artifact.name and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            artifact.unlink(); replacement.rename(artifact)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(certifier.os, "open", swapping_open)
+    with pytest.raises(ValueError, match="changed while opening"):
+        certifier.digest_regular_tree(artifact)

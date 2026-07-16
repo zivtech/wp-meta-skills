@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "wp_version": "7.0",
+  "boundary": "WordPress core 7.0 plus explicitly reviewed non-core contract surfaces; registry membership is not runtime proof.",
+  "provenance": {
+    "reviewed_for": "WordPress V1 Exact API and Verification Contract",
+    "reviewed_at": "2026-07-15"
+  },
+  "categories": {
+    "hooks": [
+      "mcp_adapter_init",
+      "wp_abilities_api_init",
+      "wp_abilities_api_categories_init",
+      "wp_connectors_init"
+    ],
+    "wildcard_hooks": [
+      "wp_ajax_*"
+    ],
+    "argument_keys": [
+      "category",
+      "description",
+      "execute_callback",
+      "input_schema",
+      "label",
+      "meta_query",
+      "output_schema",
+      "permission_callback",
+      "render_callback",
+      "show_in_rest"
+    ],
+    "capabilities": [
+      "promote_users"
+    ],
+    "wp_cli_commands": [
+      {
+        "name": "WP-CLI",
+        "aliases": ["wp cli"]
+      },
+      "wp cron event list",
+      "wp export",
+      "wp import",
+      "wp media import",
+      "wp search-replace --dry-run"
+    ],
+    "packages": [
+      "@wordpress/abilities",
+      "@wordpress/core-abilities",
+      "@wordpress/scripts",
+      "wordpress/mcp-adapter"
+    ],
+    "named_oracles": [
+      "ACF field groups",
+      "Action Scheduler",
+      "PHPCS/WPCS",
+      "PHPUnit",
+      "Playwright",
+      "Plugin Check",
+      "Query Monitor",
+      "wp-env"
+    ],
+    "file_surfaces": [
+      "admin-ajax.php",
+      "block.json",
+      "parts/*.html",
+      "patterns/*.php",
+      "styles/*.json",
+      "templates/*.html",
+      "theme.json",
+      "uninstall.php"
+    ],
+    "reviewed_composed": [
+      "$wpdb->prepare",
+      "deprecated block versions",
+      "mcp-adapter-discover-abilities",
+      "mcp-adapter-execute-ability",
+      "readme.txt Stable tag",
+      "register_rest_route permission_callback",
+      "WP AI Client"
+    ]
+  }
+}

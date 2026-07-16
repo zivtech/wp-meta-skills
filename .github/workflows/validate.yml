@@ -1,49 +1,409 @@
 name: Validate wp-meta-skills
 
 on:
+  workflow_dispatch:
   pull_request:
+    paths:
+      - ".agents/**"
+      - ".claude/**"
+      - ".codex/**"
+      - "evals/harness/**"
+      - "evals/suites/wordpress-*/**"
+      - "scripts/**"
+      - ".github/workflows/validate.yml"
+      - ".python-version"
+      - "CONTRIBUTING.md"
+      - "MANIFEST.sha256"
+      - "SECURITY.md"
+      - "install.sh"
+      - "pyproject.toml"
+      - "requirements-validation.txt"
+      - "skills.sh.json"
+      - "uv.lock"
   push:
     branches:
       - main
 
+concurrency:
+  group: wp-validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  sandbox-feasibility:
+    name: No-secrets Linux Docker sandbox feasibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions: {}
+    env:
+      CANARY_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Check out exact public commit without credentials
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$CANARY_COMMIT_SHA"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$CANARY_COMMIT_SHA"
+      - name: Set up exact Python without repository credentials
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version-file: ".python-version"
+          token: ""
+      - name: Set up exact uv without repository credentials or cache
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.9.27"
+          github-token: ""
+          enable-cache: false
+      - name: Sync locked validation dependencies
+        run: |
+          uv lock --check
+          uv sync --locked --extra test
+      - name: Verify committed locks, inventory, and topology policy
+        run: |
+          uv run --locked --extra test python -m pytest \
+            evals/harness/tests/test_runtime_image_provision.py \
+            evals/harness/tests/test_wp_env_network_guard.py \
+            evals/harness/tests/test_runtime_assertions.py \
+            evals/harness/tests/test_eval_suite_integrity.py \
+            evals/harness/tests/test_runtime_request_policy.py \
+            evals/harness/tests/test_isolated_runtime_contract.py \
+            evals/harness/tests/test_wp_staged_runtime.py \
+            -m 'not docker_boundary and not live_provider' -q
+      - name: Trusted-provision exact package and proxy images
+        run: |
+          PYTHONPATH=evals/harness uv run --locked --extra test python - <<'PY'
+          import subprocess
+          import runtime_image_provision as provision
+          inventory=provision.inventory()["images"]
+          arch=provision.normalize_arch(subprocess.check_output(["uname","-m"],text=True).strip())
+          for key in ("node","composer","python"):
+              item=inventory[key]
+              reference=f"{item['tag'].split(':')[0]}@{item[arch]}"
+              subprocess.run(["docker","pull",reference],check=True)
+          PY
+      - name: Require bounded host DNS observation capability
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y tcpdump
+          sudo -n true
+          command -v tcpdump
+      - name: Verify package sandbox policy and proxy handlers hermetically
+        run: |
+          uv run --locked --extra test python -m pytest \
+            evals/harness/tests/test_artifact_staging.py \
+            evals/harness/tests/test_artifact_layout.py \
+            evals/harness/tests/test_artifact_execution_graph.py \
+            evals/harness/tests/test_artifact_execution_gate.py \
+            evals/harness/tests/test_artifact_explicit_scanners.py \
+            evals/harness/tests/test_artifact_traversal.py \
+            evals/harness/tests/test_runtime_artifact_pipeline.py \
+            evals/harness/tests/test_dependency_egress_proxy.py \
+            evals/harness/tests/test_sandbox_process_transport.py \
+            evals/harness/tests/test_sandbox_proxy_supervisor.py \
+            evals/harness/tests/test_sandbox_proxy_supervisor_contract.py \
+            evals/harness/tests/test_sandbox_python_preflight.py \
+            evals/harness/tests/test_sandbox_python_preflight_contract.py \
+            evals/harness/tests/test_sandbox_python_preflight_diagnostic.py \
+            evals/harness/tests/test_sandbox_mount_policy.py \
+            evals/harness/tests/test_sandbox_source_proof.py \
+            evals/harness/tests/test_sandbox_tunnel_poll.py \
+            evals/harness/tests/test_sandbox_dns_guard.py \
+            evals/harness/tests/test_sandbox_acquisition_diagnostic.py \
+            evals/harness/tests/test_sandbox_acquisition_failure.py \
+            evals/harness/tests/test_sandbox_network_policy.py \
+            evals/harness/tests/test_sandbox_daemon_control.py \
+            evals/harness/tests/test_sandbox_none_network.py \
+            evals/harness/tests/test_docker_event_guard.py \
+            evals/harness/tests/test_sandbox_resource_identity.py \
+            evals/harness/tests/test_live_fixture_support.py \
+            evals/harness/tests/test_step4_evidence.py \
+            evals/harness/tests/test_sandboxed_package_runner.py \
+            evals/harness/tests/test_sandboxed_package_runner_canonical_bind.py \
+            evals/harness/tests/test_workspace_lease.py \
+            -m 'not docker_boundary and not live_provider' -q
+      - name: Run implemented package acquisition and endpointless boundary cases
+        run: |
+          evidence_dir="$RUNNER_TEMP/wp-step4-evidence"
+          combined="$RUNNER_TEMP/wp-step4-evidence-combined.json"
+          rm -rf "$evidence_dir"
+          rm -f "$combined" "$combined.tmp"
+          mkdir -m 700 "$evidence_dir"
+          started=$SECONDS
+          set +e
+          STEP4_EVIDENCE_DIR="$evidence_dir" \
+            uv run --locked --extra test python -m pytest \
+            -m 'docker_boundary and docker_sandbox and not live_provider' \
+            evals/harness/tests -q
+          pytest_status=$?
+          set -e
+          elapsed=$((SECONDS-started))
+          STEP4_EVIDENCE_DIR="$evidence_dir" STEP4_COMBINED_PATH="$combined" STEP4_PYTEST_STATUS="$pytest_status" STEP4_ELAPSED="$elapsed" PYTHONPATH=evals/harness \
+            uv run --locked --extra test python - <<'PY'
+          import os
+          from pathlib import Path
+          import step4_evidence
+          path=step4_evidence.combine_records(
+              os.environ["STEP4_EVIDENCE_DIR"],
+              os.environ["STEP4_COMBINED_PATH"],
+              os.environ["CANARY_COMMIT_SHA"],
+              int(os.environ["STEP4_PYTEST_STATUS"]),
+              int(os.environ["STEP4_ELAPSED"]),
+          )
+          encoded=path.read_bytes()
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a",encoding="utf-8") as summary:
+              summary.write("## Step 4 package sandbox evidence\n\n```json\n"+encoded.decode()+"```\n")
+          PY
+          exit "$pytest_status"
+      - name: Admit the feasibility runtime disk budget
+        run: |
+          free_before=$(df --output=avail -B1 / | tail -1)
+          echo "SANDBOX_FREE_BEFORE=$free_before" >> "$GITHUB_ENV"
+          test "$free_before" -ge 21474836480
+          docker system df
+      - name: Build and prove the exact committed runtime boundary
+        run: |
+          started=$SECONDS
+          set +e
+          timeout --signal=TERM --kill-after=30s 1800s \
+            env PYTHONPATH=evals/harness \
+            uv run --locked --extra test python -c 'import os,tempfile,wp_env_network_guard as g; result=g.run_linux_canary(tempfile.mkdtemp(prefix="wp-step0-parent-")+"/canary",os.environ["RUNNER_TEMP"]+"/wp-step0-result.json"); assert result["status"] == "pass", result'
+          sandbox_status=$?
+          set -e
+          elapsed=$((SECONDS-started))
+          echo "SANDBOX_CANARY_SECONDS=$elapsed" >> "$GITHUB_ENV"
+          echo "sandbox_canary_seconds=$elapsed"
+          if test "$elapsed" -gt 1800; then sandbox_status=1; fi
+          if test -f "$RUNNER_TEMP/wp-step0-result.json"; then
+            cat "$RUNNER_TEMP/wp-step0-result.json"
+            { echo '```json'; cat "$RUNNER_TEMP/wp-step0-result.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$sandbox_status"
+      - name: Remove and measure run-scoped sandbox resources
+        if: always()
+        run: |
+          set +e
+          set -o pipefail
+          cleanup_status=0
+          docker ps -aq --filter 'name=wp-step0-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-package-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-acquire-proxy-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-proxy-preflight-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-proxy-inventory-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-cleanup-test-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-fake-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-proxy-fake-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-registry-fake-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}} {{.Id}}' | awk '$1 ~ /^wpstep0/ {print $2}' | xargs -r docker rm -f || cleanup_status=1
+          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wpstep0/ {print $2}' | xargs -r docker network rm || cleanup_status=1
+          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wp-acquire-(internal|egress)-/ {print $2}' | xargs -r docker network rm || cleanup_status=1
+          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wp-(dns-observe|event-(mutation|alternate)|tunnel-break|fake-(internal|egress))-/ {print $2}' | xargs -r docker network rm || cleanup_status=1
+          docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '$1 ~ /^wp-sandbox-(wordpress|database):/ {print $2}' | sort -u | xargs -r docker image rm -f || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-step0-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-package-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-acquire-proxy-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-proxy-preflight-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-proxy-inventory-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-cleanup-test-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-fake-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-proxy-fake-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-registry-fake-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wpstep0/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wp-acquire-(internal|egress)-/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wp-(dns-observe|event-(mutation|alternate)|tunnel-break|fake-(internal|egress))-/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker image ls --format '{{.Repository}}:{{.Tag}}' | awk '$1 ~ /^wp-sandbox-(wordpress|database):/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          if [[ ${SANDBOX_FREE_BEFORE:-} =~ ^[0-9]+$ ]] && free_after=$(df --output=avail -B1 / | tail -1); then
+            used_delta=$((SANDBOX_FREE_BEFORE-free_after))
+            if test "$used_delta" -lt 0; then used_delta=0; fi
+            echo "sandbox_post_cleanup_disk_delta_bytes=$used_delta"
+            test "$used_delta" -le 12884901888 || cleanup_status=1
+          else
+            echo "sandbox_post_cleanup_disk_delta_bytes=unavailable"
+            cleanup_status=1
+          fi
+          echo "sandbox_canary_seconds=${SANDBOX_CANARY_SECONDS:-unavailable}"
+          docker system df || cleanup_status=1
+          exit "$cleanup_status"
+  generated-runtime-boundary:
+    name: No-secrets generated WordPress runtime boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions: {}
+    env:
+      CANARY_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Check out exact public commit without credentials
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$CANARY_COMMIT_SHA"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$CANARY_COMMIT_SHA"
+      - name: Set up exact Python without repository credentials
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version-file: ".python-version"
+          token: ""
+      - name: Set up exact uv without repository credentials or cache
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.9.27"
+          github-token: ""
+          enable-cache: false
+      - name: Sync locked validation dependencies
+        run: |
+          uv lock --check
+          uv sync --locked --extra test
+      - name: Install pinned PHP tools for the block full profile
+        run: >-
+          composer install --no-interaction --no-progress --no-scripts
+          --no-plugins --prefer-dist --working-dir evals/harness/php-tools
+      - name: Trusted-provision exact block build and proxy images
+        run: |
+          PYTHONPATH=evals/harness uv run --locked --extra test python - <<'PY'
+          import subprocess
+          import runtime_image_provision as provision
+          inventory=provision.inventory()["images"]
+          arch=provision.normalize_arch(subprocess.check_output(["uname","-m"],text=True).strip())
+          for key in ("node","python"):
+              item=inventory[key]
+              reference=f"{item['tag'].split(':')[0]}@{item[arch]}"
+              subprocess.run(["docker","pull",reference],check=True)
+          PY
+      - name: Admit the isolated runtime disk budget
+        run: |
+          free_before=$(df --output=avail -B1 / | tail -1)
+          echo "ISOLATED_FREE_BEFORE=$free_before" >> "$GITHUB_ENV"
+          test "$free_before" -ge 21474836480
+          docker system df
+      - name: Prove generated PHP and browser isolation with exact pinned images
+        run: |
+          started=$SECONDS
+          set +e
+          timeout --signal=TERM --kill-after=30s 1800s \
+            uv run --locked --extra test python -m pytest \
+              -m 'docker_boundary and docker_generated_runtime and not live_provider' \
+              evals/harness/tests -q
+          runtime_status=$?
+          set -e
+          elapsed=$((SECONDS-started))
+          echo "ISOLATED_RUNTIME_SECONDS=$elapsed" >> "$GITHUB_ENV"
+          echo "isolated_runtime_seconds=$elapsed"
+          if test "$elapsed" -gt 1800; then runtime_status=1; fi
+          exit "$runtime_status"
+      - name: Remove and measure generated-runtime resources
+        if: always()
+        run: |
+          set +e
+          set -o pipefail
+          cleanup_status=0
+          docker ps -aq --filter 'name=^/wpisolated' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-package-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-acquire-proxy-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-proxy-preflight-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'name=wp-proxy-inventory-' | xargs -r docker rm -f || cleanup_status=1
+          docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}} {{.Id}}' | awk '$1 ~ /^wpisolated/ {print $2}' | xargs -r docker rm -f || cleanup_status=1
+          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wpisolated/ {print $2}' | xargs -r docker network rm || cleanup_status=1
+          docker network ls --format '{{.Name}} {{.ID}}' | awk '$1 ~ /^wp-acquire-(internal|egress)-/ {print $2}' | xargs -r docker network rm || cleanup_status=1
+          docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '$1 ~ /^wp-isolated-(wordpress|database|browser|artifact):/ {print $2}' | sort -u | xargs -r docker image rm -f || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=^/wpisolated') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-package-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-acquire-proxy-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-proxy-preflight-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-proxy-inventory-') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'label=com.docker.compose.project' | xargs -r docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' | awk '$1 ~ /^wpisolated/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wpisolated/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker network ls --format '{{.Name}}' | awk '$1 ~ /^wp-acquire-(internal|egress)-/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          remaining=$(docker image ls --format '{{.Repository}}:{{.Tag}}' | awk '$1 ~ /^wp-isolated-(wordpress|database|browser|artifact):/') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          if [[ ${ISOLATED_FREE_BEFORE:-} =~ ^[0-9]+$ ]] && free_after=$(df --output=avail -B1 / | tail -1); then
+            used_delta=$((ISOLATED_FREE_BEFORE-free_after))
+            if test "$used_delta" -lt 0; then used_delta=0; fi
+            echo "isolated_runtime_post_cleanup_disk_delta_bytes=$used_delta"
+            test "$used_delta" -le 12884901888 || cleanup_status=1
+          else
+            echo "isolated_runtime_post_cleanup_disk_delta_bytes=unavailable"
+            cleanup_status=1
+          fi
+          echo "isolated_runtime_seconds=${ISOLATED_RUNTIME_SECONDS:-unavailable}"
+          docker system df || cleanup_status=1
+          exit "$cleanup_status"
   validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      REVIEWED_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ env.REVIEWED_COMMIT_SHA }}
+          persist-credentials: false
+
+      - name: Verify exact reviewed commit
+        run: test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT_SHA"
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
-          python-version: "3.13"
+          python-version-file: ".python-version"
 
-      - name: Install validation dependencies
-        run: python -m pip install --upgrade pytest pyyaml
+      - name: Set up exact uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.9.27"
+
+      - name: Sync locked validation dependencies
+        run: |
+          uv lock --check
+          uv sync --locked --extra test
 
       # ubuntu-latest ships PHP and Composer; installing the pinned toolchain
       # lets the API-existence lint gate run for real instead of skipping.
       - name: Cache Composer downloads
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ~/.cache/composer/files
           key: composer-${{ hashFiles('evals/harness/php-tools/composer.lock') }}
 
       - name: Install pinned PHP analysis toolchain
-        run: composer install --no-interaction --no-progress --working-dir evals/harness/php-tools
+        run: composer install --no-interaction --no-progress --no-scripts --no-plugins --prefer-dist --working-dir evals/harness/php-tools
 
       - name: Verify manifest
         run: ./install.sh --verify
 
-      - name: Validate agent/skill frontmatter and WordPress API contracts
+      - name: Validate distribution, frontmatter, and WordPress API contracts
         run: |
-          python scripts/validate-agent-frontmatter.py
-          python scripts/validate-wordpress-exact-api-contract.py
+          uv run --locked --extra test python scripts/validate-distribution-parity.py
+          uv run --locked --extra test python scripts/validate-agent-frontmatter.py
+          uv run --locked --extra test python scripts/validate-wordpress-exact-api-contract.py
 
       - name: Validate selected WordPress eval suites
         run: |
-          python scripts/validate-eval-suite-integrity.py \
+          uv run --locked --extra test python scripts/validate-eval-suite-integrity.py \
             --strict-suites wordpress-plugin-executor \
             --strict-suites wordpress-block-executor \
             --strict-suites wordpress-security-critic \
@@ -53,23 +413,47 @@ jobs:
             --strict-suites wordpress-skill-candidate-eval \
             --allow-known-gaps
 
+      - name: Validate public documentation references and controls
+        run: uv run --locked --extra test python scripts/validate-public-docs.py
+
       - name: Run WordPress harness tests
         run: |
-          python -m pytest \
-            evals/harness/tests/test_invoke_claude_command.py \
-            evals/harness/tests/test_wordpress_runtime_smoke.py \
-            evals/harness/tests/test_wordpress_artifact_oracle.py \
-            evals/harness/tests/test_wordpress_blueprint_launch_readiness.py \
-            evals/harness/tests/test_wordpress_executor_packet_oracle.py \
-            evals/harness/tests/test_wordpress_exact_api_contract.py \
-            evals/harness/tests/test_wordpress_executor_artifact_certifier.py \
-            evals/harness/tests/test_wordpress_packet_materializer.py \
-            evals/harness/tests/test_wordpress_high_risk_answer_keys.py \
-            evals/harness/tests/test_wordpress_high_risk_saved_outputs.py \
-            evals/harness/tests/test_wordpress_skill_output_contract.py \
-            evals/harness/tests/test_answer_key_score.py \
-            evals/harness/tests/test_pairwise_pilot.py \
-            evals/harness/tests/test_wordpress_candidate_pilot_generation.py \
-            evals/harness/tests/test_wp_api_lint.py \
-            evals/harness/tests/test_wp_security_gate.py \
-            -q
+          uv run --locked --extra test python -m pytest \
+            -m 'not docker_boundary and not live_provider' \
+            evals/harness/tests -q
+
+      - name: Measure Plan 010 artifact certification boundary
+        run: |
+          record="$RUNNER_TEMP/plan010-artifact-measurement.json"
+          set +e
+          uv run --locked --extra test python scripts/measure-plan010-artifact-path.py \
+            --profile ci \
+            --output "$record" \
+            > "$RUNNER_TEMP/plan010-artifact-measurement.log"
+          measurement_status=$?
+          set -e
+          uv run --locked --extra test python - "$record" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import sys
+          record=json.load(open(sys.argv[1], encoding="utf-8"))
+          print("## Plan 010 artifact certification measurement")
+          print(f"Commit: `{record['toolchain']['commit_sha']}`")
+          print("| Profile | Status | Certification seconds | Max observed process RSS MiB | Bounded invocations |")
+          print("|---|---:|---:|---:|---:|")
+          for name, item in record["profiles"].items():
+              metrics=item.get("metrics", {})
+              seconds=metrics.get("certification_wall_seconds", "missing")
+              rss=metrics.get("max_observed_process_rss_bytes")
+              rss_mib=f"{rss / 1048576:.1f}" if isinstance(rss, (int, float)) else "missing"
+              invocations=metrics.get("bounded_invocation_count", "missing")
+              print(f"| {name} | {item['status']} | {seconds} | {rss_mib} | {invocations} |")
+          PY
+          exit "$measurement_status"
+
+      - name: Upload Plan 010 measurement evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: plan010-artifact-measurement-${{ env.REVIEWED_COMMIT_SHA }}
+          path: ${{ runner.temp }}/plan010-artifact-measurement.json
+          if-no-files-found: error

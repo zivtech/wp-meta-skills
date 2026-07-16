@@ -8,6 +8,7 @@ Implements the approved Acme Runtime Tested plugin spec with a small pure helper
 - `acme-runtime-tested/tests/ModeTest.php`
 - `acme-runtime-tested/phpunit.xml`
 - `acme-runtime-tested/composer.json`
+- `acme-runtime-tested/composer.lock`
 - `acme-runtime-tested/readme.txt`
 
 ## Implementation Packets
@@ -200,8 +201,25 @@ final class ModeTest extends TestCase {
 ```json
 {
   "require-dev": {
-    "phpunit/phpunit": "^12.0"
+    "phpunit/phpunit": "12.5.31"
+  },
+  "config": {
+    "platform": {
+      "php": "8.3.0"
+    },
+    "allow-plugins": false
   }
+}
+```
+
+### acme-runtime-tested/composer.lock
+```json
+{
+  "kind": "approved-lock-profile",
+  "version": 1,
+  "approved_lock_profile": "plugin-phpunit-12.5.31",
+  "sha256": "47eee06cd2f4990a5660ea35f54d8d0c161fe8e3e304debf6b267dde10548b42",
+  "manifest_sha256": "5d3a497a4e9a581a7c39fff1152ba9f6423fc1c89c8a8836d32338d3a12ddec2"
 }
 ```
 

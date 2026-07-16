@@ -51,16 +51,28 @@ Standing negative space (checked by tests, stated in every report):
 from __future__ import annotations
 
 import argparse
+import bisect
 import difflib
 import json
+import os
 import re
 import shutil
-import subprocess
+import stat
 import sys
 import tempfile
+import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from bounded_subprocess import (
+    BoundedProcessError,
+    BoundedProcessOverflow,
+    BoundedProcessTimeout,
+    run_bounded,
+)
+import php_scanner_aliases
 
 HARNESS_ROOT = Path(__file__).resolve().parent
 DEFAULT_PHP_TOOLS_ROOT = HARNESS_ROOT / "php-tools"
@@ -71,6 +83,15 @@ SCHEMA_VERSION = 1
 PHP_SUFFIXES = {".php"}
 IGNORED_DIRS = {".git", "node_modules", "vendor", ".wp-env", "coverage", "dist", "build"}
 HEADER_BYTES = 8 * 1024
+TOOL_STDOUT_LIMIT = 32 * 1024 * 1024
+TOOL_STDERR_LIMIT = 2 * 1024 * 1024
+MAX_CALL_SITES_PER_FILE = 50_000
+MAX_CALL_SITES_TOTAL = 100_000
+MAX_FINDINGS_PER_FILE = 5_000
+MAX_FINDINGS_TOTAL = 10_000
+MAX_TOOL_MESSAGES_PER_FILE = 5_000
+MAX_TOOL_MESSAGES_TOTAL = 10_000
+ANALYSIS_CHECK_INTERVAL = 256
 
 # Header regexes mirror wp-compat's getRequiresAtLeastHeader(), which mirrors
 # WordPress core's get_plugin_data() logic.
@@ -189,6 +210,61 @@ class SymbolIndex:
         return difflib.get_close_matches(symbol, pool, n=3, cutoff=0.6)
 
 
+class AnalysisBlocked(RuntimeError):
+    """Native analysis exceeded a deadline or reviewed work ceiling."""
+
+
+@dataclass
+class AnalysisBudget:
+    deadline_monotonic: float | None
+    call_sites: int = 0
+    findings: int = 0
+    tool_messages: int = 0
+
+    def __post_init__(self) -> None:
+        self.call_sites_by_file: dict[str, int] = {}
+        self.findings_by_file: dict[str, int] = {}
+        self.tool_messages_by_file: dict[str, int] = {}
+
+    def check_deadline(self) -> None:
+        if self.deadline_monotonic is None:
+            return
+        if time.monotonic() >= self.deadline_monotonic:
+            raise AnalysisBlocked("native API/hook analysis deadline elapsed")
+
+    def visit_call(self, engine: str, file_name: str) -> None:
+        self.call_sites += 1
+        file_count = self.call_sites_by_file.get(file_name, 0) + 1
+        self.call_sites_by_file[file_name] = file_count
+        if file_count > MAX_CALL_SITES_PER_FILE:
+            raise AnalysisBlocked(f"{engine} call-site limit exceeded for {file_name}")
+        if self.call_sites > MAX_CALL_SITES_TOTAL:
+            raise AnalysisBlocked(f"{engine} global call-site limit exceeded")
+        if self.call_sites % ANALYSIS_CHECK_INTERVAL == 0:
+            self.check_deadline()
+
+    def add_finding(self, engine: str, file_name: str, finding: dict[str, Any]) -> dict[str, Any]:
+        self.findings += 1
+        file_count = self.findings_by_file.get(file_name, 0) + 1
+        self.findings_by_file[file_name] = file_count
+        if file_count > MAX_FINDINGS_PER_FILE:
+            raise AnalysisBlocked(f"{engine} finding limit exceeded for {file_name}")
+        if self.findings > MAX_FINDINGS_TOTAL:
+            raise AnalysisBlocked(f"{engine} global finding limit exceeded")
+        self.check_deadline()
+        return finding
+
+    def visit_tool_message(self, engine: str, file_name: str) -> None:
+        self.tool_messages += 1
+        file_count = self.tool_messages_by_file.get(file_name, 0) + 1
+        self.tool_messages_by_file[file_name] = file_count
+        if file_count > MAX_TOOL_MESSAGES_PER_FILE:
+            raise AnalysisBlocked(f"{engine} message limit exceeded for {file_name}")
+        if self.tool_messages > MAX_TOOL_MESSAGES_TOTAL:
+            raise AnalysisBlocked(f"{engine} global message limit exceeded")
+        self.check_deadline()
+
+
 # --------------------------------------------------------------------------
 # Phase-2 native engines: MIT snapshot symbols/deprecations + vendor hooks.
 # --------------------------------------------------------------------------
@@ -274,8 +350,12 @@ def _blank(segment: str) -> str:
     return "".join("\n" if ch == "\n" else " " for ch in segment)
 
 
-def _line_of(text: str, index: int) -> int:
-    return text.count("\n", 0, index) + 1
+def _newline_offsets(text: str) -> list[int]:
+    return [index for index, character in enumerate(text) if character == "\n"]
+
+
+def _line_of(newline_offsets: list[int], index: int) -> int:
+    return bisect.bisect_left(newline_offsets, index) + 1
 
 
 def _is_plain_call(stripped: str, start: int) -> bool:
@@ -305,7 +385,12 @@ class HookCall:
     start: int
 
 
-def extract_hook_calls(raw: str) -> list[HookCall]:
+def extract_hook_calls(
+    raw: str,
+    *,
+    budget: AnalysisBudget | None = None,
+    file_name: str = "<memory>",
+) -> list[HookCall]:
     """Extract first-argument hook names from hook API calls.
 
     A plain quoted literal followed by `,` or `)` is a static hook name.
@@ -313,6 +398,8 @@ def extract_hook_calls(raw: str) -> list[HookCall]:
     """
     calls: list[HookCall] = []
     for match in HOOK_CALL_OPEN_RE.finditer(raw):
+        if budget is not None:
+            budget.visit_call("hook", file_name)
         caller = match.group(1)
         i = match.end()
         while i < len(raw) and raw[i] in " \t\n":
@@ -325,6 +412,8 @@ def extract_hook_calls(raw: str) -> list[HookCall]:
             continue
         j = i + 1
         while j < len(raw):
+            if budget is not None and j % 4096 == 0:
+                budget.check_deadline()
             if raw[j] == "\\":
                 j += 2
                 continue
@@ -399,7 +488,11 @@ def _make_finding(
     }
 
 
-def _artifact_php_texts(path: Path) -> dict[Path, str]:
+def _artifact_php_texts(
+    path: Path,
+    explicit_files: list[Path] | None = None,
+    budget: AnalysisBudget | None = None,
+) -> dict[Path, str]:
     """Artifact PHP texts, excluding test dirs INSIDE the artifact only.
 
     Matching any absolute path part would also exclude artifacts that
@@ -407,12 +500,17 @@ def _artifact_php_texts(path: Path) -> dict[Path, str]:
     — the same trap `build_neon` scopes its excludePaths against.
     """
     files = {}
-    for file_path in iter_php_files(path):
-        if path.is_dir():
+    selected_files = explicit_files if explicit_files is not None else iter_php_files(path)
+    for file_path in selected_files:
+        if budget is not None:
+            budget.check_deadline()
+        if explicit_files is None and path.is_dir():
             inner_dirs = file_path.relative_to(path).parts[:-1]
             if any(part in ("tests", "test") for part in inner_dirs):
                 continue
         files[file_path] = file_path.read_text(encoding="utf-8", errors="replace")
+        if budget is not None:
+            budget.check_deadline()
     return files
 
 
@@ -423,6 +521,154 @@ def _relative_name(file_path: Path, path: Path) -> str:
         return str(file_path)
 
 
+@dataclass(frozen=True)
+class NativeContext:
+    declared: str | None
+    declared_range: dict[str, Any]
+    include_existence: bool
+    guarded: set[str]
+    defined_functions: set[str]
+    defined_classes: set[str]
+    slug_prefixes: set[str]
+    known_functions: dict[str, dict[str, Any]]
+    known_classes: dict[str, dict[str, Any]]
+    builtins: set[str]
+
+
+def _collect_native_names(
+    raw_texts: dict[Path, str],
+    stripped_texts: dict[Path, str],
+    budget: AnalysisBudget,
+) -> tuple[set[str], set[str], set[str]]:
+    guarded: set[str] = set()
+    defined_functions: set[str] = set()
+    defined_classes: set[str] = set()
+    for file_path, raw in raw_texts.items():
+        budget.check_deadline()
+        guarded.update(match.group(1).lower() for match in FUNCTION_EXISTS_RE.finditer(raw))
+        stripped = stripped_texts[file_path]
+        defined_functions.update(match.group(1).lower() for match in DEF_FUNCTION_RE.finditer(stripped))
+        defined_classes.update(match.group(1).lower() for match in DEF_CLASS_RE.finditer(stripped))
+        budget.check_deadline()
+    return guarded, defined_functions, defined_classes
+
+
+def _known_function_finding(
+    name: str,
+    lower: str,
+    meta: dict[str, Any],
+    rel: str,
+    line: int,
+    evidence: str,
+    context: NativeContext,
+) -> dict[str, Any] | None:
+    if meta.get("deprecated"):
+        return _make_finding(
+            "deprecated_api", name, "function", rel, line, evidence,
+            deprecated_in=meta["deprecated"], replacement=meta.get("replacement"),
+            declared_range=context.declared_range,
+        )
+    since = meta.get("since")
+    if not (context.include_existence and since and context.declared):
+        return None
+    if lower in context.guarded or not version_gt(since, context.declared):
+        return None
+    return _make_finding(
+        "version_range", name, "function", rel, line, evidence,
+        introduced_in=since, declared_range=context.declared_range,
+    )
+
+
+def _native_call_finding(
+    match: re.Match[str],
+    stripped: str,
+    newline_offsets: list[int],
+    rel: str,
+    context: NativeContext,
+    budget: AnalysisBudget,
+) -> dict[str, Any] | None:
+    budget.visit_call("native API", rel)
+    name = match.group(1)
+    lower = name.lower()
+    before = stripped[max(0, match.start() - 12) : match.start()]
+    if not _is_plain_call(stripped, match.start()) or lower in PHP_KEYWORDS:
+        return None
+    if re.search(r"\bfunction\s*&?\s*$", before) or re.search(r"\bnew\s+$", before):
+        return None
+    line = _line_of(newline_offsets, match.start())
+    evidence = stripped[match.start() : match.start() + 80].split("\n")[0].strip()
+    meta = context.known_functions.get(lower)
+    if meta is not None:
+        return _known_function_finding(name, lower, meta, rel, line, evidence, context)
+    if not context.include_existence:
+        return None
+    if (
+        lower in context.builtins
+        or lower in context.defined_functions
+        or lower in context.guarded
+    ):
+        return None
+    allowlisted = any(lower.startswith(prefix) for prefix in context.slug_prefixes)
+    budget.check_deadline()
+    return _make_finding(
+        "unknown_function", name, "function", rel, line, evidence,
+        confidence="advisory" if allowlisted else "exact", allowlisted=allowlisted,
+        suggestions=difflib.get_close_matches(lower, context.known_functions, n=3, cutoff=0.6),
+    )
+
+
+def _native_class_finding(
+    match: re.Match[str],
+    stripped: str,
+    newline_offsets: list[int],
+    rel: str,
+    context: NativeContext,
+    budget: AnalysisBudget,
+) -> dict[str, Any] | None:
+    budget.visit_call("native class", rel)
+    raw_name = match.group(1)
+    if "\\" in raw_name.lstrip("\\"):
+        return None
+    name = raw_name.lstrip("\\")
+    lower = name.lower()
+    if lower in {"static", "self", "parent", "class"} or lower in PHP_KEYWORDS:
+        return None
+    if (
+        lower in context.known_classes
+        or lower in context.defined_classes
+        or lower in context.builtins
+    ):
+        return None
+    allowlisted = any(lower.startswith(prefix) for prefix in context.slug_prefixes)
+    budget.check_deadline()
+    return _make_finding(
+        "unknown_class", name, "class", rel, _line_of(newline_offsets, match.start()),
+        stripped[match.start() : match.start() + 80].split("\n")[0].strip(),
+        confidence="advisory" if allowlisted else "exact", allowlisted=allowlisted,
+        suggestions=difflib.get_close_matches(lower, context.known_classes, n=3, cutoff=0.6),
+    )
+
+
+def _scan_native_file(
+    stripped: str,
+    rel: str,
+    context: NativeContext,
+    budget: AnalysisBudget,
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    newline_offsets = _newline_offsets(stripped)
+    for match in CALL_RE.finditer(stripped):
+        finding = _native_call_finding(match, stripped, newline_offsets, rel, context, budget)
+        if finding is not None:
+            findings.append(budget.add_finding("native API", rel, finding))
+    if context.include_existence:
+        for match in NEW_CLASS_RE.finditer(stripped):
+            finding = _native_class_finding(match, stripped, newline_offsets, rel, context, budget)
+            if finding is not None:
+                findings.append(budget.add_finding("native class", rel, finding))
+    return findings
+
+
 def native_php_findings(
     path: Path,
     snapshot: dict[str, Any],
@@ -430,189 +676,124 @@ def native_php_findings(
     prefixes: list[str],
     declared_range: dict[str, Any],
     include_existence: bool,
+    explicit_files: list[Path] | None = None,
+    *,
+    deadline_monotonic: float | None = None,
+    budget: AnalysisBudget | None = None,
 ) -> list[dict[str, Any]]:
-    """Snapshot-backed findings over artifact PHP.
-
-    `deprecated_api` findings are always produced. Existence and
-    version-range findings are produced only with `include_existence=True`
-    (the no-toolchain degraded mode; when PHPStan runs, wp-compat owns them
-    with real scope analysis).
-    """
-    findings: list[dict[str, Any]] = []
-    raw_texts = _artifact_php_texts(path)
-    stripped_texts = {file_path: strip_strings_and_comments(text) for file_path, text in raw_texts.items()}
-    aggregate_raw = "\n".join(raw_texts.values())
-    guarded = {match.group(1).lower() for match in FUNCTION_EXISTS_RE.finditer(aggregate_raw)}
-
-    defined_functions: set[str] = set()
-    defined_classes: set[str] = set()
-    for stripped in stripped_texts.values():
-        defined_functions.update(match.group(1).lower() for match in DEF_FUNCTION_RE.finditer(stripped))
-        defined_classes.update(match.group(1).lower() for match in DEF_CLASS_RE.finditer(stripped))
-
+    """Snapshot-backed findings with bounded call sites, findings, and time."""
+    active_budget = budget or AnalysisBudget(deadline_monotonic)
+    raw_texts = _artifact_php_texts(path, explicit_files, active_budget)
+    stripped_texts = {
+        file_path: strip_strings_and_comments(text)
+        for file_path, text in raw_texts.items()
+    }
+    guarded, defined_functions, defined_classes = _collect_native_names(
+        raw_texts, stripped_texts, active_budget
+    )
     slug_prefixes = {prefix.lower() for prefix in prefixes}
     if path.is_dir():
         slug_prefixes.add(path.name.replace("-", "_").lower() + "_")
-
-    known_functions = snapshot["functions"]
-    known_classes = snapshot["classes"]
-    builtins = set(snapshot.get("php_builtins", []))
-    function_names = list(known_functions)
-
+    context = NativeContext(
+        declared, declared_range, include_existence, guarded, defined_functions,
+        defined_classes, slug_prefixes, snapshot["functions"], snapshot["classes"],
+        set(snapshot.get("php_builtins", [])),
+    )
+    findings: list[dict[str, Any]] = []
     for file_path, stripped in stripped_texts.items():
-        rel = _relative_name(file_path, path)
-        for match in CALL_RE.finditer(stripped):
-            name = match.group(1)
-            lower = name.lower()
-            if not _is_plain_call(stripped, match.start()):
-                continue
-            if lower in PHP_KEYWORDS:
-                continue
-            before = stripped[max(0, match.start() - 12) : match.start()]
-            if re.search(r"\bfunction\s*&?\s*$", before) or re.search(r"\bnew\s+$", before):
-                continue
-            line = _line_of(stripped, match.start())
-            evidence = stripped[match.start() : match.start() + 80].split("\n")[0].strip()
-            meta = known_functions.get(lower)
-            if meta is not None:
-                deprecated_in = meta.get("deprecated")
-                since = meta.get("since")
-                if deprecated_in:
-                    findings.append(
-                        _make_finding(
-                            "deprecated_api", name, "function", rel, line, evidence,
-                            deprecated_in=deprecated_in, replacement=meta.get("replacement"),
-                            declared_range=declared_range,
-                        )
-                    )
-                elif (
-                    include_existence
-                    and since
-                    and declared
-                    and version_gt(since, declared)
-                    and lower not in guarded
-                ):
-                    findings.append(
-                        _make_finding(
-                            "version_range", name, "function", rel, line, evidence,
-                            introduced_in=since, declared_range=declared_range,
-                        )
-                    )
-                continue
-            if not include_existence:
-                continue
-            if lower in builtins or lower in defined_functions or lower in guarded:
-                continue
-            allowlisted = any(lower.startswith(prefix) for prefix in slug_prefixes)
-            findings.append(
-                _make_finding(
-                    "unknown_function", name, "function", rel, line, evidence,
-                    confidence="advisory" if allowlisted else "exact",
-                    allowlisted=allowlisted,
-                    suggestions=difflib.get_close_matches(lower, function_names, n=3, cutoff=0.6),
-                )
-            )
-        if not include_existence:
-            continue
-        for match in NEW_CLASS_RE.finditer(stripped):
-            raw_name = match.group(1)
-            if "\\" in raw_name.lstrip("\\"):
-                continue  # namespaced instantiation: out of native scope
-            name = raw_name.lstrip("\\")
-            lower = name.lower()
-            if lower in {"static", "self", "parent", "class"} or lower in PHP_KEYWORDS:
-                continue
-            if lower in known_classes or lower in defined_classes or lower in builtins:
-                continue
-            allowlisted = any(lower.startswith(prefix) for prefix in slug_prefixes)
-            findings.append(
-                _make_finding(
-                    "unknown_class", name, "class", rel,
-                    _line_of(stripped, match.start()),
-                    stripped[match.start() : match.start() + 80].split("\n")[0].strip(),
-                    confidence="advisory" if allowlisted else "exact",
-                    allowlisted=allowlisted,
-                    suggestions=difflib.get_close_matches(lower, list(known_classes), n=3, cutoff=0.6),
-                )
-            )
+        findings.extend(_scan_native_file(stripped, _relative_name(file_path, path), context, active_budget))
     return findings
+
+
+def _classify_hook(
+    name: str,
+    hooks: dict[str, dict[str, Any]],
+    defined_hooks: set[str],
+    slug_prefixes: set[str],
+    dynamic_patterns: list[tuple[re.Pattern[str], str, bool]],
+    budget: AnalysisBudget,
+) -> tuple[str, str | None]:
+    if name in hooks or name in defined_hooks:
+        return "allowed", None
+    if any(name.lower().startswith(prefix) for prefix in slug_prefixes):
+        return "allowed", None
+    generic_match: str | None = None
+    for index, (pattern, pattern_name, specific) in enumerate(dynamic_patterns, start=1):
+        if index % ANALYSIS_CHECK_INTERVAL == 0:
+            budget.check_deadline()
+        if not pattern.match(name):
+            continue
+        if specific:
+            return "allowed", pattern_name
+        generic_match = generic_match or pattern_name
+    return ("advisory", generic_match) if generic_match else ("unknown", None)
+
+
+def _hook_call_finding(
+    call: HookCall,
+    raw: str,
+    newline_offsets: list[int],
+    rel: str,
+    classify: Any,
+    static_hook_names: list[str],
+) -> dict[str, Any] | None:
+    if call.caller not in HOOK_CONSUMERS:
+        return None
+    line = _line_of(newline_offsets, call.start)
+    evidence = raw[call.start : call.start + 120].split("\n")[0].strip()
+    if call.dynamic:
+        return _make_finding(
+            "unknown_hook", call.name or "<dynamic>", "hook", rel, line,
+            f"{evidence} [dynamic hook name: verify the interpolated value]",
+            confidence="advisory",
+        )
+    if not call.name:
+        return None
+    verdict, matched_pattern = classify(call.name)
+    if verdict == "allowed":
+        return None
+    suffix = f" [matches generic dynamic core hook {matched_pattern}: verify]" if verdict == "advisory" else ""
+    return _make_finding(
+        "unknown_hook", call.name, "hook", rel, line, evidence + suffix,
+        confidence="advisory" if verdict == "advisory" else "exact",
+        suggestions=difflib.get_close_matches(call.name, static_hook_names, n=3, cutoff=0.6),
+    )
 
 
 def hook_findings(
     path: Path,
     hooks: dict[str, dict[str, Any]],
     prefixes: list[str],
+    explicit_files: list[Path] | None = None,
+    *,
+    deadline_monotonic: float | None = None,
+    budget: AnalysisBudget | None = None,
 ) -> list[dict[str, Any]]:
-    """`unknown_hook` findings for hook consumers against the vendor hooks data."""
-    findings: list[dict[str, Any]] = []
-    raw_texts = _artifact_php_texts(path)
-    hook_calls_by_file = {file_path: extract_hook_calls(raw) for file_path, raw in raw_texts.items()}
-
-    defined_hooks: set[str] = set()
-    for calls in hook_calls_by_file.values():
-        for call in calls:
-            if call.caller in HOOK_DEFINERS and call.name and not call.dynamic:
-                defined_hooks.add(call.name)
-
+    """Bounded `unknown_hook` findings for hook consumers."""
+    active_budget = budget or AnalysisBudget(deadline_monotonic)
+    raw_texts = _artifact_php_texts(path, explicit_files, active_budget)
+    calls_by_file = {
+        file_path: extract_hook_calls(raw, budget=active_budget, file_name=_relative_name(file_path, path))
+        for file_path, raw in raw_texts.items()
+    }
+    defined_hooks = {
+        call.name for calls in calls_by_file.values() for call in calls
+        if call.caller in HOOK_DEFINERS and call.name and not call.dynamic
+    }
     slug_prefixes = {prefix.lower() for prefix in prefixes}
     if path.is_dir():
         slug_prefixes.add(path.name.replace("-", "_").lower() + "_")
-
-    dynamic_patterns = _compile_dynamic_hook_patterns(hooks)
-    static_hook_names = [name for name in hooks if "{" not in name and "$" not in name]
-
-    def classify(name: str) -> tuple[str, str | None]:
-        if name in hooks or name in defined_hooks:
-            return "allowed", None
-        if any(name.lower().startswith(prefix) for prefix in slug_prefixes):
-            return "allowed", None
-        generic_match: str | None = None
-        for pattern, pattern_name, specific in dynamic_patterns:
-            if pattern.match(name):
-                if specific:
-                    return "allowed", pattern_name
-                generic_match = generic_match or pattern_name
-        if generic_match:
-            return "advisory", generic_match
-        return "unknown", None
-
+    patterns = _compile_dynamic_hook_patterns(hooks)
+    static_names = [name for name in hooks if "{" not in name and "$" not in name]
+    classify = lambda name: _classify_hook(name, hooks, defined_hooks, slug_prefixes, patterns, active_budget)
+    findings: list[dict[str, Any]] = []
     for file_path, raw in raw_texts.items():
         rel = _relative_name(file_path, path)
-        for call in hook_calls_by_file[file_path]:
-            if call.caller not in HOOK_CONSUMERS:
-                continue
-            line = _line_of(raw, call.start)
-            evidence = raw[call.start : call.start + 120].split("\n")[0].strip()
-            if call.dynamic:
-                findings.append(
-                    _make_finding(
-                        "unknown_hook", call.name or "<dynamic>", "hook", rel, line,
-                        f"{evidence} [dynamic hook name: verify the interpolated value]",
-                        confidence="advisory",
-                    )
-                )
-                continue
-            if not call.name:
-                continue
-            verdict, matched_pattern = classify(call.name)
-            if verdict == "allowed":
-                continue
-            if verdict == "advisory":
-                findings.append(
-                    _make_finding(
-                        "unknown_hook", call.name, "hook", rel, line,
-                        f"{evidence} [matches generic dynamic core hook {matched_pattern}: verify]",
-                        confidence="advisory",
-                        suggestions=difflib.get_close_matches(call.name, static_hook_names, n=3, cutoff=0.6),
-                    )
-                )
-                continue
-            findings.append(
-                _make_finding(
-                    "unknown_hook", call.name, "hook", rel, line, evidence,
-                    suggestions=difflib.get_close_matches(call.name, static_hook_names, n=3, cutoff=0.6),
-                )
-            )
+        offsets = _newline_offsets(raw)
+        for call in calls_by_file[file_path]:
+            finding = _hook_call_finding(call, raw, offsets, rel, classify, static_names)
+            if finding is not None:
+                findings.append(active_budget.add_finding("hook", rel, finding))
     return findings
 
 
@@ -659,9 +840,63 @@ def iter_php_files(path: Path) -> list[Path]:
         for child in path.rglob("*")
         if child.is_file()
         and child.suffix.lower() in PHP_SUFFIXES
-        and not any(part in IGNORED_DIRS for part in child.parts)
+        and not any(part in IGNORED_DIRS for part in child.relative_to(path).parts[:-1])
     ]
     return sorted(files)
+
+
+def _trusted_explicit_files(scan_root: Path, explicit_files: Iterable[Path | str]) -> list[Path]:
+    """Validate exact files from a factory-authentic SCAN_HANDOFF.
+
+    This boundary is not for original untrusted artifact paths. It deliberately
+    uses lexical normalization rather than ``Path.resolve()``; the handoff has
+    already been created and authenticated by the no-follow staging layer.
+    """
+    root = Path(os.path.abspath(scan_root))
+    try:
+        root_mode = root.lstat().st_mode
+    except OSError as exc:
+        raise ValueError(f"trusted scan root is unavailable: {root}") from exc
+    if not stat.S_ISDIR(root_mode):
+        raise ValueError(f"trusted scan root is not a directory: {root}")
+
+    selected: list[Path] = []
+    seen: set[Path] = set()
+    for raw_file in explicit_files:
+        supplied = Path(raw_file)
+        candidate = supplied if supplied.is_absolute() else root / supplied
+        canonical = Path(os.path.abspath(candidate))
+        try:
+            relative = canonical.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"explicit scan file escapes trusted root: {raw_file}") from exc
+        relative_text = relative.as_posix()
+        if "\\" in relative_text or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in relative_text
+        ):
+            raise ValueError("explicit scan filename contains an unsupported character")
+        if canonical in seen:
+            raise ValueError(f"duplicate explicit scan file: {canonical}")
+        try:
+            mode = canonical.lstat().st_mode
+        except OSError as exc:
+            raise ValueError(f"explicit scan file is unavailable: {canonical}") from exc
+        if not stat.S_ISREG(mode):
+            raise ValueError(f"explicit scan path is not a regular file: {canonical}")
+        seen.add(canonical)
+        selected.append(canonical)
+    return selected
+
+
+def _prepare_scan_files(
+    path: Path,
+    explicit_files: Iterable[Path | str] | None,
+) -> tuple[Path, list[Path] | None]:
+    if explicit_files is None:
+        return path.resolve(), None
+    trusted_root = Path(os.path.abspath(path))
+    return trusted_root, _trusted_explicit_files(trusted_root, explicit_files)
 
 
 def _read_header(path: Path) -> str:
@@ -669,17 +904,22 @@ def _read_header(path: Path) -> str:
     return text.replace("\r", "\n")
 
 
-def _header_files(path: Path) -> list[Path]:
-    candidates = [file_path for file_path in iter_php_files(path) if "Plugin Name:" in _read_header(file_path)]
-    if path.is_dir():
+def _header_files(path: Path, explicit_files: list[Path] | None = None) -> list[Path]:
+    files = explicit_files if explicit_files is not None else iter_php_files(path)
+    candidates: list[Path] = []
+    for file_path in files:
+        header = _read_header(file_path)
+        if "Plugin Name:" in header or (explicit_files is not None and "Theme Name:" in header):
+            candidates.append(file_path)
+    if explicit_files is None and path.is_dir():
         style_css = path / "style.css"
         if style_css.exists() and "Theme Name:" in _read_header(style_css):
             candidates.append(style_css)
     return candidates
 
 
-def declared_requires_at_least(path: Path) -> str | None:
-    for header_file in _header_files(path):
+def declared_requires_at_least(path: Path, explicit_files: list[Path] | None = None) -> str | None:
+    for header_file in _header_files(path, explicit_files):
         match = REQUIRES_AT_LEAST_RE.search(_read_header(header_file))
         if match and match.group(1).strip():
             cleaned = re.sub(r"[^0-9.]", "", match.group(1))
@@ -688,9 +928,9 @@ def declared_requires_at_least(path: Path) -> str | None:
     return None
 
 
-def declared_plugin_dependencies(path: Path) -> list[str]:
+def declared_plugin_dependencies(path: Path, explicit_files: list[Path] | None = None) -> list[str]:
     slugs: list[str] = []
-    for header_file in _header_files(path):
+    for header_file in _header_files(path, explicit_files):
         match = REQUIRES_PLUGINS_RE.search(_read_header(header_file))
         if not match:
             continue
@@ -701,43 +941,64 @@ def declared_plugin_dependencies(path: Path) -> list[str]:
     return slugs
 
 
-def allowlist_prefixes(path: Path, extra_prefixes: list[str] | None = None) -> list[str]:
+def allowlist_prefixes(
+    path: Path,
+    extra_prefixes: list[str] | None = None,
+    explicit_files: list[Path] | None = None,
+) -> list[str]:
     prefixes = list(extra_prefixes or [])
-    for slug in declared_plugin_dependencies(path):
+    for slug in declared_plugin_dependencies(path, explicit_files):
         for prefix in KNOWN_PLUGIN_PREFIXES.get(slug, (slug.replace("-", "_") + "_",)):
             if prefix not in prefixes:
                 prefixes.append(prefix)
     return prefixes
 
 
-def build_neon(artifact_path: Path, toolchain: Toolchain, tmp_dir: Path, requires_at_least: str | None) -> str:
+def _neon_string(value: object) -> str:
+    """Encode an exact scalar as a NEON-compatible JSON string."""
+    return json.dumps(str(value), ensure_ascii=True)
+
+
+def build_neon(
+    artifact_path: Path,
+    toolchain: Toolchain,
+    tmp_dir: Path,
+    requires_at_least: str | None,
+    explicit_files: list[Path] | None = None,
+) -> str:
     lines: list[str] = []
     if requires_at_least is not None:
-        lines += ["includes:", f'    - "{toolchain.wp_compat_neon}"', ""]
+        lines += ["includes:", f"    - {_neon_string(toolchain.wp_compat_neon)}", ""]
     # Excludes are scoped to directories INSIDE the artifact: a bare */tests/*
     # pattern would also exclude artifacts that themselves live under a tests/
     # directory (the committed bait fixtures do).
-    exclude_base = artifact_path if artifact_path.is_dir() else artifact_path.parent
-    exclude_lines = [
-        f'        - "{exclude_base}/{ignored}/*"' for ignored in ("vendor", "node_modules", "tests", "test")
-    ] + [
-        f'        - "{exclude_base}/*/{ignored}/*"' for ignored in ("vendor", "node_modules", "tests", "test")
-    ]
+    phpstan_paths = explicit_files if explicit_files is not None else [artifact_path]
     lines += [
         "parameters:",
         "    level: 0",
-        f'    tmpDir: "{tmp_dir}"',
+        f"    tmpDir: {_neon_string(tmp_dir)}",
         "    paths:",
-        f'        - "{artifact_path}"',
-        "    excludePaths:",
-        *exclude_lines,
-        "    scanFiles:",
-        f'        - "{toolchain.stubs}"',
+        *(f"        - {_neon_string(file_path)}" for file_path in phpstan_paths),
     ]
+    if explicit_files is None:
+        exclude_base = artifact_path if artifact_path.is_dir() else artifact_path.parent
+        excluded = ("vendor", "node_modules", "tests", "test")
+        lines += [
+            "    excludePaths:",
+            *(
+                f"        - {_neon_string(f'{exclude_base}/{ignored}/*')}"
+                for ignored in excluded
+            ),
+            *(
+                f"        - {_neon_string(f'{exclude_base}/*/{ignored}/*')}"
+                for ignored in excluded
+            ),
+        ]
+    lines += ["    scanFiles:", f"        - {_neon_string(toolchain.stubs)}"]
     if requires_at_least is not None:
         lines += [
             "    WPCompat:",
-            f'        requiresAtLeast: "{requires_at_least}"',
+            f"        requiresAtLeast: {_neon_string(requires_at_least)}",
         ]
     return "\n".join(lines) + "\n"
 
@@ -768,6 +1029,37 @@ def _extract_symbol(identifier: str, message: str) -> tuple[str, str | None]:
     return "unknown", None
 
 
+def _phpstan_finding(
+    identifier: str,
+    text: str,
+    rel_file: str,
+    line: int | None,
+    index: SymbolIndex,
+    prefixes: list[str],
+    declared_range: dict[str, Any],
+) -> dict[str, Any] | None:
+    mapped = FINDING_CLASSES.get(identifier)
+    if mapped is None and identifier.startswith(WPCOMPAT_HOOK_IDENTIFIER_PREFIXES):
+        mapped = ("version_range", "hook")
+    if mapped is None:
+        return None
+    finding_class, symbol_kind = mapped
+    symbol, introduced_in = _extract_symbol(identifier, text)
+    allowlisted = finding_class.startswith("unknown_") and any(
+        symbol.startswith(prefix) for prefix in prefixes
+    )
+    return {
+        "class": finding_class, "symbol": symbol, "symbol_kind": symbol_kind,
+        "file": rel_file, "line": line,
+        "confidence": "advisory" if allowlisted else "exact",
+        "allowlisted": allowlisted,
+        "declared_range": declared_range if finding_class == "version_range" else None,
+        "introduced_in": introduced_in, "deprecated_in": None, "replacement": None,
+        "suggestions": index.suggest(symbol, symbol_kind) if finding_class.startswith("unknown_") else [],
+        "evidence": text,
+    }
+
+
 def parse_phpstan_output(
     output: dict[str, Any],
     artifact_path: Path,
@@ -775,6 +1067,7 @@ def parse_phpstan_output(
     declared: str | None,
     snapshot_version: str | None,
     prefixes: list[str],
+    budget: AnalysisBudget | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     findings: list[dict[str, Any]] = []
     analysis_errors: list[dict[str, Any]] = []
@@ -784,6 +1077,8 @@ def parse_phpstan_output(
     for raw_file, file_result in sorted((output.get("files") or {}).items()):
         rel_file = _relative_file(raw_file, artifact_path)
         for message in file_result.get("messages", []):
+            if budget is not None:
+                budget.visit_tool_message("PHPStan", rel_file)
             identifier = str(message.get("identifier") or "")
             text = str(message.get("message") or "")
             line = message.get("line")
@@ -791,35 +1086,19 @@ def parse_phpstan_output(
             if identifier in ANALYSIS_ERROR_IDENTIFIERS:
                 analysis_errors.append(record)
                 continue
-            mapped = FINDING_CLASSES.get(identifier)
-            symbol_kind = None
-            if mapped is None and identifier.startswith(WPCOMPAT_HOOK_IDENTIFIER_PREFIXES):
-                mapped = ("version_range", "hook")
-            if mapped is None:
+            finding = _phpstan_finding(
+                identifier, text, rel_file, line, index, prefixes, declared_range
+            )
+            if budget is not None:
+                budget.check_deadline()
+            if finding is None:
                 advisory.append(record)
                 continue
-            finding_class, symbol_kind = mapped
-            symbol, introduced_in = _extract_symbol(identifier, text)
-            allowlisted = finding_class.startswith("unknown_") and any(symbol.startswith(prefix) for prefix in prefixes)
-            findings.append(
-                {
-                    "class": finding_class,
-                    "symbol": symbol,
-                    "symbol_kind": symbol_kind,
-                    "file": rel_file,
-                    "line": line,
-                    "confidence": "advisory" if allowlisted else "exact",
-                    "allowlisted": allowlisted,
-                    "declared_range": declared_range if finding_class == "version_range" else None,
-                    "introduced_in": introduced_in,
-                    "deprecated_in": None,
-                    "replacement": None,
-                    "suggestions": index.suggest(symbol, symbol_kind) if finding_class.startswith("unknown_") else [],
-                    "evidence": text,
-                }
-            )
+            findings.append(finding)
 
     for error in output.get("errors") or []:
+        if budget is not None:
+            budget.visit_tool_message("PHPStan", "<global>")
         analysis_errors.append({"file": None, "line": None, "identifier": "phpstan.error", "message": str(error)})
 
     findings.sort(key=lambda item: (item["file"], item["line"] or 0, item["symbol"]))
@@ -854,6 +1133,8 @@ def summarize_report(report: dict[str, Any]) -> str:
     status = report.get("status")
     if status == "blocked":
         return str(report.get("blocked_reason") or "API-existence lint blocked")
+    if status == "skip":
+        return "no PHP files to scan"
     engines = report.get("engines") or {}
     engine_note = ""
     unavailable = [name for name, state in engines.items() if state != "ran"]
@@ -880,133 +1161,286 @@ def summarize_report(report: dict[str, Any]) -> str:
     return f"{len(failing)} API finding(s): " + "; ".join(sentences) + suffix + engine_note
 
 
+@dataclass
+class ApiLintState:
+    path: Path
+    scan_files: list[Path] | None
+    toolchain: Toolchain | None
+    toolchain_error: str | None
+    native_snapshot: dict[str, Any] | None
+    vendor_hooks: dict[str, dict[str, Any]] | None
+    declared: str | None
+    prefixes: list[str]
+    snapshot_version: str | None
+    declared_range: dict[str, Any]
+    report: dict[str, Any]
+    findings: list[dict[str, Any]]
+
+
+def _analysis_limits() -> dict[str, int]:
+    return {
+        "call_sites_per_file": MAX_CALL_SITES_PER_FILE,
+        "call_sites_total": MAX_CALL_SITES_TOTAL,
+        "findings_per_file": MAX_FINDINGS_PER_FILE,
+        "findings_total": MAX_FINDINGS_TOTAL,
+        "tool_messages_per_file": MAX_TOOL_MESSAGES_PER_FILE,
+        "tool_messages_total": MAX_TOOL_MESSAGES_TOTAL,
+    }
+
+
+def _analysis_usage(budget: AnalysisBudget) -> dict[str, int]:
+    return {
+        "call_sites": budget.call_sites,
+        "findings": budget.findings,
+        "tool_messages": budget.tool_messages,
+    }
+
+
+def _new_api_lint_state(
+    path: Path,
+    scan_files: list[Path] | None,
+    php_tools_root: Path | None,
+    snapshot_path: Path | None,
+    extra_prefixes: list[str] | None,
+) -> ApiLintState:
+    toolchain, toolchain_error = resolve_toolchain(php_tools_root)
+    snapshot = load_native_snapshot(snapshot_path)
+    hooks = load_vendor_hooks(php_tools_root)
+    versions = toolchain_versions((php_tools_root or DEFAULT_PHP_TOOLS_ROOT).resolve())
+    declared = declared_requires_at_least(path, explicit_files=scan_files)
+    prefixes = allowlist_prefixes(path, extra_prefixes, explicit_files=scan_files)
+    stubs_version = versions.get("php-stubs/wordpress-stubs")
+    snapshot_version = stubs_version.lstrip("v") if stubs_version else None
+    declared_range = {
+        "requires_at_least": declared,
+        "snapshot": snapshot_version or (snapshot or {}).get("wp_version"),
+    }
+    engines = {
+        "phpstan": "ran" if toolchain else f"unavailable ({toolchain_error})",
+        "native_symbols": "ran" if snapshot else "unavailable (committed snapshot missing)",
+        "hooks": "ran" if hooks else "unavailable (vendor wp-hooks data missing)",
+    }
+    report = _new_api_report(path, declared, prefixes, engines, versions)
+    return ApiLintState(
+        path, scan_files, toolchain, toolchain_error, snapshot, hooks, declared,
+        prefixes, snapshot_version, declared_range, report, [],
+    )
+
+
+def _new_api_report(
+    path: Path,
+    declared: str | None,
+    prefixes: list[str],
+    engines: dict[str, str],
+    versions: dict[str, str],
+) -> dict[str, Any]:
+    return {
+        "schema": SCHEMA, "schema_version": SCHEMA_VERSION,
+        "artifact_path": str(path), "status": "blocked", "blocked_reason": None,
+        "declared_requires_at_least": declared,
+        "version_range_checked": declared is not None,
+        "allowlisted_prefixes": prefixes, "engines": engines, "findings": [],
+        "analysis_errors": [], "advisory": [], "tooling": versions,
+        "negative_space": list(NEGATIVE_SPACE), "analysis_limits": _analysis_limits(),
+        "analysis_usage": {"call_sites": 0, "findings": 0, "tool_messages": 0},
+    }
+
+
+def _run_native_analyses(state: ApiLintState, budget: AnalysisBudget) -> None:
+    negative_space = state.report["negative_space"]
+    if state.native_snapshot is not None:
+        state.findings.extend(native_php_findings(
+            state.path, state.native_snapshot, state.declared, state.prefixes,
+            state.declared_range, include_existence=state.toolchain is None,
+            explicit_files=state.scan_files, budget=budget,
+        ))
+        if state.toolchain is None:
+            negative_space.append(
+                "PHPStan toolchain unavailable: unknown-method detection and real scope "
+                "analysis did not run (regex-tier native fallback used)."
+            )
+    else:
+        negative_space.append("Committed symbol snapshot missing: deprecated-API detection did not run.")
+    if state.vendor_hooks is not None:
+        state.findings.extend(hook_findings(
+            state.path, state.vendor_hooks, state.prefixes,
+            explicit_files=state.scan_files, budget=budget,
+        ))
+    else:
+        negative_space.append("Vendor wp-hooks data unavailable: unknown-hook detection did not run.")
+
+
+def _phpstan_command(
+    state: ApiLintState, tmp_path: Path, analysis_files: list[Path] | None
+) -> list[str]:
+    assert state.toolchain is not None
+    phpstan_tmp = tmp_path / "phpstan-tmp"
+    phpstan_tmp.mkdir()
+    neon_path = tmp_path / "phpstan.neon"
+    neon_path.write_text(
+        build_neon(
+            state.path, state.toolchain, phpstan_tmp, state.declared,
+            explicit_files=analysis_files,
+        ),
+        encoding="utf-8",
+    )
+    return [
+        state.toolchain.php, str(state.toolchain.phpstan), "analyse",
+        "--error-format=json", "--no-progress", "--memory-limit=1G",
+        "-c", str(neon_path),
+    ]
+
+
+def _run_phpstan(
+    state: ApiLintState, deadline_monotonic: float,
+    analysis_files: list[Path] | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    with tempfile.TemporaryDirectory(prefix="wp-api-lint-") as tmp:
+        command = _phpstan_command(state, Path(tmp), analysis_files)
+        try:
+            proc = run_bounded(
+                command, deadline_monotonic=deadline_monotonic,
+                stdout_limit=TOOL_STDOUT_LIMIT, stderr_limit=TOOL_STDERR_LIMIT,
+            )
+        except BoundedProcessTimeout as exc:
+            return None, f"phpstan blocked: {exc}"
+        except BoundedProcessOverflow as exc:
+            return None, f"phpstan output blocked: {exc}"
+        except (BoundedProcessError, OSError) as exc:
+            return None, f"phpstan execution blocked: {exc}"
+    if proc.returncode not in (0, 1):
+        return None, f"phpstan exited {proc.returncode}: {proc.stderr.strip()[:400]}"
+    try:
+        return json.loads(proc.stdout), None
+    except json.JSONDecodeError:
+        return None, f"phpstan produced unparseable output: {proc.stdout.strip()[:200]}"
+
+
+def _finish_without_phpstan(state: ApiLintState) -> dict[str, Any]:
+    state.findings.sort(key=lambda item: (item["file"], item["line"] or 0, item["symbol"]))
+    state.report["findings"] = state.findings
+    failing = [finding for finding in state.findings if finding.get("confidence") == "exact"]
+    state.report["status"] = "fail" if failing else "pass"
+    return state.report
+
+
+def _merge_phpstan(
+    state: ApiLintState, output: dict[str, Any], budget: AnalysisBudget
+) -> dict[str, Any]:
+    assert state.toolchain is not None
+    index = SymbolIndex.from_symbols_json(state.toolchain.symbols_json)
+    findings, errors, advisory = parse_phpstan_output(
+        output, state.path, index, state.declared, state.snapshot_version,
+        state.prefixes, budget,
+    )
+    state.findings.extend(findings)
+    state.findings.sort(key=lambda item: (item["file"], item["line"] or 0, item["symbol"]))
+    state.report.update({"findings": state.findings, "analysis_errors": errors, "advisory": advisory})
+    failing = [finding for finding in state.findings if finding.get("confidence") == "exact"]
+    state.report["status"] = "fail" if failing or errors else "pass"
+    state.report["blocked_reason"] = None
+    return state.report
+
+
+def _empty_api_report(path: Path, php_tools_root: Path | None) -> dict[str, Any]:
+    root = (php_tools_root or DEFAULT_PHP_TOOLS_ROOT).resolve()
+    report = _new_api_report(
+        path, None, [],
+        {"phpstan": "not_run", "native_symbols": "not_run", "hooks": "not_run"},
+        toolchain_versions(root),
+    )
+    report.update({"status": "skip", "blocked_reason": None})
+    return report
+
+
+def _run_aliased_phpstan(
+    state, budget, deadline, explicit_alias_names, explicit_alias_members
+):
+    assert state.scan_files is not None
+    scan_files = state.scan_files
+    names = explicit_alias_names or php_scanner_aliases.default_alias_names(
+        scan_files
+    )
+    base = state.path if state.path.is_dir() else state.path.parent
+    try:
+        with php_scanner_aliases.stage_aliases(
+            scan_files, names, deadline, explicit_alias_members
+        ) as aliases:
+            state.report["scanner_aliases"] = php_scanner_aliases.evidence(
+                aliases, base
+            )
+            output, error = _run_phpstan(state, deadline, list(aliases.files))
+            if output is not None:
+                output = php_scanner_aliases.remap_output_files(output, aliases)
+    except (OSError, TimeoutError, ValueError) as exc:
+        state.report["blocked_reason"] = f"PHP scanner alias blocked: {exc}"
+        return state.report
+    if error is not None:
+        state.report["blocked_reason"] = error
+        return state.report
+    try:
+        result = _merge_phpstan(state, output, budget)
+    except AnalysisBlocked as exc:
+        state.report["blocked_reason"] = str(exc)
+        return state.report
+    state.report["analysis_usage"] = _analysis_usage(budget)
+    return result
+
+
+def _run_direct_phpstan(state, budget, deadline):
+    output, error = _run_phpstan(state, deadline, None)
+    if error is not None:
+        state.report["blocked_reason"] = error
+        return state.report
+    try:
+        result = _merge_phpstan(state, output, budget)
+    except AnalysisBlocked as exc:
+        state.report["blocked_reason"] = str(exc)
+        return state.report
+    state.report["analysis_usage"] = _analysis_usage(budget)
+    return result
+
+
 def run_api_lint(
     path: Path,
     timeout_sec: int = 120,
     php_tools_root: Path | None = None,
     extra_allow_prefixes: list[str] | None = None,
     snapshot_path: Path | None = None,
+    explicit_files: Iterable[Path | str] | None = None,
+    explicit_alias_names: dict[Path, str] | None = None,
+    explicit_alias_members: dict[Path, tuple[int, str]] | None = None,
+    deadline_monotonic: float | None = None,
 ) -> dict[str, Any]:
-    path = path.resolve()
-    toolchain, blocked_reason = resolve_toolchain(php_tools_root)
-    native_snapshot = load_native_snapshot(snapshot_path)
-    vendor_hooks = load_vendor_hooks(php_tools_root)
-    versions = toolchain_versions((php_tools_root or DEFAULT_PHP_TOOLS_ROOT).resolve())
-    declared = declared_requires_at_least(path)
-    prefixes = allowlist_prefixes(path, extra_allow_prefixes)
-    stubs_version = versions.get("php-stubs/wordpress-stubs")
-    snapshot_version = stubs_version.lstrip("v") if stubs_version else None
-    declared_range = {"requires_at_least": declared, "snapshot": snapshot_version or (native_snapshot or {}).get("wp_version")}
-    negative_space = list(NEGATIVE_SPACE)
-    engines = {
-        "phpstan": "ran" if toolchain else f"unavailable ({blocked_reason})",
-        "native_symbols": "ran" if native_snapshot else "unavailable (committed snapshot missing)",
-        "hooks": "ran" if vendor_hooks else "unavailable (vendor wp-hooks data missing; run composer install --working-dir evals/harness/php-tools)",
-    }
-    report: dict[str, Any] = {
-        "schema": SCHEMA,
-        "schema_version": SCHEMA_VERSION,
-        "artifact_path": str(path),
-        "status": "blocked",
-        "blocked_reason": None,
-        "declared_requires_at_least": declared,
-        "version_range_checked": declared is not None,
-        "allowlisted_prefixes": prefixes,
-        "engines": engines,
-        "findings": [],
-        "analysis_errors": [],
-        "advisory": [],
-        "tooling": versions,
-        "negative_space": negative_space,
-    }
-    if toolchain is None and native_snapshot is None:
-        report["blocked_reason"] = f"{blocked_reason}; committed symbol snapshot also missing ({snapshot_path or DEFAULT_SNAPSHOT_PATH})"
-        report["version_range_checked"] = False
-        return report
-
-    all_findings: list[dict[str, Any]] = []
-
-    if native_snapshot is not None:
-        all_findings.extend(
-            native_php_findings(
-                path,
-                native_snapshot,
-                declared,
-                prefixes,
-                declared_range,
-                include_existence=toolchain is None,
-            )
+    deadline = deadline_monotonic if deadline_monotonic is not None else time.monotonic() + timeout_sec
+    path, scan_files = _prepare_scan_files(path, explicit_files)
+    if scan_files is not None and not scan_files:
+        return _empty_api_report(path, php_tools_root)
+    if scan_files is None and not iter_php_files(path):
+        return _empty_api_report(path, php_tools_root)
+    state = _new_api_lint_state(path, scan_files, php_tools_root, snapshot_path, extra_allow_prefixes)
+    if state.toolchain is None and state.native_snapshot is None:
+        state.report["blocked_reason"] = (
+            f"{state.toolchain_error}; committed symbol snapshot also missing "
+            f"({snapshot_path or DEFAULT_SNAPSHOT_PATH})"
         )
-        if toolchain is None:
-            negative_space.append(
-                "PHPStan toolchain unavailable: unknown-method detection and real "
-                "scope analysis for function_exists() guards did not run (regex-tier "
-                "native fallback used for existence and version-range checks)."
-            )
-    else:
-        negative_space.append(
-            "Committed symbol snapshot missing: deprecated-API detection did not run."
-        )
-
-    if vendor_hooks is not None:
-        all_findings.extend(hook_findings(path, vendor_hooks, prefixes))
-    else:
-        negative_space.append(
-            "Vendor wp-hooks data unavailable: unknown-hook detection did not run."
-        )
-
-    if toolchain is None:
-        all_findings.sort(key=lambda item: (item["file"], item["line"] or 0, item["symbol"]))
-        report["findings"] = all_findings
-        failing = [finding for finding in all_findings if finding.get("confidence") == "exact"]
-        report["status"] = "fail" if failing else "pass"
-        return report
-
-    index = SymbolIndex.from_symbols_json(toolchain.symbols_json)
-    with tempfile.TemporaryDirectory(prefix="wp-api-lint-") as tmp:
-        tmp_path = Path(tmp)
-        phpstan_tmp = tmp_path / "phpstan-tmp"
-        phpstan_tmp.mkdir()
-        neon_path = tmp_path / "phpstan.neon"
-        neon_path.write_text(build_neon(path, toolchain, phpstan_tmp, declared), encoding="utf-8")
-        command = [
-            toolchain.php,
-            str(toolchain.phpstan),
-            "analyse",
-            "--error-format=json",
-            "--no-progress",
-            "--memory-limit=1G",
-            "-c",
-            str(neon_path),
-        ]
-        try:
-            proc = subprocess.run(command, text=True, capture_output=True, timeout=timeout_sec)
-        except subprocess.TimeoutExpired:
-            report["status"] = "fail"
-            report["analysis_errors"] = [
-                {"file": None, "line": None, "identifier": "phpstan.timeout", "message": f"phpstan timed out after {timeout_sec}s"}
-            ]
-            return report
-
-    if proc.returncode not in (0, 1):
-        report["blocked_reason"] = f"phpstan exited {proc.returncode}: {proc.stderr.strip()[:400]}"
-        return report
+        state.report["version_range_checked"] = False
+        return state.report
+    budget = AnalysisBudget(deadline)
     try:
-        output = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        report["blocked_reason"] = f"phpstan produced unparseable output: {proc.stdout.strip()[:200]}"
-        return report
-
-    findings, analysis_errors, advisory = parse_phpstan_output(output, path, index, declared, snapshot_version, prefixes)
-    all_findings.extend(findings)
-    all_findings.sort(key=lambda item: (item["file"], item["line"] or 0, item["symbol"]))
-    report["findings"] = all_findings
-    report["analysis_errors"] = analysis_errors
-    report["advisory"] = advisory
-    failing = [finding for finding in all_findings if finding.get("confidence") == "exact"]
-    report["status"] = "fail" if failing or analysis_errors else "pass"
-    report["blocked_reason"] = None
-    return report
+        _run_native_analyses(state, budget)
+    except AnalysisBlocked as exc:
+        state.report["blocked_reason"] = str(exc)
+        state.report["analysis_usage"] = _analysis_usage(budget)
+        return state.report
+    state.report["analysis_usage"] = _analysis_usage(budget)
+    if state.toolchain is None:
+        return _finish_without_phpstan(state)
+    if state.scan_files is None:
+        return _run_direct_phpstan(state, budget, deadline)
+    return _run_aliased_phpstan(
+        state, budget, deadline, explicit_alias_names, explicit_alias_members
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

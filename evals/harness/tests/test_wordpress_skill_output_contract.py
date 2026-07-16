@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 import validate_wordpress_skill_output as oracle
 
 
@@ -25,7 +27,9 @@ Rich text uses `wp_kses_post()` and redirects use `wp_safe_redirect()`.
 Run PHPCS/WPCS, PHPUnit, WP-CLI smoke, and Plugin Check before release.
 
 ## Assumption Register
-Assumption: no exact WordPress API applies to external CRM ownership until integration scope is confirmed.
+    Assumption: no exact WordPress API applies to external CRM ownership because
+    WordPress does not control the vendor account; the CRM owner must confirm it
+    against the vendor API contract.
 
 ## Test Strategy
 PHPUnit covers settings persistence; Plugin Check covers package readiness.
@@ -205,6 +209,239 @@ def test_good_planner_output_passes():
 
     assert result["pass"] is True
     assert result["score"] == 1.0
+
+
+def test_blanket_non_applicability_cannot_replace_exact_surfaces():
+    check = oracle.check_exact_surfaces(
+        "No exact WordPress API applies.",
+        {"min_surfaces": 2},
+    )
+
+    assert check.passed is False
+    assert "expected at least 2" in check.detail
+
+
+def test_generic_argument_words_require_key_context():
+    prose = oracle.check_exact_surfaces(
+        "The category and description are useful prose labels.",
+        {"min_surfaces": 2},
+    )
+    keys = oracle.check_exact_surfaces(
+        "The schema requires `category` and `description`.",
+        {"min_surfaces": 2},
+    )
+
+    assert prose.passed is False
+    assert keys.passed is True
+
+
+def test_exact_surface_matching_is_boundary_and_order_aware():
+    partial = oracle.check_exact_surfaces(
+        "current_user_canary and register_rest_routeable are custom names.",
+        {"min_surfaces": 1},
+    )
+    scattered = oracle.check_exact_surfaces(
+        "Use register_rest_route. In a separate sentence, add permission_callback.",
+        {"min_surfaces": 2},
+    )
+    scattered_matches = oracle.find_surface_matches(
+        "Use register_rest_route. In a separate sentence, add permission_callback."
+    )
+    exact = oracle.check_exact_surfaces(
+        "Use current_user_can() and register_rest_route() permission_callback.",
+        {"min_surfaces": 2},
+    )
+
+    assert partial.passed is False
+    assert scattered.passed is False
+    assert not any(match.category == "reviewed_composed" for match in scattered_matches)
+    assert exact.passed is True
+    assert "core_function:current_user_can()" in exact.detail
+    assert "reviewed_composed:register_rest_route() permission_callback" in exact.detail
+
+
+def test_permission_callback_key_context_supports_abilities_api():
+    check = oracle.check_exact_surfaces(
+        "Use wp_register_ability(). Configure `permission_callback` for the ability.",
+        {"min_surfaces": 2},
+    )
+
+    assert check.passed is True
+    assert "argument_key:permission_callback" in check.detail
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "No exact WordPress API applies because this is external; verify it with the owner.",
+        "No exact WordPress API applies to external CRM ownership; verify it with the CRM owner.",
+        "No exact WordPress API applies to external CRM ownership because WordPress does not control it.",
+    ],
+)
+def test_non_applicability_requires_scope_reason_and_oracle(statement):
+    text = f"Use current_user_can() and register_post_type(). {statement}"
+
+    check = oracle.check_exact_surfaces(text, {"min_surfaces": 2})
+
+    assert check.passed is False
+    assert "invalid non-applicability" in check.detail
+
+
+def test_scoped_non_applicability_does_not_waive_surface_minimum():
+    statement = (
+        "No exact WordPress API applies to external CRM ownership because WordPress "
+        "does not control the vendor account; verify it with the CRM owner against "
+        "the vendor API contract."
+    )
+
+    too_few = oracle.check_exact_surfaces(
+        f"Use current_user_can(). {statement}",
+        {"min_surfaces": 2},
+    )
+    enough = oracle.check_exact_surfaces(
+        f"Use current_user_can() and register_post_type(). {statement}",
+        {"min_surfaces": 2},
+    )
+
+    assert too_few.passed is False
+    assert enough.passed is True
+    assert "scoped non-applicability" in enough.detail
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "No exact WordPress API applies to foo bar because owner.",
+        "No exact WordPress API applies to foo bar because yes; documentation.",
+        "No exact WordPress API applies to external CRM ownership because the owner.",
+    ],
+)
+def test_non_applicability_rejects_vacuous_scope_reason_and_oracle(statement):
+    check = oracle.check_exact_surfaces(
+        f"Use current_user_can() and register_post_type(). {statement}",
+        {"min_surfaces": 2},
+    )
+
+    assert check.passed is False
+    assert "invalid non-applicability" in check.detail
+
+
+def test_dynamic_reviewed_hook_and_safe_project_path_match():
+    check = oracle.check_exact_surfaces(
+        "Handle wp_ajax_save_report in plugin/includes/class-report.php.",
+        {"min_surfaces": 2},
+    )
+
+    assert check.passed is True
+    assert "hook:wp_ajax_save_report" in check.detail
+    assert "file_glob:plugin/includes/class-report.php" in check.detail
+
+
+def test_dynamic_hook_and_path_matching_rejects_partial_and_traversal_forms():
+    check = oracle.check_exact_surfaces(
+        "Ignore my_wp_ajax_save, wp_ajax_, and ../plugin/includes/class-report.php.",
+        {"min_surfaces": 1},
+    )
+
+    assert check.passed is False
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "$current_user_can", "$obj->current_user_can()", "Fake::current_user_can()",
+        "$wp", "@wp", "$obj->register_rest_route() permission_callback",
+        "Fake::register_rest_route() permission_callback",
+        "$obj -> current_user_can()", "$obj ?-> current_user_can()",
+        "Fake :: current_user_can()", "@ current_user_can()",
+        "$obj->child -> current_user_can()", "$objects[0] -> current_user_can()",
+        "(new Fake()) -> current_user_can()", "get_service() -> current_user_can()",
+        "$obj -> register_rest_route() permission_callback",
+        "Fake :: register_rest_route() permission_callback",
+        "@ register_rest_route() permission_callback",
+        "$objects[0] -> register_rest_route() permission_callback",
+    ],
+)
+def test_core_and_composed_surfaces_reject_non_global_contexts(unsafe):
+    check = oracle.check_exact_surfaces(f"Inspect {unsafe}.", {"min_surfaces": 1})
+
+    assert check.passed is False
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "$wp_abilities_api_init", "Fake::wp_abilities_api_init", "Fake :: wp_abilities_api_init",
+        "$promote_users", "$execute_callback", "$wp_ajax_save_report",
+        "Fake::wp_ajax_save_report", "Fake :: wp_ajax_save_report", "@ wp_ajax_save_report",
+        "$obj->child -> wp_abilities_api_init", "$objects[0] -> wp_ajax_save_report",
+        "get_service() -> wp_abilities_api_init",
+    ],
+)
+def test_typed_identifier_surfaces_reject_non_global_contexts(unsafe):
+    check = oracle.check_exact_surfaces(f"Inspect {unsafe}.", {"min_surfaces": 1})
+
+    assert check.passed is False
+
+
+def test_quoted_global_callable_name_remains_exact_surface():
+    check = oracle.check_exact_surfaces("Use 'current_user_can' as the callable.", {"min_surfaces": 1})
+
+    assert check.passed is True
+
+
+def test_safe_project_basenames_match_as_file_surfaces():
+    check = oracle.check_exact_surfaces(
+        "Use render.php, .wp-env.json, and current_user_can().",
+        {"min_surfaces": 3},
+    )
+
+    assert check.passed is True
+    assert "file_glob:render.php" in check.detail
+    assert "file_glob:.wp-env.json" in check.detail
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    ["../render.php", "/tmp/render.php", "../.wp-env.json", "render.php/evil", "dir\\render.php"],
+)
+def test_safe_project_basenames_reject_path_context(unsafe):
+    check = oracle.check_exact_surfaces(f"Inspect {unsafe}.", {"min_surfaces": 1})
+
+    assert check.passed is False
+
+
+@pytest.mark.parametrize(
+    ("category", "surface"),
+    [("file_surfaces", "../outside.php"), ("wp_cli_commands", "security best practices")],
+)
+def test_output_catalog_rejects_unsafe_registry_entry(tmp_path, monkeypatch, category, surface):
+    data = json.loads(oracle.REGISTRY_PATH.read_text(encoding="utf-8"))
+    data["categories"][category].append(surface)
+    path = tmp_path / "unsafe-registry.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(oracle, "REGISTRY_PATH", path)
+    oracle._surface_catalog.cache_clear()
+
+    try:
+        with pytest.raises(ValueError, match=category):
+            oracle.find_surface_matches("Use current_user_can().")
+    finally:
+        oracle._surface_catalog.cache_clear()
+
+
+def test_output_catalog_rejects_blank_provenance(tmp_path, monkeypatch):
+    data = json.loads(oracle.REGISTRY_PATH.read_text(encoding="utf-8"))
+    data["provenance"]["reviewed_for"] = ""
+    path = tmp_path / "blank-provenance.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(oracle, "REGISTRY_PATH", path)
+    oracle._surface_catalog.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="provenance"):
+            oracle.find_surface_matches("Use current_user_can().")
+    finally:
+        oracle._surface_catalog.cache_clear()
 
 
 def test_dot_notation_planner_alias_passes():

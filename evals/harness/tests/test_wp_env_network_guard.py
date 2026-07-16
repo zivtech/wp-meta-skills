@@ -1,0 +1,373 @@
+import json, re, subprocess, sys
+from pathlib import Path
+HARNESS=Path(__file__).resolve().parent.parent; sys.path.insert(0,str(HARNESS))
+import pytest, wp_env_network_guard as guard
+
+def test_trusted_fixture_copy_does_not_preserve_host_ownership():
+    assert "cp -R" in guard.COPY_INPUT_COMMAND
+    assert "cp -a" not in guard.COPY_INPUT_COMMAND
+    assert "preserve" not in guard.COPY_INPUT_COMMAND
+
+def test_trusted_installs_use_only_bounded_workspace_homes_and_caches():
+    assert "HOME=/work/home" in guard.PREPARE_WORK_ENV
+    assert "npm_config_cache=/work/.npm-cache" in guard.PREPARE_WORK_ENV
+    assert "COMPOSER_HOME=/work/.composer" in guard.PREPARE_WORK_ENV
+    assert "/root" not in guard.PREPARE_WORK_ENV
+
+def test_trusted_runner_workspaces_have_reviewed_separate_bounds():
+    assert guard.TRUSTED_RUNNER_LIMITS["browser-runner"] == {"memory":"1g","size":536870912,"inodes":50000}
+    assert guard.TRUSTED_RUNNER_LIMITS["wp-env-runner"] == {"memory":"3g","size":2147483648,"inodes":200000}
+
+def test_fixture_tools_match_reviewed_commands_on_exec_workspace():
+    assert set(guard.BLOCK_BUILD_COMMANDS) == {"smoke","interactivity","deprecation"}
+    assert all(command.startswith("node node_modules/@wordpress/scripts/bin/wp-scripts.js build") for command in guard.BLOCK_BUILD_COMMANDS.values())
+    assert "blocks/runtime-card/index.js" in guard.BLOCK_BUILD_COMMANDS["smoke"]
+    assert "--experimental-modules" in guard.BLOCK_BUILD_COMMANDS["interactivity"]
+    assert "blocks/deprecated-card/build" in guard.BLOCK_BUILD_COMMANDS["deprecation"]
+    assert guard.PHPUNIT_COMMAND == "php vendor/bin/phpunit"
+
+def test_only_bounded_work_tmpfs_is_executable_for_compatibility():
+    work=guard.executable_work_tmpfs(1024,32)
+    assert work.startswith("/work:") and "exec" in work.split(",") and "noexec" not in work
+    assert {"exec","nosuid","nodev"} <= set(work.split(","))
+    assert guard.TEMP_TMPFS.startswith("/tmp:") and {"noexec","nosuid","nodev"} <= set(guard.TEMP_TMPFS.split(",")) and ",exec" not in guard.TEMP_TMPFS
+
+def test_network_disconnect_precedes_fixture_execute():
+    assert guard.FIXTURE_PHASE_ORDER == ("create","start","install","disconnect","execute")
+
+def test_every_network_probe_has_an_internal_timeout():
+    probes=[probe for probe in guard.runtime_probe_specs(["docker","compose"]) if probe.get("network")]
+    assert probes and all(probe.get("self_timeout") is True for probe in probes)
+    for probe in probes:
+        command=" ".join(probe["command"])
+        if "fetch(" in command: assert "AbortSignal.timeout" in command
+        if "resolve4" in command: assert "Resolver({timeout:" in command and "tries:1" in command
+    php_routes=next(probe for probe in probes if probe["name"]=="php-routes-denied")
+    assert "example.com" not in " ".join(php_routes["command"])
+    php_dns=next(probe for probe in probes if probe["name"]=="php-public-dns-denied")
+    assert php_dns["allowed"]=={0,124} and "timeout 5" in " ".join(php_dns["command"])
+
+def test_database_probe_uses_native_wordpress_database_oracle():
+    probe=next(probe for probe in guard.runtime_probe_specs(["docker","compose"]) if probe["name"]=="cli-db-ready")
+    command=" ".join(probe["command"])
+    assert "mysqli_report(MYSQLI_REPORT_OFF)" in command and "wp core install" in command and "wp option get siteurl" in command
+    assert "http://wordpress-application:8080" in command
+    assert "wp db check" not in command
+
+def test_browser_probe_uses_the_reviewed_wordpress_application_alias():
+    probe=next(probe for probe in guard.runtime_probe_specs(["docker","compose"]) if probe["name"]=="browser-wordpress-http")
+    assert "http://wordpress-application:8080" in " ".join(probe["command"])
+
+def test_browser_inode_exhaustion_cleans_and_proves_recovery():
+    probe=next(probe for probe in guard.runtime_probe_specs(["docker","compose"]) if probe["name"]=="browser-inode-quota")
+    command=" ".join(probe["command"])
+    assert "unlinkSync('/tmp/i'+j)" in command
+    assert ".inode-recovered" in command
+    assert probe["timeout"]==30
+
+def test_named_probe_errors_identify_probe_and_bound_output(monkeypatch):
+    monkeypatch.setattr(guard.provision,"run_capped",lambda *_args,**_kwargs:{"returncode":7,"stdout":"out","stderr":"err"})
+    with pytest.raises(RuntimeError,match="probe browser-public-http-denied failed rc=7"):
+        guard.run_named_probe({"name":"browser-public-http-denied","command":["probe"],"timeout":8})
+    def timeout(*_args,**_kwargs): raise RuntimeError("command timed out")
+    monkeypatch.setattr(guard.provision,"run_capped",timeout)
+    with pytest.raises(RuntimeError,match="probe browser-public-http-denied raised RuntimeError"):
+        guard.run_named_probe({"name":"browser-public-http-denied","command":["probe"],"timeout":8})
+
+def test_fixture_build_commands_match_reviewed_packet_scripts():
+    examples=HARNESS.parent / "suites" / "wordpress-block-executor" / "examples"
+    for name in ("smoke","interactivity","deprecation"):
+        text=(examples / f"{name}-wordpress-v1.materializable-packet.md").read_text(encoding="utf-8")
+        package=json.loads(re.search(r"### package\.json\n```json\n(.*?)\n```",text,re.S).group(1))
+        expected=package["scripts"]["build"].replace(
+            "wp-scripts",
+            "node node_modules/@wordpress/scripts/bin/wp-scripts.js",
+            1,
+        )
+        assert guard.BLOCK_BUILD_COMMANDS[name] == expected
+
+def test_compatibility_failure_names_phase_and_bounds_output():
+    error=guard.compatibility_failure("smoke","execute",{"returncode":137,"stdout":"x"*4000,"stderr":""},'{"OOMKilled":true}')
+    message=str(error)
+    assert "smoke execute failed with return code 137" in message
+    assert "OOMKilled" in message
+    assert len(message) < 3300
+
+def test_canary_is_internal_digest_only_and_bounded():
+    assert guard.validate_compose(guard.canary_compose())
+
+def test_wordpress_application_alias_matches_the_image_listener():
+    spec=guard.canary_compose()
+    networks=spec["services"]["wordpress"]["networks"]
+    assert networks == {"wp_db":{},"browser_wp":{"aliases":["wordpress-application"]}}
+    dockerfile=(HARNESS/"runtime-images/wordpress/Dockerfile").read_text(encoding="utf-8")
+    assert "Listen wordpress-application:8080" in dockerfile
+    for mutation in (
+        lambda value:value["browser_wp"].update(aliases=[]),
+        lambda value:value["wp_db"].update(aliases=["wordpress-application"]),
+    ):
+        mutated=guard.canary_compose(); mutation(mutated["services"]["wordpress"]["networks"])
+        with pytest.raises(RuntimeError,match="network attachment drift"):
+            guard.validate_compose(mutated)
+
+def test_flat_wordpress_image_metadata_allowlist_rejects_inherited_runtime_state():
+    config={"Hostname":"","Domainname":"","AttachStdin":False,"AttachStdout":False,"AttachStderr":False,"Tty":False,"OpenStdin":False,"StdinOnce":False,"Cmd":None,"Image":"","Volumes":None,"OnBuild":None,"Labels":None,**guard.WORDPRESS_IMAGE_ACTIVE_CONFIG}
+    assert guard.validate_wordpress_image_config(config)
+    for field,value in (("Volumes",{"/var/www/html":{}}),("Cmd",["apache2-foreground"]),("Labels",{"surprise":"true"}),("Healthcheck",{"Test":["CMD","true"]})):
+        mutated=dict(config); mutated[field]=value
+        with pytest.raises(RuntimeError,match="metadata"): guard.validate_wordpress_image_config(mutated)
+
+def test_live_writable_inventory_uses_hostconfig_tmpfs_and_rejects_mounts():
+    expected={"/tmp":{"uid=1000","gid=1000","mode=0700","size=1","nr_inodes=1"}}
+    inspected={"Mounts":[],"HostConfig":{"Tmpfs":{"/tmp":"uid=1000,gid=1000,mode=0700,size=1,nr_inodes=1"}}}
+    assert guard.validate_live_tmpfs_inventory(inspected,"cli",expected)==expected
+    with pytest.raises(RuntimeError,match="non-tmpfs"): guard.validate_live_tmpfs_inventory({**inspected,"Mounts":[{"Type":"volume","Destination":"/var/www/html"}]},"cli",expected)
+    with pytest.raises(RuntimeError,match="options"): guard.validate_live_tmpfs_inventory({"Mounts":[],"HostConfig":{"Tmpfs":{}}},"cli",expected)
+
+def test_rejects_added_service():
+    spec=guard.canary_compose(); spec["services"]["surprise"]={}
+    with pytest.raises(RuntimeError,match="unlisted"): guard.validate_compose(spec)
+
+def test_rejects_unbounded_tmpfs():
+    spec=guard.canary_compose(); spec["services"]["browser"]["tmpfs"]=["/tmp"]
+    with pytest.raises(RuntimeError,match="unbounded"): guard.validate_compose(spec)
+
+def test_live_boundary_is_blocked_off_linux(monkeypatch, tmp_path):
+    monkeypatch.setattr(guard.platform,"system",lambda:"Darwin")
+    assert guard.run_linux_canary(tmp_path/"never-created")["status"] == "blocked"
+    assert not (tmp_path/"never-created").exists()
+
+def test_linux_wrapper_uses_and_cleans_plan006_lease(monkeypatch, tmp_path):
+    monkeypatch.setattr(guard.platform,"system",lambda:"Linux")
+    monkeypatch.setenv("CANARY_COMMIT_SHA","a"*40)
+    def fake_run(root):
+        assert (root/".workspace-lease").is_file(); (root/"evidence").write_text("ok"); return {"status":"pass"}
+    monkeypatch.setattr(guard,"_run_linux_canary",fake_run)
+    monkeypatch.setattr(guard.provision,"run_capped",lambda *_args,**_kwargs:{"returncode":0,"stdout":"","stderr":""})
+    requested=tmp_path/"lease"
+    result=guard.run_linux_canary(requested)
+    assert result["status"]=="pass" and result["commit_sha"]=="a"*40
+    assert not requested.exists()
+
+def test_github_canary_requires_explicit_head_sha(monkeypatch,tmp_path):
+    monkeypatch.setattr(guard.platform,"system",lambda:"Linux")
+    monkeypatch.setenv("GITHUB_ACTIONS","true")
+    monkeypatch.setenv("GITHUB_SHA","b"*40)
+    monkeypatch.delenv("CANARY_COMMIT_SHA",raising=False)
+    with pytest.raises(RuntimeError,match="exact canary commit SHA"): guard.run_linux_canary(tmp_path/"never-created")
+    assert not (tmp_path/"never-created").exists()
+
+def test_workflow_fetches_and_verifies_explicit_canary_sha():
+    workflow=(HARNESS.parent.parent / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+    sandbox=workflow.split("sandbox-feasibility:",1)[1].split("  validate:",1)[0]
+    assert "github.event.pull_request.head.sha || github.sha" in sandbox
+    assert 'fetch --no-tags --depth=1 origin "$CANARY_COMMIT_SHA"' in sandbox
+    assert 'test "$(git rev-parse HEAD)" = "$CANARY_COMMIT_SHA"' in sandbox
+    assert 'origin "$GITHUB_SHA"' not in sandbox
+
+
+def test_workflow_always_emits_runtime_timing_and_post_cleanup_disk_evidence():
+    workflow=(HARNESS.parent.parent / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+    sandbox=workflow.split("sandbox-feasibility:",1)[1].split("  generated-runtime-boundary:",1)[0]
+    generated=workflow.split("generated-runtime-boundary:",1)[1].split("  validate:",1)[0]
+    assert "sandbox_status=$?" in sandbox and "sandbox_canary_seconds=" in sandbox
+    assert "SANDBOX_FREE_BEFORE" in sandbox and "sandbox_post_cleanup_disk_delta_bytes=" in sandbox
+    assert "runtime_status=$?" in generated and "isolated_runtime_seconds=" in generated
+    assert "ISOLATED_FREE_BEFORE" in generated and "isolated_runtime_post_cleanup_disk_delta_bytes=" in generated
+    for section,label in ((sandbox,"sandbox_post_cleanup_disk_delta_bytes"),
+                          (generated,"isolated_runtime_post_cleanup_disk_delta_bytes")):
+        cleanup=section.split("Remove and measure",1)[1]
+        assert "set +e" in cleanup and "cleanup_status=0" in cleanup
+        assert f'echo "{label}=unavailable"' in cleanup and 'exit "$cleanup_status"' in cleanup
+        assert 'test -z "$(' not in cleanup and 'test -z "$remaining"' in cleanup
+    assert sandbox.index('echo "SANDBOX_FREE_BEFORE=') < sandbox.index('test "$free_before" -ge')
+    assert generated.index('echo "ISOLATED_FREE_BEFORE=') < generated.index('test "$free_before" -ge')
+    assert 'sandbox_canary_seconds=${SANDBOX_CANARY_SECONDS:-unavailable}' in sandbox
+    assert 'isolated_runtime_seconds=${ISOLATED_RUNTIME_SECONDS:-unavailable}' in generated
+
+
+def test_generated_runtime_provisions_and_cleans_block_build_sandbox():
+    workflow=(HARNESS.parent.parent / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+    generated=workflow.split("generated-runtime-boundary:",1)[1].split("  validate:",1)[0]
+    provision=generated.split("Trusted-provision exact block build and proxy images",1)[1]
+    provision=provision.split("- name: Admit the isolated runtime disk budget",1)[0]
+    assert 'for key in ("node","python")' in provision
+    assert "reference=f\"{item['tag'].split(':')[0]}@{item[arch]}\"" in provision
+    assert '["docker","pull",reference]' in provision
+    assert generated.index("Trusted-provision exact block build") < generated.index(
+        "Admit the isolated runtime disk budget"
+    )
+    cleanup=generated.split("Remove and measure generated-runtime resources",1)[1]
+    for marker in ("wp-package-", "wp-acquire-proxy-", "wp-proxy-preflight-",
+                   "wp-proxy-inventory-", "wp-acquire-(internal|egress)-"):
+        assert cleanup.count(marker) >= 2
+
+
+def test_cleanup_empty_query_failure_sets_aggregate_status():
+    script=("set +e; set -o pipefail; cleanup_status=0; "
+            "remaining=$(false) || cleanup_status=1; "
+            "test -z \"$remaining\" || cleanup_status=1; "
+            "test \"$cleanup_status\" -eq 1")
+    assert subprocess.run(["bash","-c",script],check=False).returncode==0
+
+
+def test_legacy_runtime_uses_shared_plugin_check_build_context():
+    source=Path(guard.__file__).read_text(encoding="utf-8")
+    assert "wp_runtime_provisioning.prepare_build_contexts" in source
+    assert "PLUGIN_CHECK_SHA256=" in source
+
+def test_services_have_complete_static_resource_policy():
+    for service in guard.canary_compose()["services"].values():
+        assert service["security_opt"] == ["no-new-privileges:true"]
+        assert service["pids_limit"] == 128
+        assert service["mem_limit"] == "512m"
+        assert service["cpus"] == "1.0"
+        assert service["logging"] == {"driver":"none"}
+        assert service["user"].replace(":","").isdigit()
+
+@pytest.mark.parametrize("field,value",[("volumes",["/:/host"]),("devices",["/dev/null"]),("privileged",True),("ports",["8080:8080"]),("extra_hosts",["host:host-gateway"]),("environment",{"HTTP_PROXY":"http://proxy"}),("dns",["8.8.8.8"]),("network_mode","host")])
+def test_rejects_forbidden_service_surface(field,value):
+    spec=guard.canary_compose(); spec["services"]["wordpress"][field]=value
+    with pytest.raises(RuntimeError,match="unknown"): guard.validate_compose(spec)
+
+def test_rejects_cpu_user_and_tmpfs_option_drift():
+    for mutation in (lambda s:s["services"]["browser"].update(cpus="2.0"),lambda s:s["services"]["browser"].update(user="pwuser"),lambda s:s["services"]["browser"].update(tmpfs=["/tmp:uid=1000,gid=1000,mode=0777,size=1,nr_inodes=1"])):
+        spec=guard.canary_compose(); mutation(spec)
+        with pytest.raises(RuntimeError): guard.validate_compose(spec)
+
+def test_rejects_network_command_and_entrypoint_drift():
+    mutations=(lambda s:s["services"]["browser"].update(networks=["wp_db"]),lambda s:s["services"]["browser"].update(command=["sh"]),lambda s:s["services"]["cli"].update(entrypoint=["sh"]),lambda s:s["services"]["wordpress"].update(command=["sh"]))
+    for mutation in mutations:
+        spec=guard.canary_compose(); mutation(spec)
+        with pytest.raises(RuntimeError): guard.validate_compose(spec)
+
+def test_buildx_manifest_formatter_real_shape_regression():
+    payload='{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","digest":"sha256:index","size":123,"manifests":[{"digest":"sha256:amd","platform":{"architecture":"amd64","os":"linux"}},{"digest":"sha256:arm","platform":{"architecture":"arm64","os":"linux"}}]}'
+    assert guard.parse_tag_manifest(payload,"amd64")==("sha256:index","sha256:amd")
+    with pytest.raises(RuntimeError): guard.parse_tag_manifest('{"schemaVersion":2,"manifests":[]}',"amd64")
+
+def test_wp_cli_verification_fails_closed():
+    guard.verify_wp_cli_result({"returncode":0,"stdout":"abc  /usr/local/bin/wp","stderr":""},"abc")
+    with pytest.raises(RuntimeError,match="WP-CLI"):
+        guard.verify_wp_cli_result({"returncode":1,"stdout":"","stderr":"bad"},"abc")
+    with pytest.raises(RuntimeError,match="WP-CLI"):
+        guard.verify_wp_cli_result({"returncode":0,"stdout":"wrong file","stderr":""},"abc")
+
+def test_canary_service_quota_targets_preserve_first_matching_profile(monkeypatch):
+    profiles={
+        "wordpress": ({32:("wordpress-id","/tmp")},{2048:("wordpress-id","/tmp")}),
+        "cli": ({16:("cli-id","/tmp")},{1024:("cli-id","/tmp")}),
+        "database": ({16:("database-id","/tmp")},{1024:("database-id","/tmp")}),
+        "browser": ({64:("browser-id","/tmp")},{4096:("browser-id","/tmp")}),
+    }
+    def inspect(_base,service,_image,_built,_identities):
+        size,inodes=profiles[service]
+        return f"live-{service}",f"cid-{service}",set(),([], {"size":size,"inodes":inodes})
+    monkeypatch.setattr(guard,"_inspect_canary_service",inspect)
+    _live,_gateways,_observed,targets=guard._inspect_canary_services([],{}, {},"wp","db","browser")
+    assert targets["size"][16] == ("cli-id","/tmp")
+    assert targets["inodes"][1024] == ("cli-id","/tmp")
+
+def test_canary_cleanup_preserves_primary_and_attempts_all_boundaries(monkeypatch):
+    calls=[]
+    def fail(command,**_kwargs):
+        calls.append(command)
+        raise RuntimeError("cleanup transport failure")
+    monkeypatch.setattr(guard.provision,"run_capped",fail)
+    with pytest.raises(RuntimeError,match="primary canary failure"):
+        try: raise RuntimeError("primary canary failure")
+        finally: guard._cleanup_canary(["docker","compose"],("wp-image","db-image"))
+    assert calls[0][-3:] == ["down","-v","--remove-orphans"]
+    assert calls[1] == ["docker","image","rm","-f","wp-image","db-image"]
+
+def test_canary_cleanup_only_failure_remains_nonzero(monkeypatch):
+    calls=[]
+    def fail(command,**_kwargs):
+        calls.append(command)
+        raise RuntimeError("cleanup only failure")
+    monkeypatch.setattr(guard.provision,"run_capped",fail)
+    with pytest.raises(RuntimeError,match="cleanup only failure"):
+        guard._cleanup_canary(["docker","compose"],("wp-image","db-image"))
+    assert len(calls) == 2 and calls[1][0:4] == ["docker","image","rm","-f"]
+
+def test_outer_cleanup_preserves_inspection_failure(monkeypatch,tmp_path):
+    monkeypatch.setattr(guard.platform,"system",lambda:"Linux")
+    monkeypatch.setenv("CANARY_COMMIT_SHA","a"*40)
+    monkeypatch.setattr(guard,"_run_linux_canary",lambda _root:(_ for _ in ()).throw(RuntimeError("inspection failure")))
+    cleanups=[]
+    monkeypatch.setattr(guard.provision,"run_capped",lambda command,**_kwargs:cleanups.append(command) or {"returncode":1,"stdout":"","stderr":"cleanup failed"})
+    with pytest.raises(RuntimeError,match="inspection failure"): guard.run_linux_canary(tmp_path/"lease")
+    assert cleanups and cleanups[-1][0:3]==["docker","image","rm"]
+    assert not (tmp_path/"lease").exists()
+
+def test_df_profile_parses_with_documented_rounding_tolerance():
+    result=guard.validate_df_profile("tmpfs 32769 1 32768 1% /tmp\ntmpfs 2064 1 2063 1% /tmp",32*1024*1024,2048)
+    assert result["block_rounding_tolerance"]==1
+    assert result["inode_rounding_tolerance"]==21
+
+@pytest.mark.parametrize("payload",["","tmpfs bad 1\ntmpfs 10 1","only one line"])
+def test_df_profile_missing_or_unparsed_fails_closed(payload):
+    with pytest.raises(RuntimeError,match="missing or unparsed"): guard.validate_df_profile(payload,1024,10)
+
+@pytest.mark.parametrize("payload",["tmpfs 102 1 1 1% /tmp\ntmpfs 10 1 1 1% /tmp","tmpfs 1 1 1 1% /tmp\ntmpfs 100 1 1 1% /tmp"])
+def test_df_profile_oversized_fails_closed(payload):
+    with pytest.raises(RuntimeError,match="exceeds"): guard.validate_df_profile(payload,1024,10)
+
+def test_execute_failure_diagnostic_is_bounded_and_nonsecret(monkeypatch):
+    calls=[]
+    def fake(command,**kwargs):
+        calls.append((command,kwargs)); return {"returncode":0,"stdout":"bounded","stderr":""}
+    monkeypatch.setattr(guard.provision,"run_capped",fake)
+    evidence=guard.execute_failure_diagnostic("fixture-123","node")
+    assert set(evidence)=={"container","runtime","state","limits","stats","processes","filesystem"}
+    assert all(kwargs=={"timeout":15,"limit":32768} for _command,kwargs in calls)
+    flattened=" ".join(" ".join(command) for command,_kwargs in calls)
+    assert "env" not in flattened.lower()
+    assert "cat /work" not in flattened
+
+def test_compose_start_failure_diagnostic_is_bounded_and_excludes_config(monkeypatch):
+    calls=[]
+    def fake(command,**kwargs):
+        calls.append((command,kwargs))
+        if command[-2:]==["ps","-aq"]:
+            return {"returncode":0,"stdout":"container-a\ncontainer-b\n","stderr":""}
+        return {"returncode":0,"stdout":"bounded-state","stderr":""}
+    monkeypatch.setattr(guard.provision,"run_capped",fake)
+    evidence=guard.compose_start_failure_diagnostic(["docker","compose"])
+    assert evidence["container_ids"] == {"returncode":0,"count":2}
+    inspect,options=calls[-1]
+    assert inspect[:3] == ["docker","inspect","--format"]
+    assert inspect[-2:] == ["container-a","container-b"]
+    assert all(field in inspect[3] for field in (".State.Status",".State.ExitCode",".State.Error",".NetworkSettings.Networks"))
+    assert all(field not in inspect[3] for field in ("{{json .State}}",".State.Health",".Config","Env","Mounts"))
+    assert calls[0][1] == {"timeout":15,"limit":4096}
+    assert options == {"timeout":15,"limit":32768}
+
+@pytest.mark.parametrize("failure_call,expected_stage",[(1,"container_ids"),(2,"inspection")])
+def test_compose_start_failure_diagnostic_never_masks_primary_failure(monkeypatch,failure_call,expected_stage):
+    calls=0
+    def fake(_command,**_kwargs):
+        nonlocal calls
+        calls+=1
+        if calls==failure_call: raise RuntimeError("diagnostic failed")
+        return {"returncode":0,"stdout":"container-a\n","stderr":""}
+    monkeypatch.setattr(guard.provision,"run_capped",fake)
+    evidence=guard.compose_start_failure_diagnostic(["docker","compose"])
+    failure=evidence if failure_call==1 else evidence["inspection"]
+    assert failure == {"stage":expected_stage,"error":"RuntimeError"}
+
+def test_compose_start_failure_preserves_primary_when_diagnostic_itself_raises(monkeypatch):
+    monkeypatch.setattr(guard,"compose_start_failure_diagnostic",lambda _base:(_ for _ in ()).throw(ValueError("broken")))
+    error=guard.compose_start_failure({"stderr":"primary compose failure"},["docker","compose"])
+    assert "primary compose failure" in str(error)
+    assert '"stage": "diagnostic"' in str(error) and '"error": "ValueError"' in str(error)
+
+def test_execute_failure_preserves_original_return_code(monkeypatch,tmp_path):
+    monkeypatch.setattr(guard.materializer,"materialize_packet",lambda *_args,**_kwargs:{"pass":True})
+    monkeypatch.setattr(guard,"execute_failure_diagnostic",lambda *_args:{"state":{"returncode":0,"stdout":"running","stderr":""}})
+    def fake(command,**_kwargs):
+        if command[:2]==["docker","exec"] and "wp-scripts.js" in " ".join(command): return {"returncode":37,"stdout":"","stderr":""}
+        return {"returncode":0,"stdout":"","stderr":""}
+    monkeypatch.setattr(guard.provision,"run_capped",fake)
+    with pytest.raises(RuntimeError,match="return code 37"):
+        guard.prove_fixture_locks(tmp_path,{"node":{"amd64":"sha256:"+"1"*64},"composer":{"amd64":"sha256:"+"2"*64}},"x86_64")

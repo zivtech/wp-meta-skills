@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
-"""Automated executor repair loop: generate -> certify -> (repair -> regenerate -> re-certify)* until green or k.
+"""Bounded generate, certify, repair, and re-certify loop for WordPress executors.
 
-The deterministic gate (Plugin Check / WPCS / wp-env activation) emits machine-readable
-failures; this loop feeds those failures back to the model and re-certifies, up to a bound.
-The 2026-06-22 gate-pass experiment showed this loop is the model-agnostic lever (it took
-both a gpt-5.5 baseline and a sonnet+skill packet from fail -> green in one iteration), so
-this turns that manual handoff into a standing capability.
-
-Design mirrors run_pairwise_pilot.py: the core `orchestrate(generate_fn, certify_fn, ...)`
-takes injectable callables and is fully unit-tested with stubs
-(tests/test_executor_repair_loop.py). `main()` wires the real single-shot generation
-(invoke.py: claude for skill lanes, codex for baseline-* lanes) and the real gate
-(certify_wordpress_executor_artifact.py static + run_wordpress_runtime_smoke.py runtime).
-
-Internal-only measurement harness. It reports pass@1, pass@k-with-repair, iterations-to-green,
-and per-iteration gate vectors. It makes no skill-superiority claim. Failed generations (model
-timeouts / empty output) are retried and never discard the last-good packet.
+The injectable orchestration core is unit-tested without models or Docker. The
+CLI wires provider generation to static artifact certification and the exact
+executor-aware isolated runtime adapters. It reports repair measurements, not
+skill superiority, and never discards the last certified packet after a failed
+or empty generation.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import secrets
+import stat
+import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -32,6 +28,15 @@ RESULTS = ROOT / "evals" / "results"
 sys.path.insert(0, str(HARNESS))
 
 import invoke  # noqa: E402  (reuse single-shot generation + provider routing)
+import artifact_layout  # noqa: E402
+import artifact_staging  # noqa: E402
+import isolated_runtime_contract  # noqa: E402
+import provider_preflight  # noqa: E402
+import runtime_assertions  # noqa: E402
+from artifact_staging import digest_regular_tree  # noqa: E402
+from wp_runtime_evidence import RuntimeDeadline  # noqa: E402
+from wp_runtime_types import BlockRuntimeAssertion  # noqa: E402
+from workspace_lease import WorkspacePurpose, create_named  # noqa: E402
 
 # Type aliases for the injectable callables.
 #   generate_fn(iteration, prior_packet, failures) -> packet token (opaque), or None on a
@@ -40,6 +45,61 @@ import invoke  # noqa: E402  (reuse single-shot generation + provider routing)
 #                                     "failures": str, "gate_vector": {...}}
 GenerateFn = Callable[[int, Any, str], Any]
 CertifyFn = Callable[[int, Any], dict[str, Any]]
+
+
+EXECUTOR_PROFILE_MATRIX = MappingProxyType({
+    "plugin": MappingProxyType({"static": "supported", "runtime": "supported"}),
+    "block": MappingProxyType({"static": "supported", "runtime": "conditional"}),
+    "blueprint": MappingProxyType({"static": "supported", "runtime": "rejected"}),
+})
+
+
+@dataclass(frozen=True)
+class RuntimeAdapter:
+    executor: str
+    artifact_kind: str
+    profile_id: str
+    requested_oracles: tuple[str, ...]
+    flags: tuple[str, ...]
+
+
+PLUGIN_RUNTIME_ADAPTER = RuntimeAdapter(
+    "plugin", "plugin", isolated_runtime_contract.STANDARD_PROFILE,
+    isolated_runtime_contract.STANDARD_REQUESTED_ORACLES,
+    ("--provision-full-profile", "--strict-full-profile"),
+)
+BLOCK_RUNTIME_ADAPTER = RuntimeAdapter(
+    "block", "block", isolated_runtime_contract.BLOCK_PROFILE,
+    isolated_runtime_contract.BLOCK_REQUESTED_ORACLES,
+    ("--block-build-smoke", "--editor-insert-render-smoke",
+     "--provision-full-profile", "--strict-full-profile"),
+)
+
+
+def validate_compatibility(
+    executor: str, profile: str, assertion: BlockRuntimeAssertion | None = None,
+) -> BlockRuntimeAssertion | None:
+    """Apply the one executor/profile policy before any expensive side effect."""
+    try:
+        policy = EXECUTOR_PROFILE_MATRIX[executor][profile]
+    except KeyError as exc:
+        raise ValueError(f"unsupported executor/profile: {executor}/{profile}") from exc
+    if policy == "rejected":
+        raise ValueError("Blueprint runtime is unsupported; Blueprint repair is static-only")
+    if policy == "conditional" and not isinstance(assertion, BlockRuntimeAssertion):
+        raise ValueError("block runtime requires an exact fixture-owned assertion contract")
+    if policy != "conditional" and assertion is not None:
+        raise ValueError("block runtime assertions are valid only for block/runtime")
+    return assertion
+
+
+def runtime_adapter(
+    executor: str, profile: str, assertion: BlockRuntimeAssertion | None = None,
+) -> RuntimeAdapter:
+    validate_compatibility(executor, profile, assertion)
+    if profile != "runtime":
+        raise ValueError("runtime adapter requested for a static profile")
+    return PLUGIN_RUNTIME_ADAPTER if executor == "plugin" else BLOCK_RUNTIME_ADAPTER
 
 
 # ---------------------------------------------------------------------------
@@ -191,23 +251,151 @@ def _failure_text(checks: list[dict[str, Any]]) -> str:
     which warnings. Strong models hit 0 warnings, which hid the gap.
     """
     lines: list[str] = []
-    for c in checks:
-        if c["status"] != "fail":
+    total = 0
+    for c in checks[:20]:
+        if c["status"] not in {"fail", "blocked"}:
             continue
-        detail = c["detail"].replace("\\n", "\n")
+        check_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(c.get("id", "check")))[:80]
+        detail = str(c.get("detail", "")).replace("\\n", "\n")
+        detail = re.sub(r"(?i)\b(api[_-]?key|token|password|secret|authorization)\b\s*[:=]\s*\S+", r"\1=[REDACTED]", detail)
+        detail = re.sub(r"(?<![A-Za-z0-9_.-])/(?:[^\s/:]+/)+[^\s:]+", "[PATH]", detail)
         diag = [ln.strip() for ln in detail.splitlines()
                 if ln.strip() and ("ERROR" in ln or "WARNING" in ln)]
-        lines.append(f"- {c['id']}:")
+        lines.append(f"- {check_id} ({c['status']}):")
         if diag:
-            lines.extend(f"    {d}" for d in diag[:15])
+            selected = diag[:10]
         else:
-            lines.append(f"    {detail[:400]}")
+            selected = [detail[:500]]
+        for item in selected:
+            line = f"    {item[:500]}"
+            if total + len(line.encode()) > 12_000:
+                return "\n".join(lines + ["    [diagnostics truncated]"])
+            lines.append(line)
+            total += len(line.encode())
     return "\n".join(lines) if lines else "(gate failed without itemised detail)"
 
 
-def _find_runtime_json(run_id: str) -> Path | None:
-    matches = sorted(RESULTS.glob(f"**/*{run_id}*/runtime-smoke.json"))
-    return matches[0] if matches else None
+def _load_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _nonpassing_check_ids(checks: list[dict[str, Any]]) -> list[str]:
+    return [str(check.get("id", "check")) for check in checks
+            if check.get("status") in {"fail", "blocked"}]
+
+
+def _stage_failure(gate: str, detail: str, checks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    relevant = [c for c in (checks or []) if c.get("status") in {"fail", "blocked"}]
+    diagnostics = _failure_text(relevant or [{"id": gate, "status": "fail", "detail": detail}])
+    subordinate: list[dict[str, str]] = []
+    seen: dict[str, int] = {}
+    for check in relevant[:20]:
+        base = re.sub(r"[^A-Za-z0-9_.-]", "_", str(check.get("id", "check")))[:80] or "check"
+        seen[base] = seen.get(base, 0) + 1
+        identifier = base if seen[base] == 1 else f"{base[:72]}-{seen[base]}"
+        subordinate.append({"id": identifier, "status": str(check.get("status"))})
+    return {"passed": False, "failing_gates": [gate], "failures": diagnostics,
+            "gate_vector": {gate: {"status": "fail", "checks": subordinate}}}
+
+
+def _isolated_runtime_command(
+    adapter: RuntimeAdapter, artifact: Path, result_root: Path, run_id: str,
+    evidence_id: str, expected_digest: str, timeout: int,
+    assertion: BlockRuntimeAssertion | None = None,
+) -> list[str]:
+    command = [
+        sys.executable, str(HARNESS / "run_wordpress_runtime_smoke.py"),
+        "--artifact-path", str(artifact), "--artifact-kind", adapter.artifact_kind,
+        "--write", "--run-id", run_id, "--results-root", str(result_root),
+        "--evidence-id", evidence_id, "--expected-artifact-digest", expected_digest,
+        "--timeout-sec", str(timeout), *adapter.flags,
+    ]
+    if assertion is not None:
+        command.extend([
+            "--block-name", assertion.block_name,
+            "--expected-frontend-selector", assertion.frontend_selector,
+            "--expected-frontend-text", assertion.expected_frontend_text,
+        ])
+    return command
+
+
+def _isolated_runtime_process_timeout(timeout: int) -> int:
+    """Cover child preparation, runtime, protected cleanup, and process exit."""
+    cleanup = int(RuntimeDeadline.cleanup_seconds)
+    return (timeout * 2) + cleanup + 30
+
+
+def _run_isolated_runtime_process(
+    command: list[str], timeout: int,
+) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+    budget = _isolated_runtime_process_timeout(timeout)
+    try:
+        process = subprocess.run(
+            command, capture_output=True, text=True, timeout=budget, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        detail = (
+            f"isolated runtime exceeded its reviewed {budget}-second preparation, "
+            "execution, cleanup, and exit budget"
+        )
+        return None, detail
+    return process, None
+
+
+def _isolated_runtime_verdict(
+    data: dict[str, Any], *, adapter: RuntimeAdapter, run_id: str,
+    evidence_id: str, expected_digest: str,
+    assertion: BlockRuntimeAssertion | None = None,
+) -> dict[str, Any]:
+    checks = _checks_with_status({"checks": data.get("checks") or []})
+    errors = isolated_runtime_contract.persisted_runtime_errors(
+        data, run_id=run_id, evidence_id=evidence_id,
+        artifact_kind=adapter.artifact_kind, input_digest=expected_digest,
+        expected_profile=adapter.profile_id,
+        block_assertion=assertion,
+    )
+    if errors:
+        return _stage_failure("runtime_result", "; ".join(errors), checks)
+    failing = _nonpassing_check_ids(checks)
+    return {
+        "passed": bool(checks) and not failing,
+        "failing_gates": failing,
+        "failures": _failure_text(checks) if failing else "",
+        "gate_vector": {check["id"]: check["status"] for check in checks},
+    }
+
+
+def _materialized_block_name(artifact: Path) -> str:
+    snapshot = artifact_staging.snapshot_regular_tree(artifact)
+    manifest = tuple(
+        artifact_staging.ManifestEntry(
+            relative.as_posix(), "executable" if info.st_mode & stat.S_IXUSR else "regular",
+            info.st_size, hashlib.sha256(content).hexdigest(),
+        )
+        for relative, content, info in snapshot
+    )
+    layout = artifact_layout.select_source_layout(manifest)
+    content = next(content for relative, content, _info in snapshot
+                   if relative.as_posix() == layout.source_block_json.as_posix())
+    try:
+        metadata = json.loads(content.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("selected materialized block.json is malformed") from exc
+    name = metadata.get("name") if isinstance(metadata, dict) else None
+    if not isinstance(name, str):
+        raise ValueError("selected materialized block.json lacks a name")
+    return name
+
+
+def _require_materialized_block_name(
+    artifact: Path, assertion: BlockRuntimeAssertion,
+) -> None:
+    if _materialized_block_name(artifact) != assertion.block_name:
+        raise ValueError("materialized block name does not match the fixture assertion")
 
 
 # ---------------------------------------------------------------------------
@@ -246,82 +434,25 @@ def _safe_subprocess(cmd: list[str], prompt: str, timeout: int) -> tuple[int, st
 
 
 def _run_ollama(prompt: str, model: str | None, timeout: int) -> tuple[int, str, str]:
-    """Generate via the ollama HTTP API with an explicit large context window.
-
-    `ollama run` defaults to num_ctx=4096, which truncates the persona+fixture prompt
-    and leaves no room for a full materializable packet — the cause of the earlier
-    "local truncation" (incomplete ~1.8KB packets). Driving the API directly lets us
-    set num_ctx (default 32768; override via OLLAMA_NUM_CTX) so complete packets fit.
-    """
-    import os
-
-    num_ctx = int(os.environ.get("OLLAMA_NUM_CTX", "32768"))
-    payload = json.dumps({
-        "model": model or "qwen2.5-coder:32b-instruct-q8_0",
-        "prompt": prompt,
-        "stream": False,
-        "options": {"num_ctx": num_ctx, "temperature": 0.2},
-    })
-    try:
-        proc = subprocess.run(
-            ["curl", "-sS", "-X", "POST", "http://localhost:11434/api/generate",
-             "-H", "Content-Type: application/json", "--data-binary", "@-"],
-            input=payload, capture_output=True, text=True, timeout=timeout, check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return 124, "", f"ollama request timed out after {timeout}s (num_ctx={num_ctx})"
-    if proc.returncode != 0:
-        return proc.returncode, "", (proc.stderr or "curl failed")[:300]
-    try:
-        data = json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError:
-        return 1, "", "non-JSON ollama response: " + (proc.stdout or "")[:200]
-    text = data.get("response", "")
-    if not text.strip():
-        return 1, "", f"empty ollama response (done_reason={data.get('done_reason')})"
-    return 0, _strip_model_noise(text), ""
+    """Generate through the preflighted, bounded Ollama transport."""
+    if model is None:
+        return 1, "", "model_required"
+    return _normalized_provider_result(
+        provider_preflight.generate("ollama", prompt, model, timeout)
+    )
 
 
 def _run_gemini(prompt: str, model: str | None, timeout: int) -> tuple[int, str, str]:
-    """Call the Gemini REST API directly with GOOGLE_API_KEY.
+    """Generate through the preflighted, bounded Gemini transport."""
+    if model is None:
+        return 1, "", "model_required"
+    return _normalized_provider_result(
+        provider_preflight.generate("gemini", prompt, model, timeout)
+    )
 
-    The gemini-cli individual oauth tier is deprecated (-> Antigravity IDE), so the
-    API key is the headless path. curl is used rather than urllib because the
-    framework Python here fails TLS verification (CERTIFICATE_VERIFY_FAILED).
-    Reads GOOGLE_API_KEY/GEMINI_API_KEY from env; the key is never logged.
-    """
-    import os
 
-    key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if not key:
-        return 127, "", "no GOOGLE_API_KEY / GEMINI_API_KEY in environment"
-    m = model or "gemini-2.5-flash"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={key}"
-    payload = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": 16384, "temperature": 0.2},
-    })
-    try:
-        proc = subprocess.run(
-            ["curl", "-sS", "-X", "POST", url, "-H", "Content-Type: application/json", "--data-binary", "@-"],
-            input=payload, capture_output=True, text=True, timeout=timeout, check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return 124, "", f"gemini request timed out after {timeout}s"
-    if proc.returncode != 0:
-        return proc.returncode, "", (proc.stderr or "curl failed")[:300]
-    try:
-        data = json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError:
-        return 1, "", "non-JSON Gemini response: " + (proc.stdout or "")[:200]
-    try:
-        cand = data["candidates"][0]
-        text = "".join(p.get("text", "") for p in cand.get("content", {}).get("parts", []))
-    except (KeyError, IndexError):
-        return 1, "", "unexpected Gemini response: " + json.dumps(data)[:300]
-    if not text.strip():
-        return 1, "", f"empty Gemini text (finishReason={data.get('candidates', [{}])[0].get('finishReason')})"
-    return 0, _strip_model_noise(text), ""
+def _normalized_provider_result(result: tuple[int, str, str]) -> tuple[int, str, str]:
+    return result[0], _strip_model_noise(result[1]), result[2]
 
 
 def _run_provider(provider: str, prompt: str, model: str | None, effort: str | None,
@@ -357,9 +488,11 @@ def _repair_body(failures: str, prior_text: str) -> str:
 
 def make_generate(suite: str, fixture: str, condition: str, run_dir: Path,
                   model: str | None, effort: str | None, timeout: int,
-                  provider: str | None = None) -> GenerateFn:
+                  provider: str | None = None,
+                  fixture_path: Path | None = None) -> GenerateFn:
     suite_dir = invoke.SUITES_ROOT / suite
-    fixture_text = (suite_dir / "fixtures" / f"{fixture}.md").read_text(encoding="utf-8")
+    selected_fixture = fixture_path or suite_dir / "fixtures" / f"{fixture}.md"
+    fixture_text = selected_fixture.read_text(encoding="utf-8")
     settings = invoke.get_invocation_settings(suite)
     persona_path = invoke.agent_prompt_path(suite)
     persona = persona_path.read_text(encoding="utf-8").strip() if persona_path else ""
@@ -409,25 +542,64 @@ def make_generate(suite: str, fixture: str, condition: str, run_dir: Path,
     return generate
 
 
-def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout: int) -> CertifyFn:
+def make_certify(
+    suite: str, executor: str, run_dir: Path, profile: str, timeout: int,
+    block_assertion: BlockRuntimeAssertion | None = None,
+) -> CertifyFn:
+    validate_compatibility(executor, profile, block_assertion)
+    adapter = runtime_adapter(executor, profile, block_assertion) if profile == "runtime" else None
+
     def certify(iteration: int, packet: Any) -> dict[str, Any]:
-        art = run_dir / f"iter{iteration}.art"
-        res = run_dir / f"iter{iteration}.cert"
-        art.mkdir(parents=True, exist_ok=True)
-        res.mkdir(parents=True, exist_ok=True)
+        try:
+            art = create_named(run_dir, f"iter{iteration}.art", WorkspacePurpose.ARTIFACT_EXECUTION).root
+            res = create_named(run_dir, f"iter{iteration}.cert", WorkspacePurpose.RESULT).root
+        except FileExistsError:
+            return _stage_failure("static_evidence", "iteration output already exists")
+        evidence_id = f"{secrets.token_hex(16)}-iter{iteration}"
+        packet_digest = hashlib.sha256(Path(packet).read_bytes()).hexdigest()
 
         # Stage A: static certify (packet contract + materialize + static heuristics).
-        subprocess.run(
+        static_proc = subprocess.run(
             [sys.executable, str(HARNESS / "certify_wordpress_executor_artifact.py"),
              "--executor", executor, "--packet", str(packet), "--out-dir", str(art),
-             "--result-dir", str(res), "--profile", "static", "--overwrite"],
+             "--result-dir", str(res), "--profile", "static", "--evidence-id", evidence_id],
             capture_output=True, text=True, timeout=timeout, check=False,
         )
         cert_json = res / "certification.json"
-        static = json.loads(cert_json.read_text(encoding="utf-8")) if cert_json.exists() else {}
+        static = _load_json_object(cert_json)
+        if static_proc.returncode != 0:
+            checks = _checks_with_status(static or {})
+            checks.insert(0, {"id": "static_command", "status": "fail",
+                              "detail": f"return code {static_proc.returncode}"})
+            return _stage_failure("static_command", f"return code {static_proc.returncode}", checks)
+        if static is None:
+            return _stage_failure("static_evidence", "certification.json missing or malformed")
+        candidates: list[Path] = []
+        if executor == "plugin":
+            candidates = [p for p in art.iterdir() if p.name != ".workspace-lease"]
+            if (len(candidates) != 1 or stat.S_ISLNK(candidates[0].lstat().st_mode)
+                    or not stat.S_ISDIR(candidates[0].lstat().st_mode)):
+                return _stage_failure("static_evidence", "materialization did not produce exactly one plugin directory")
+            artifact_path = candidates[0]
+        elif executor == "blueprint":
+            artifact_path = art / "blueprint.json"
+        else:
+            artifact_path = art
+        try:
+            observed_digest = digest_regular_tree(artifact_path)
+        except (OSError, ValueError) as exc:
+            return _stage_failure("static_evidence", f"artifact digest failed: {exc}")
+        identity_ok = (
+            static.get("schema_version") == 1 and static.get("evidence_id") == evidence_id
+            and static.get("executor") == executor and static.get("profile") == "static"
+            and static.get("packet_sha256") == packet_digest
+            and static.get("artifact_digest") == observed_digest
+        )
+        if not identity_ok:
+            return _stage_failure("static_evidence", "identity or digest mismatch")
         static_checks = _checks_with_status(static)
         static_failing = [c["id"] for c in static_checks if c["status"] == "fail"]
-        if static.get("status") != "pass":
+        if static.get("status") != "pass" or static.get("pass") is not True:
             repair_prompt = res / "repair-prompt.md"
             failures = repair_prompt.read_text(encoding="utf-8") if repair_prompt.exists() else _failure_text(static_checks)
             return {"passed": False, "failing_gates": static_failing or ["static_contract"],
@@ -437,37 +609,46 @@ def make_certify(suite: str, executor: str, run_dir: Path, profile: str, timeout
             return {"passed": True, "failing_gates": [], "failures": "",
                     "gate_vector": {c["id"]: c["status"] for c in static_checks}}
 
-        # Stage B: provisioned runtime gate (WPCS + Plugin Check + wp-env activation).
-        slug = next((p.name for p in art.iterdir() if p.is_dir()), None)
-        if not slug:
-            return {"passed": False, "failing_gates": ["materialize"],
-                    "failures": "materialization produced no plugin directory", "gate_vector": {}}
+        if adapter is None:
+            return _stage_failure("runtime_profile", "runtime adapter is missing")
+        if block_assertion is not None:
+            try:
+                _require_materialized_block_name(artifact_path, block_assertion)
+            except (OSError, ValueError) as exc:
+                return _stage_failure("block_assertion", str(exc))
+
+        # Stage B: exact isolated WordPress activation and container-browser gate.
+        runtime_artifact = artifact_path
+        expected_digest = digest_regular_tree(runtime_artifact)
         run_id = f"{run_dir.name}-iter{iteration}"
-        subprocess.run(
-            [sys.executable, str(HARNESS / "run_wordpress_runtime_smoke.py"),
-             "--artifact-path", str(art / slug), "--artifact-kind", "plugin",
-             "--provision-full-profile", "--strict-full-profile",
-             "--write", "--run-id", run_id, "--timeout-sec", str(timeout)],
-            capture_output=True, text=True, timeout=timeout + 120, check=False,
+        runtime_root = res / "runtime"
+        runtime_root.mkdir(exist_ok=False)
+        runtime_proc, runtime_timeout_error = _run_isolated_runtime_process(
+            _isolated_runtime_command(
+                adapter, runtime_artifact, runtime_root, run_id, evidence_id,
+                expected_digest, timeout, block_assertion,
+            ), timeout,
         )
-        rj = _find_runtime_json(run_id)
-        data = json.loads(rj.read_text(encoding="utf-8")) if rj else {}
-        # Use only the runtime profile's check array (the one containing plugin_check / wp_env_smoke).
-        runtime_checks: list[dict[str, Any]] = []
-        for node in _walk_objects(data):
-            checks = node.get("checks") if isinstance(node, dict) else None
-            if isinstance(checks, list) and any(
-                isinstance(c, dict) and c.get("id") in ("plugin_check", "wp_env_smoke") for c in checks
-            ):
-                runtime_checks = _checks_with_status({"checks": checks})
-                break
-        if not runtime_checks:
-            runtime_checks = _checks_with_status(data)
-        failing = [c["id"] for c in runtime_checks if c["status"] == "fail"]
-        passed = bool(runtime_checks) and not failing
-        return {"passed": passed, "failing_gates": failing,
-                "failures": _failure_text(runtime_checks),
-                "gate_vector": {c["id"]: c["status"] for c in runtime_checks}}
+        if runtime_timeout_error is not None:
+            return _stage_failure("runtime_timeout", runtime_timeout_error, [{
+                "id": "runtime_command", "status": "blocked",
+                "detail": runtime_timeout_error,
+            }])
+        if runtime_proc is None:
+            return _stage_failure("runtime_timeout", "isolated runtime did not return")
+        rj = runtime_root / run_id / "runtime-smoke.json"
+        data = _load_json_object(rj)
+        if runtime_proc.returncode != 0:
+            checks = _checks_with_status(data or {})
+            checks.insert(0, {"id": "runtime_command", "status": "fail",
+                              "detail": f"return code {runtime_proc.returncode}"})
+            return _stage_failure("runtime_command", f"return code {runtime_proc.returncode}", checks)
+        if data is None:
+            return _stage_failure("runtime_result", "exact runtime result missing or malformed")
+        return _isolated_runtime_verdict(
+            data, adapter=adapter, run_id=run_id, evidence_id=evidence_id,
+            expected_digest=expected_digest, assertion=block_assertion,
+        )
 
     return certify
 
@@ -499,13 +680,44 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    run_dir = RESULTS / args.run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.provider in {"ollama", "gemini"} and not args.model:
+        parser.error(f"--model is required for provider {args.provider}")
+    fixture_pair = None
+    block_assertion = None
+    try:
+        if args.executor == "block" and args.profile == "runtime":
+            fixture_pair = runtime_assertions.load_block_runtime_fixture(
+                invoke.SUITES_ROOT, args.suite, args.fixture,
+            )
+            block_assertion = fixture_pair.assertion
+        validate_compatibility(args.executor, args.profile, block_assertion)
+    except ValueError as exc:
+        parser.error(str(exc))
+    try:
+        run_dir = create_named(RESULTS, args.run_id, WorkspacePurpose.REPAIR_RUN).root
+    except (ValueError, FileExistsError) as exc:
+        print(f"repair run refused: {exc}", file=sys.stderr)
+        return 2
+
+    if args.provider in {"ollama", "gemini"}:
+        preflight = provider_preflight.preflight(
+            args.provider, args.model, timeout=min(args.timeout_sec, 30),
+        )
+        receipt_path = run_dir / "provider-preflight.json"
+        receipt_path.write_text(
+            json.dumps(preflight.receipt.as_dict(), indent=2) + "\n", encoding="utf-8",
+        )
+        if preflight.receipt.status != "pass":
+            print(preflight.diagnostic, file=sys.stderr)
+            return 2
 
     generate = make_generate(args.suite, args.fixture, args.condition, run_dir,
-                             args.model, args.effort, args.timeout_sec, provider=args.provider)
-    certify = make_certify(args.suite, args.executor, run_dir, args.profile, args.timeout_sec)
+                             args.model, args.effort, args.timeout_sec, provider=args.provider,
+                             fixture_path=fixture_pair.fixture_path if fixture_pair else None)
+    certify = make_certify(args.suite, args.executor, run_dir, args.profile, args.timeout_sec,
+                           block_assertion)
 
     result = orchestrate(generate, certify, args.max_repairs, args.gen_retries)
 

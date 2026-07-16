@@ -7,6 +7,7 @@ composer-installed; CI installs the toolchain so they always run there.
 """
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -391,6 +392,51 @@ def test_summarize_report_phrases_pass_fail_and_blocked():
     assert "did you mean sanitize_email?" in summary
 
 
+def test_explicit_empty_api_list_skips_without_loading_tools(tmp_path, monkeypatch):
+    root = tmp_path / "handoff"
+    root.mkdir()
+    monkeypatch.setattr(
+        wp_api_lint, "resolve_toolchain",
+        lambda *_args: pytest.fail("empty explicit scans must not load tools"),
+    )
+
+    report = wp_api_lint.run_api_lint(root, explicit_files=[])
+
+    assert report["status"] == "skip"
+    assert wp_api_lint.summarize_report(report) == "no PHP files to scan"
+
+
+def test_phpstan_message_budget_is_fail_closed(monkeypatch):
+    output = json.loads(json.dumps(RECORDED_MIXED_OUTPUT))
+    budget = wp_api_lint.AnalysisBudget(time.monotonic() + 10)
+    monkeypatch.setattr(wp_api_lint, "MAX_TOOL_MESSAGES_PER_FILE", 1)
+
+    with pytest.raises(wp_api_lint.AnalysisBlocked, match="message limit"):
+        wp_api_lint.parse_phpstan_output(
+            output, Path("/work/artifact"), SMALL_INDEX, "6.0", "7.0", [], budget
+        )
+
+
+@pytest.mark.real_api_lint
+@needs_toolchain
+@pytest.mark.parametrize("name", ["payload.phtml", "payload.txt", "bootstrap"])
+def test_phpstan_analyzes_unusual_php_candidates_via_bound_alias(tmp_path, name):
+    root = tmp_path / "handoff"
+    root.mkdir()
+    candidate = root / name
+    candidate.write_text("<?php wp_plan010_missing_symbol();\n", encoding="utf-8")
+
+    report = wp_api_lint.run_api_lint(root, explicit_files=[candidate])
+
+    assert report["status"] == "fail"
+    assert any(
+        item["symbol"] == "wp_plan010_missing_symbol"
+        and item["file"] == name
+        for item in report["findings"]
+    )
+    assert report["scanner_aliases"][0]["source_path"] == name
+
+
 @pytest.mark.real_api_lint
 def test_check_api_existence_skips_without_php_files(tmp_path):
     check, report = oracle.check_api_existence(tmp_path)
@@ -508,6 +554,87 @@ def test_version_gt_pads_segments():
     assert not wp_api_lint.version_gt("6.9.0", "6.9")
     assert not wp_api_lint.version_gt("6.9", "6.9.0")
     assert wp_api_lint.version_gt("7.0", "6.9.1")
+
+
+def test_line_lookup_uses_precomputed_newline_offsets():
+    offsets = wp_api_lint._newline_offsets("first\nsecond\nthird")
+
+    assert offsets == [5, 12]
+    assert wp_api_lint._line_of(offsets, 0) == 1
+    assert wp_api_lint._line_of(offsets, 6) == 2
+    assert wp_api_lint._line_of(offsets, 13) == 3
+
+
+def test_analysis_budget_enforces_per_file_and_global_caps(monkeypatch):
+    monkeypatch.setattr(wp_api_lint, "MAX_CALL_SITES_PER_FILE", 1)
+    with pytest.raises(wp_api_lint.AnalysisBlocked, match="for a.php"):
+        budget = wp_api_lint.AnalysisBudget(None)
+        budget.visit_call("native API", "a.php")
+        budget.visit_call("native API", "a.php")
+
+    monkeypatch.setattr(wp_api_lint, "MAX_CALL_SITES_PER_FILE", 10)
+    monkeypatch.setattr(wp_api_lint, "MAX_CALL_SITES_TOTAL", 1)
+    with pytest.raises(wp_api_lint.AnalysisBlocked, match="global call-site"):
+        budget = wp_api_lint.AnalysisBudget(None)
+        budget.visit_call("hook", "a.php")
+        budget.visit_call("hook", "b.php")
+
+    monkeypatch.setattr(wp_api_lint, "MAX_FINDINGS_PER_FILE", 1)
+    finding = {"class": "unknown_hook"}
+    with pytest.raises(wp_api_lint.AnalysisBlocked, match="for a.php"):
+        budget = wp_api_lint.AnalysisBudget(None)
+        budget.add_finding("hook", "a.php", finding)
+        budget.add_finding("hook", "a.php", finding)
+
+    monkeypatch.setattr(wp_api_lint, "MAX_FINDINGS_PER_FILE", 10)
+    monkeypatch.setattr(wp_api_lint, "MAX_FINDINGS_TOTAL", 1)
+    with pytest.raises(wp_api_lint.AnalysisBlocked, match="global finding"):
+        budget = wp_api_lint.AnalysisBudget(None)
+        budget.add_finding("hook", "a.php", finding)
+        budget.add_finding("hook", "b.php", finding)
+
+
+def test_run_api_lint_deadline_and_call_cap_are_blocked(monkeypatch, tmp_path):
+    artifact = tmp_path / "bounded"
+    artifact.mkdir()
+    php_file = artifact / "bounded.php"
+    php_file.write_text("<?php\n" + "wp_signon( array() );\n" * 5, encoding="utf-8")
+
+    expired = wp_api_lint.run_api_lint(
+        artifact,
+        php_tools_root=tmp_path / "empty-tools",
+        deadline_monotonic=time.monotonic() - 1,
+    )
+    assert expired["status"] == "blocked"
+    assert "deadline elapsed" in expired["blocked_reason"]
+
+    monkeypatch.setattr(wp_api_lint, "MAX_CALL_SITES_PER_FILE", 3)
+    capped = wp_api_lint.run_api_lint(artifact, php_tools_root=tmp_path / "empty-tools")
+    assert capped["status"] == "blocked"
+    assert "call-site limit" in capped["blocked_reason"]
+    assert capped["analysis_usage"]["call_sites"] == 4
+
+
+def test_phpstan_output_overflow_returns_blocked_report(monkeypatch, tmp_path):
+    artifact = tmp_path / "plugin"
+    artifact.mkdir()
+    (artifact / "plugin.php").write_text("<?php\nwp_signon( array() );\n", encoding="utf-8")
+    symbols = tmp_path / "symbols.json"
+    symbols.write_text(json.dumps({"symbols": {}}), encoding="utf-8")
+    toolchain = wp_api_lint.Toolchain(
+        "php", tmp_path / "phpstan", tmp_path / "stubs.php",
+        tmp_path / "compat.neon", symbols, tmp_path,
+    )
+    monkeypatch.setattr(wp_api_lint, "resolve_toolchain", lambda _root=None: (toolchain, None))
+
+    def overflow(*_args, **_kwargs):
+        raise wp_api_lint.BoundedProcessOverflow("stdout exceeded 32 bytes")
+
+    monkeypatch.setattr(wp_api_lint, "run_bounded", overflow)
+    report = wp_api_lint.run_api_lint(artifact, php_tools_root=tmp_path)
+
+    assert report["status"] == "blocked"
+    assert report["blocked_reason"] == "phpstan output blocked: stdout exceeded 32 bytes"
 
 
 def test_deprecation_bait_names_successors():

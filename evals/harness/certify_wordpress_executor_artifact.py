@@ -15,7 +15,10 @@ pass the requested WordPress artifact gate?
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +27,8 @@ from typing import Any
 import materialize_wordpress_executor_packet
 import validate_wordpress_artifact
 import validate_wordpress_executor_packet
+from artifact_staging import (EXECUTION_CLOSURE_IGNORE, digest_regular_tree, snapshot_regular_tree,
+                              snapshot_regular_tree_with_kind)
 
 
 ARTIFACT_TYPES = {
@@ -31,6 +36,7 @@ ARTIFACT_TYPES = {
     "block": "block",
     "blueprint": "blueprint",
 }
+EVIDENCE_SCHEMA_VERSION = 1
 
 
 def display_path(path: Path) -> str:
@@ -41,6 +47,16 @@ def artifact_path_for(executor: str, out_dir: Path) -> Path:
     if executor == "blueprint":
         return out_dir / "blueprint.json"
     return out_dir
+
+
+def execution_closure_for(executor: str, out_dir: Path) -> Path:
+    if executor != "plugin":
+        return artifact_path_for(executor, out_dir)
+    children = [item for item in out_dir.iterdir() if item.name != ".workspace-lease"]
+    if (len(children) != 1 or stat.S_ISLNK(children[0].lstat().st_mode)
+            or not stat.S_ISDIR(children[0].lstat().st_mode)):
+        raise ValueError("plugin materialization must contain exactly one plugin directory")
+    return children[0]
 
 
 def overall_status(packet_result: dict[str, Any], materialization: dict[str, Any], artifact: dict[str, Any] | None) -> str:
@@ -150,6 +166,7 @@ def certify_executor_artifact(args: argparse.Namespace) -> dict[str, Any]:
     packet_path = Path(args.packet).resolve()
     out_dir = Path(args.out_dir).resolve()
     packet_text = packet_path.read_text(encoding="utf-8")
+    packet_sha256 = hashlib.sha256(packet_path.read_bytes()).hexdigest()
 
     packet_result = validate_wordpress_executor_packet.validate_packet(packet_text, args.executor)
     materialization: dict[str, Any]
@@ -181,12 +198,23 @@ def certify_executor_artifact(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     status = overall_status(packet_result, materialization, artifact_result)
+    artifact_digest = None
+    if materialization.get("pass"):
+        try:
+            artifact_digest = digest_regular_tree(execution_closure_for(args.executor, out_dir))
+        except (OSError, ValueError) as exc:
+            status = "fail"
+            materialization.setdefault("issues", []).append({"status": "fail", "detail": str(exc)})
     result = {
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
+        "evidence_id": getattr(args, "evidence_id", None),
         "executor": args.executor,
         "packet": display_path(packet_path),
         "out_dir": display_path(out_dir),
         "artifact_path": display_path(artifact_path_for(args.executor, out_dir)),
         "profile": args.profile,
+        "packet_sha256": packet_sha256,
+        "artifact_digest": artifact_digest,
         "required_tools": args.require_tool or [],
         "status": status,
         "pass": status == "pass",
@@ -264,6 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing generated artifact directory.")
     parser.add_argument("--result-dir", type=Path, help="Optional directory for certification.json and scorecard.md.")
     parser.add_argument("--profile", choices=("static", "runtime"), default="static")
+    parser.add_argument("--evidence-id", help="Opaque caller identity recorded in certification evidence.")
     parser.add_argument(
         "--require-tool",
         action="append",

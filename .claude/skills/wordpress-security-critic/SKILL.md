@@ -50,7 +50,7 @@ Watch for hidden authorization assumptions, unsafe production commands, missing 
 ## Output Contract
 
 Use these headings:
-- `**VERDICT: ...**`
+- `**VERDICT: [REJECT / REVISE / ACCEPT-WITH-RESERVATIONS / ACCEPT]**`
 - `**Overall Assessment**`
 - `**Pre-commitment Predictions**`
 - `**Security Gate Evidence**`
