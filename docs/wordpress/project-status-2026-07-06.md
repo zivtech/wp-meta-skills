@@ -1,3 +1,6 @@
+> **Superseded:** This dated snapshot is historical. See the
+> [current project status](project-status-current.md).
+
 # Project Status — 2026-07-06
 
 A single reconciled snapshot of where `wp-meta-skills` stands, pulling together

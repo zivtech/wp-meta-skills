@@ -1,67 +1,39 @@
-# Cutover Plan
+# Standalone Cutover Record
 
-This plan defines how `wp-meta-skills` becomes the source of truth after
-release approval. It is intentionally separate from validation evidence:
-validation proves the package works, while cutover controls ownership and
-future change flow.
+The [current project status](docs/wordpress/project-status-current.md) is the
+active status source. This file records how the standalone repository boundary
+was established and the rule that now governs edits.
 
-## Preconditions
+## Completed Boundary
 
-Do not cut over until all of these are true:
+The WordPress collection was assembled from the earlier `zivtech-meta-skills`
+monorepo, validated as a standalone tree, and imported into
+[zivtech/wp-meta-skills](https://github.com/zivtech/wp-meta-skills) with a clean
+root. The initial public commit is
+`6de8aa99ea8f7106cf1016b740abeb152791d53e`.
 
-- Monorepo recovery PR #11 is approved and merged into `main` with
-  `validate-package` passing on the merge candidate.
-- Standalone approval issue #1 approves public visibility, metadata,
-  security reporting, evidence boundaries, and history/provenance strategy.
-- `SECURITY.md` contains the real public reporting process or contact.
-- The standalone repository has a live passing Actions run after any
-  release-review edits.
-- No release copy claims credentialed third-party AI-provider proof,
-  production readiness of generated artifacts, long-run variance reduction, or
-  completed high-risk eval maturation unless those claims have current
-  evidence.
+The clean import intentionally did not publish the staging repository's full
+history. [PROVENANCE.md](PROVENANCE.md) describes the historical inputs without
+claiming a path-preserving migration.
 
-## Cutover Sequence
+## Active Source-of-Truth Rule
 
-1. Freeze WordPress skill changes in `zivtech-meta-skills` except for the final
-   package-generation and pointer-update commits.
-2. Rebuild the standalone package from the approved monorepo merge commit:
+`zivtech/wp-meta-skills` is the source of truth for this package. Make WordPress
+skill, harness, documentation, workflow, and distribution-surface changes here.
+Do not regenerate or overwrite the repository from the historical monorepo
+package path.
 
-   ```bash
-   python3 scripts/build-wp-meta-skills-package.py \
-     --output /tmp/wp-meta-skills-release-candidate \
-     --force \
-     --generate-manifest
-   ```
+Any downstream mirror or vendor copy must identify its source commit and prove
+parity against this repository. A mirror being current does not make it an
+authoritative edit surface.
 
-3. Sync the generated package into `zivtech/wp-meta-skills` and run the
-   standalone validation bundle locally.
-4. Push the standalone release-candidate commit and wait for live standalone
-   Actions to pass.
-5. Apply only approved metadata, evidence, security, or provenance edits needed
-   for public release; after each edit, rerun local validation and live Actions.
-6. Change repository visibility only after issue #1 records owner approval.
-7. Create a release tag only after the post-review live CI run passes.
-8. Update `zivtech-meta-skills` documentation so future WordPress skill work
-   points to `zivtech/wp-meta-skills` as the source of truth.
+## Validation and Publication Separation
 
-## Post-Cutover Rule
+Local and hosted gates prove only their named contracts. Repository visibility,
+skills.sh discovery, a successful workflow, and a future tag are distinct
+states. None alone establishes production readiness, security assurance,
+benchmark superiority, or immutable artifact provenance.
 
-After cutover, new WordPress skill work should start in `zivtech/wp-meta-skills`.
-The monorepo may keep historical handoff notes or a pointer, but it should not
-accept new WordPress feature work unless the change is explicitly a
-back-reference, archive update, or migration cleanup.
-
-## Rollback
-
-If public release is blocked after the standalone repository is made public,
-do not delete history to hide the attempt. Open a follow-up issue, keep the
-latest passing private/public validation link attached to the approval issue,
-and either narrow release claims or revert the specific release-facing edit that
-introduced the blocker.
-
-## Non-Claims
-
-This cutover plan does not itself approve public release, repo visibility,
-release tagging, or evidence sufficiency. Those approvals remain in the
-standalone approval issue until maintainers explicitly close them.
+If the source-of-truth architecture changes, amend this record and the current
+status through a reviewed change before moving work. Do not silently resume the
+old generation path.

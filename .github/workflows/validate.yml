@@ -413,6 +413,9 @@ jobs:
             --strict-suites wordpress-skill-candidate-eval \
             --allow-known-gaps
 
+      - name: Validate public documentation references and controls
+        run: uv run --locked --extra test python scripts/validate-public-docs.py
+
       - name: Run WordPress harness tests
         run: |
           uv run --locked --extra test python -m pytest \

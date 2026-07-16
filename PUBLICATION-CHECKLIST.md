@@ -1,91 +1,67 @@
-# Publication Checklist
+# Publication Record and Release Checklist
 
-Use this checklist before publishing or tagging `wp-meta-skills`.
+The [current project status](docs/wordpress/project-status-current.md) is the
+stable entry point for repository state. This document records the clean public
+cutover and keeps a separate checklist for any future tagged release.
 
-Public-release evidence should be recorded in the public repository issue
-tracker after the clean-root import.
+## Public State Observed 2026-07-15
 
-## Review Packet
+- Repository: [zivtech/wp-meta-skills](https://github.com/zivtech/wp-meta-skills),
+  visibility `PUBLIC`.
+- Initial public import: commit `6de8aa99ea8f7106cf1016b740abeb152791d53e`.
+- Publication approval issue:
+  [#1](https://github.com/zivtech/wp-meta-skills/issues/1), closed.
+- Latest successful `validate.yml` push on `main` observed that day:
+  [run 28811640050](https://github.com/zivtech/wp-meta-skills/actions/runs/28811640050)
+  at `e0ebf6a3bee38fa3477e835c45325d078adde6fa`.
+- Discovery page:
+  [skills.sh/zivtech/wp-meta-skills](https://www.skills.sh/zivtech/wp-meta-skills),
+  HTTP 200 and listing 14 skills when observed.
+- Formal release state: no Git tags and no GitHub Releases were present.
 
-Public-release review should inspect the standalone repository copies of:
+These are dated external observations, not assertions enforced by the local
+documentation validator. The public repository and skills directory listing do
+not imply a semantic version, immutable release artifact, production support
+commitment, or benchmark approval.
 
-- `README.md`
-- `CHANGELOG.md`
-- `CONTRIBUTING.md`
-- `CUTOVER.md`
-- `SECURITY.md`
-- `EVIDENCE.md`
-- `PROVENANCE.md`
-- `PUBLICATION-CHECKLIST.md`
+## Controls Completed for the Public Cutover
 
-Approval must explicitly cover metadata accuracy, security reporting,
-provenance/history strategy, evidence boundaries, selected public evidence
-files, and whether remaining high-risk eval maturation gaps are accepted as
-post-release work.
+- Clean-root history was used instead of publishing the staging history.
+- GPL-3.0 licensing, trademark language, security-reporting instructions, and
+  provenance boundaries are present.
+- Distribution parity and the checksum manifest bind the shipped skill and
+  agent surfaces.
+- The public Actions workflow exercises the locked general partition plus the
+  separate no-secrets Linux Docker partitions.
+- Public evidence is limited to tracked artifacts under `evidence/` and is
+  mapped in [EVIDENCE.md](EVIDENCE.md).
+- Active work is performed directly in this standalone repository; the former
+  monorepo generation path is historical provenance.
 
-## Required Gates
+## Checklist for a Future Tagged Release
 
-- [ ] Maintainer review approves `README.md`, `CHANGELOG.md`,
-  `CONTRIBUTING.md`, `CUTOVER.md`, `SECURITY.md`, `EVIDENCE.md`,
-  `PROVENANCE.md`, and `PUBLICATION-CHECKLIST.md` for public release.
-- [ ] Public reporting path in `SECURITY.md` is replaced with the real GitHub
-  Security Advisory process or public contact.
-- [ ] Package is rebuilt from the source repo with
-  `scripts/build-wp-meta-skills-package.py`.
-- [x] Standalone repository tree exists from a clean import of the generated
-  package.
-- [ ] `./install.sh --verify` passes inside the generated package.
-- [ ] `scripts/validate-agent-frontmatter.py` passes inside the generated
-  package, including agent and skill YAML frontmatter.
-- [ ] `scripts/validate-wordpress-exact-api-contract.py` passes inside the
-  generated package.
-- [x] Root `skills.sh.json` is present and valid JSON for the future skills.sh
-  repository page.
-- [ ] `DISABLE_TELEMETRY=1 npx -y skills add ./ --list` reports all 14
-  WordPress skills, including `wordpress-security-critic`, inside the generated
-  package.
-- [ ] Strict selected WordPress eval-suite validation passes inside the
-  generated package.
-- [ ] The WordPress harness pytest bundle passes inside the generated package.
-- [ ] Scoped secret scan finds no committed secrets, credentials, private URLs,
-  or real client data.
-- [ ] Selected evidence files are present under
-  `evidence/wordpress-skill-candidate-eval/`.
-- [ ] Full result archives are either published as public artifacts or kept
-  explicitly out of scope in `EVIDENCE.md`.
-- [ ] Public GitHub visibility is approved for the standalone repository using
-  the history strategy in `PROVENANCE.md`.
-- [ ] Live GitHub Actions validation passes on the clean-root public
-  repository.
-- [ ] Live GitHub Actions validation passes after public-release review changes.
-- [ ] Release tag is created only after the live CI run passes.
+Before creating a tag or GitHub Release:
 
-## Post-Public skills.sh Registration
+- [ ] Choose and document the version and intended compatibility boundary.
+- [ ] Confirm the current status pointer names the reviewed release candidate.
+- [ ] Run the exact locked validation sequence in [CONTRIBUTING.md](CONTRIBUTING.md).
+- [ ] Require successful general, sandbox-feasibility, and generated-runtime
+      jobs for the exact candidate commit.
+- [ ] Review the distribution parity and `MANIFEST.sha256` diffs.
+- [ ] Scan the candidate diff and repository history for credentials, private
+      paths, client data, and unrelated project content.
+- [ ] Confirm every public evidence link resolves to a tracked artifact and
+      every claim retains its `Not proven` boundary.
+- [ ] Review dependency, image-digest, license, and provenance changes.
+- [ ] Confirm the security-reporting route is enabled and usable.
+- [ ] Create an annotated tag only after the exact commit has passed review.
+- [ ] If publishing a GitHub Release, attach only artifacts built from and
+      verified against that tag.
+- [ ] Recheck the skills.sh page after publication without treating telemetry
+      or listing presence as code-quality evidence.
 
-Do not mark this complete while the repository is still private or before the
-release gates above pass.
+## Rollback Rule
 
-- [ ] After the visibility flip, run `npx skills add zivtech/wp-meta-skills`
-  without `DISABLE_TELEMETRY=1` so skills.sh can see the repository through the
-  CLI's anonymous aggregate install telemetry.
-- [ ] Verify `https://skills.sh/zivtech/wp-meta-skills` resolves after the
-  skills.sh cache refreshes and shows the 14-skill WordPress collection.
-- [ ] Verify the page uses the root `skills.sh.json` grouping for Planning,
-  Execution, and Review.
-- [ ] Add the README badge only after the skills.sh page resolves:
-  `[![skills.sh](https://skills.sh/b/zivtech/wp-meta-skills)](https://skills.sh/zivtech/wp-meta-skills)`.
-- [ ] Comment on issue #1 with the verified skills.sh URL and final install
-  command evidence.
-
-## Non-Release Gates
-
-These are important but should not block the first public draft unless the
-release claims depend on them:
-
-- Long-run variance reduction across repeated current-baseline generations.
-- Credentialed OpenAI, Anthropic, Google, or other third-party AI-provider
-  behavior.
-- Production readiness of generated plugins, blocks, themes, or migrations.
-
-If any release copy claims one of these, move it back into the required gates
-and verify it before publication.
+Do not rewrite public history to hide a failed release attempt. Revert the
+specific release-facing change or publish a follow-up correction, preserve the
+failed and passing CI links, and narrow claims to the evidence that remains.

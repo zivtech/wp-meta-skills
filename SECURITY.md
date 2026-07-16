@@ -53,6 +53,7 @@ uv run --locked --extra test python scripts/validate-eval-suite-integrity.py \
   --strict-suites wordpress-blueprint-executor \
   --strict-suites wordpress-skill-candidate-eval \
   --allow-known-gaps
+uv run --locked --extra test python scripts/validate-public-docs.py
 uv run --locked --extra test python -m pytest \
   -m "not docker_boundary and not live_provider" evals/harness/tests -q
 uv run --locked --extra test python -m pytest \
