@@ -6,16 +6,36 @@ import pytest
 # Make the harness modules importable when collected by pytest.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+DOCKER_SHARDS = {
+    "test_sandbox_proxy_supervisor_contract.py": "docker_sandbox",
+    "test_sandbox_python_preflight.py": "docker_sandbox",
+    "test_sandbox_tunnel_poll.py": "docker_sandbox",
+    "test_sandboxed_package_runner.py": "docker_sandbox",
+    "test_sandboxed_package_runner_canonical_bind.py": "docker_sandbox",
+    "test_sandboxed_package_runner_limits.py": "docker_sandbox",
+    "test_wp_staged_runtime_docker.py": "docker_generated_runtime",
+}
+DOCKER_SHARD_MARKERS = frozenset(DOCKER_SHARDS.values())
 
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "real_api_lint: run the real API-existence lint (PHPStan subprocess) instead of the hermetic unit-test stub",
-    )
-    config.addinivalue_line(
-        "markers",
-        "real_security_gate: run the real security gate (phpcs subprocess) instead of the hermetic unit-test stub",
-    )
+
+def pytest_itemcollected(item):
+    """Assign every Docker node to exactly one reviewed CI shard."""
+    is_docker = item.get_closest_marker("docker_boundary") is not None
+    existing = {
+        marker for marker in DOCKER_SHARD_MARKERS if item.get_closest_marker(marker)
+    }
+    if not is_docker:
+        if existing:
+            raise pytest.UsageError(f"non-Docker node has Docker shard: {item.nodeid}")
+        return
+    if item.get_closest_marker("live_provider"):
+        raise pytest.UsageError(f"Docker/live-provider marker overlap: {item.nodeid}")
+    expected = DOCKER_SHARDS.get(Path(str(item.path)).name)
+    if expected is None:
+        raise pytest.UsageError(f"Docker node has no reviewed shard: {item.nodeid}")
+    if existing and existing != {expected}:
+        raise pytest.UsageError(f"Docker node has multiple or wrong shards: {item.nodeid}")
+    item.add_marker(expected)
 
 
 @pytest.fixture(autouse=True)

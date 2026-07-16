@@ -30,6 +30,25 @@ gitignored and fetched by each environment (2026-07-02).
 | wp-hooks/wordpress-core | 1.12.0 | GPL-3.0 | Transitive dependency of wp-compat, consumed inside the fetched `vendor/` tree at analysis time — by wp-compat's PHPStan rules and (since the 2026-07-02 phase-2 merge) by the lint's hooks engine, which reads `vendor/wp-hooks/wordpress-core/hooks/*.json` directly at run time. Update 2026-07-03: the repository relicensed to GPL-3.0, so committing a hooks snapshot is now license-compatible if ever wanted (with a ledger entry); the vendor-side consumption remains the current implementation. |
 | playwright | 1.58.0 | Apache-2.0 | Locked by `runtime-images/browser/package-lock.json`; installed while the trusted browser image is built and executed only in the final mount-free browser service |
 
+## GitHub Actions Bootstrap Entries (verified 2026-07-15)
+
+Workflow actions are referenced by immutable commits. Tag names are provenance
+labels only; execution uses the full commit in `.github/workflows/validate.yml`.
+All five upstream repositories publish the MIT license.
+
+| Action | Verified tag | Full execution commit | License | Purpose |
+|---|---:|---|---|---|
+| actions/checkout | `v7` | `9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0` | MIT | Main validation checkout with persisted credentials disabled |
+| actions/setup-python | `v6` | `ece7cb06caefa5fff74198d8649806c4678c61a1` | MIT | Exact `.python-version` bootstrap |
+| actions/cache | `v6` | `55cc8345863c7cc4c66a329aec7e433d2d1c52a9` | MIT | Main-job Composer download cache only |
+| astral-sh/setup-uv | `v7` (peeled annotated tag) | `37802adc94f370d6bfd71619e3f0bf239e1f3b78` | MIT | Exact uv 0.9.27 bootstrap |
+| actions/upload-artifact | `v7` | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | MIT | Plan 010 measurement evidence upload |
+
+The two no-secrets Docker jobs retain manual credential-free exact-commit
+checkout. They use only the pinned setup-python and setup-uv bootstraps, pass
+explicit empty token inputs, and disable uv caching. They do not use checkout,
+cache, or helper-image actions and receive no repository credential.
+
 ## Committed Data Extraction Entries
 
 `evals/harness/data/wp-symbols.json` (built by `scripts/build-wp-symbol-db.py`)
@@ -61,10 +80,12 @@ source archive URL and SHA-256 are recorded in the same inventory.
 The npm runner locks use registry packages under their package-published
 licenses. Fixture Composer acquisition is HTTPS ZIP dist-only; inert `source`
 metadata in Composer's generated lock is not an allowed fallback.
-The no-secrets Linux job installs Pytest 8.4.2 from PyPI without a credentialed
-cache; Pytest is MIT-licensed. The boundary job uses no actions or helper
-images: it fetches the exact public `$GITHUB_SHA` over HTTPS without credentials
-and uses the GitHub-hosted runner's Python and Docker installations.
+The no-secrets Linux jobs install the exact Python validation resolution from
+`uv.lock`; Pytest is MIT-licensed. They fetch the exact public commit over HTTPS
+without credentials, then use only the two immutable bootstrap actions recorded
+above with explicit empty token inputs and uv caching disabled. They use no
+checkout/cache action or helper image and continue to rely on the hosted Linux
+runner's Docker installation.
 
 On 2026-07-14 the mutable provenance tags for Node, Python, and WordPress moved.
 Their official OCI indexes and linux/amd64 and linux/arm64 child manifests were

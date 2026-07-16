@@ -19,11 +19,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-try:
-    import anthropic
-except ImportError:  # allow import without SDK for unit-testing pure logic
-    anthropic = None  # type: ignore[assignment]
-
 # ---------------------------------------------------------------------------
 # Model tiers
 # ---------------------------------------------------------------------------
@@ -321,7 +316,7 @@ def _extract_criteria_from_rubric(rubric: dict[str, Any]) -> list[dict[str, Any]
 
 
 def _call_judge(
-    client: anthropic.Anthropic,
+    client: Any,
     prompt: str,
     model: str,
 ) -> str:
@@ -347,7 +342,7 @@ def _parse_json_from_response(raw: str) -> dict[str, Any]:
 
 
 def _grade_criterion_single(
-    client: anthropic.Anthropic,
+    client: Any,
     output_text: str,
     criterion: dict[str, Any],
     model: str,
@@ -376,7 +371,7 @@ def _grade_criterion_single(
 
 
 def _grade_criteria_batch(
-    client: anthropic.Anthropic,
+    client: Any,
     output_text: str,
     criteria: list[dict[str, Any]],
     model: str,
@@ -412,7 +407,7 @@ def score_with_llm_judge(
     rubric: dict[str, Any],
     fixture_id: str,
     condition: str,
-    client: anthropic.Anthropic | None = None,
+    client: Any | None = None,
     primary_model: str = HAIKU_MODEL,
     regrade_model: str = SONNET_MODEL,
     use_batch: bool = True,
@@ -437,6 +432,12 @@ def score_with_llm_judge(
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             raise EnvironmentError("ANTHROPIC_API_KEY environment variable is not set")
+        try:
+            import anthropic
+        except ImportError as exc:
+            raise RuntimeError(
+                "The optional anthropic SDK is required for the LLM judge lane"
+            ) from exc
         client = anthropic.Anthropic(api_key=api_key)
 
     criteria = _extract_criteria_from_rubric(rubric)
@@ -638,7 +639,7 @@ def score_output_file(
     rubric_path: Path,
     fixture_id: str,
     condition: str,
-    client: anthropic.Anthropic | None = None,
+    client: Any | None = None,
 ) -> JudgeResult:
     """
     Load output text and rubric YAML from disk, then run LLM judge scoring.

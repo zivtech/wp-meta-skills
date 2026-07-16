@@ -29,14 +29,21 @@ any tracked file, regenerate the checksum manifest first:
 `zivtech-meta-skills` source monorepo, not in this repository; it only matters
 for maintainers regenerating the whole package. See `PROVENANCE.md`.)
 
-Then run the validation bundle:
+Install Python 3.13.9 and uv 0.9.27, then create the exact validation
+environment from the resolver lock. The pinned PHP toolchain is also required
+for the real API and security gates; without it those gates report `blocked` or
+skip rather than proving the full general partition.
 
 ```bash
+uv lock --check
+uv sync --locked --extra test
+composer install --no-interaction --no-progress --no-scripts --no-plugins \
+  --prefer-dist --working-dir evals/harness/php-tools
 ./install.sh --verify
-python3 scripts/validate-distribution-parity.py
-python3 scripts/validate-agent-frontmatter.py
-python3 scripts/validate-wordpress-exact-api-contract.py
-python3 scripts/validate-eval-suite-integrity.py \
+uv run --locked --extra test python scripts/validate-distribution-parity.py
+uv run --locked --extra test python scripts/validate-agent-frontmatter.py
+uv run --locked --extra test python scripts/validate-wordpress-exact-api-contract.py
+uv run --locked --extra test python scripts/validate-eval-suite-integrity.py \
   --strict-suites wordpress-plugin-executor \
   --strict-suites wordpress-block-executor \
   --strict-suites wordpress-security-critic \
@@ -45,50 +52,45 @@ python3 scripts/validate-eval-suite-integrity.py \
   --strict-suites wordpress-blueprint-executor \
   --strict-suites wordpress-skill-candidate-eval \
   --allow-known-gaps
-python3 -m pytest \
-  evals/harness/tests/test_invoke_claude_command.py \
-  evals/harness/tests/test_install_sh.py \
-  evals/harness/tests/test_distribution_parity.py \
-  evals/harness/tests/test_workspace_lease.py \
-  evals/harness/tests/test_runtime_image_provision.py \
-  evals/harness/tests/test_wp_env_network_guard.py \
-  evals/harness/tests/test_runtime_assertions.py \
-  evals/harness/tests/test_eval_suite_integrity.py \
-  evals/harness/tests/test_runtime_request_policy.py \
-  evals/harness/tests/test_isolated_runtime_contract.py \
-  evals/harness/tests/test_wp_staged_runtime.py \
-  evals/harness/tests/test_safe_curl.py \
-  evals/harness/tests/test_provider_preflight.py \
-  evals/harness/tests/test_executor_repair_loop.py \
-  evals/harness/tests/test_artifact_layout.py \
-  evals/harness/tests/test_artifact_execution_graph.py \
-  evals/harness/tests/test_artifact_execution_gate.py \
-  evals/harness/tests/test_bounded_subprocess.py \
-  evals/harness/tests/test_php_scanner_aliases.py \
-  evals/harness/tests/test_artifact_explicit_scanners.py \
-  evals/harness/tests/test_artifact_traversal.py \
-  evals/harness/tests/test_runtime_artifact_pipeline.py \
-  evals/harness/tests/test_isolated_block_artifact_contract.py \
-  evals/harness/tests/test_wordpress_runtime_artifact_gate.py \
-  evals/harness/tests/test_wordpress_runtime_smoke.py \
-  evals/harness/tests/test_wordpress_artifact_oracle.py \
-  evals/harness/tests/test_wordpress_blueprint_launch_readiness.py \
-  evals/harness/tests/test_wordpress_executor_packet_oracle.py \
-  evals/harness/tests/test_wp_symbol_db.py \
-  evals/harness/tests/test_wordpress_exact_api_contract.py \
-  evals/harness/tests/test_wordpress_executor_artifact_certifier.py \
-  evals/harness/tests/test_wordpress_packet_materializer.py \
-  evals/harness/tests/test_wordpress_high_risk_answer_keys.py \
-  evals/harness/tests/test_wordpress_high_risk_saved_outputs.py \
-  evals/harness/tests/test_wordpress_skill_output_contract.py \
-  evals/harness/tests/test_answer_key_score.py \
-  evals/harness/tests/test_pairwise_pilot.py \
-  evals/harness/tests/test_wordpress_candidate_pilot_generation.py \
-  evals/harness/tests/test_wp_api_lint.py \
-  evals/harness/tests/test_wp_security_gate.py \
-  evals/harness/tests/test_plan010_artifact_measurement.py \
-  -m 'not docker_boundary and not live_provider' -q
+uv run --locked --extra test python -m pytest \
+  -m "not docker_boundary and not live_provider" evals/harness/tests -q
 ```
+
+The remaining required partitions run separately on Linux with a supported
+Docker Engine. They are disjoint from the general partition and from each
+other; the live-provider marker is never part of ordinary validation.
+
+```bash
+uv run --locked --extra test python -m pytest \
+  -m "docker_boundary and docker_sandbox and not live_provider" evals/harness/tests -q
+uv run --locked --extra test python -m pytest \
+  -m "docker_boundary and docker_generated_runtime and not live_provider" evals/harness/tests -q
+```
+
+When changing a direct Python dependency, update and review both resolver
+artifacts:
+
+```bash
+uv lock --python 3.13.9
+uv export --locked --extra test --no-emit-project --format requirements-txt \
+  --output-file requirements-validation.txt
+```
+
+`uv.lock` is canonical. If uv bootstrap is temporarily unavailable, the
+committed pip export is a tested installation escape hatch for the general
+partition only:
+
+```bash
+python3.13 -m venv /tmp/wp-meta-skills-validation
+/tmp/wp-meta-skills-validation/bin/python -m pip install --require-hashes \
+  -r requirements-validation.txt
+/tmp/wp-meta-skills-validation/bin/python -m pytest \
+  -m "not docker_boundary and not live_provider" evals/harness/tests -q
+```
+
+This lock covers only repository Python validation. It does not lock Composer,
+Node, Docker, wp-env, browsers, provider SDKs, provider models, or operator-only
+optimization environments.
 
 The distribution parity gate compares all five publication surfaces:
 `.claude/skills`, `.agents/skills`, `.claude/agents`, `.codex/agents`, and
@@ -118,7 +120,7 @@ generation, and prints no credential or provider response:
 
 ```bash
 WP_META_SKILLS_LIVE_PROVIDER_AUTHORIZED=1 \
-GEMINI_LIVE_MODEL="$GEMINI_MODEL" python3 -m pytest \
+GEMINI_LIVE_MODEL="$GEMINI_MODEL" uv run --locked --extra test python -m pytest \
   evals/harness/tests/test_provider_preflight.py \
   -m live_provider -q
 ```
@@ -148,7 +150,7 @@ Plan 010 also requires the two-profile artifact-certification measurement after
 the pinned Composer toolchain is installed:
 
 ```bash
-python3 scripts/measure-plan010-artifact-path.py \
+uv run --locked --extra test python scripts/measure-plan010-artifact-path.py \
   --profile ci \
   --output tmp/plan010-artifact-measurement.json
 ```
@@ -189,9 +191,9 @@ The generated-code runtime uses the same inventory but has a separate required
 Linux gate:
 
 ```bash
-python3 -m pytest \
-  evals/harness/tests/test_wp_staged_runtime.py \
-  -m docker_boundary -q
+uv run --locked --extra test python -m pytest \
+  -m "docker_boundary and docker_generated_runtime and not live_provider" \
+  evals/harness/tests -q
 ```
 
 That gate never receives Actions secrets. It builds from the recorded platform

@@ -812,11 +812,30 @@ for stage in result.stages:
 
 ## Environment
 
-All scripts that call the Anthropic API require:
+Repository validation uses Python 3.13.9 with the root `uv.lock` and `test`
+extra:
+
+```bash
+uv lock --check
+uv sync --locked --extra test
+uv run --locked --extra test python -m pytest \
+  -m "not docker_boundary and not live_provider" evals/harness/tests -q
+```
+
+That lock intentionally contains only the required validation closure:
+PyYAML and pytest plus their resolved transitive dependencies. It does not make
+the operator/model lanes reproducible.
+
+`llm_judge.py` owns the optional `anthropic` SDK prerequisite and imports it
+only when it must create a provider client. Install the SDK separately and set
+the provider credential before running that lane:
 
 ```bash
 export ANTHROPIC_API_KEY="<anthropic-api-key>"
 ```
 
-The `run_design_smoke.py` runner invokes the `claude` CLI and does not use the SDK directly.
-The `llm_judge.py`, `run_jtbd_simulation.py`, and optionally `invoke.py` use `import anthropic`.
+`run_gepa_executor_optimization.py` owns the separate `gepa` package
+prerequisite for the GEPA optimization CLI. Neither `anthropic` nor `gepa` is
+installed by the validation lock or the hash-pinned pip fallback. The lock also
+does not select provider models, authorize credentials, or lock the external
+`claude` CLI used by `run_design_smoke.py`.

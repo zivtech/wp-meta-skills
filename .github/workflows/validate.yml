@@ -11,12 +11,15 @@ on:
       - "evals/suites/wordpress-*/**"
       - "scripts/**"
       - ".github/workflows/validate.yml"
+      - ".python-version"
       - "CONTRIBUTING.md"
       - "MANIFEST.sha256"
       - "SECURITY.md"
       - "install.sh"
-      - "pytest.ini"
+      - "pyproject.toml"
+      - "requirements-validation.txt"
       - "skills.sh.json"
+      - "uv.lock"
   push:
     branches:
       - main
@@ -41,11 +44,24 @@ jobs:
           git -c protocol.version=2 fetch --no-tags --depth=1 origin "$CANARY_COMMIT_SHA"
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "$CANARY_COMMIT_SHA"
-      - name: Install test dependencies without cache credentials
-        run: python -m pip install --no-cache-dir pytest==8.4.2 PyYAML==6.0.3
+      - name: Set up exact Python without repository credentials
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version-file: ".python-version"
+          token: ""
+      - name: Set up exact uv without repository credentials or cache
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.9.27"
+          github-token: ""
+          enable-cache: false
+      - name: Sync locked validation dependencies
+        run: |
+          uv lock --check
+          uv sync --locked --extra test
       - name: Verify committed locks, inventory, and topology policy
         run: |
-          python -m pytest \
+          uv run --locked --extra test python -m pytest \
             evals/harness/tests/test_runtime_image_provision.py \
             evals/harness/tests/test_wp_env_network_guard.py \
             evals/harness/tests/test_runtime_assertions.py \
@@ -56,7 +72,7 @@ jobs:
             -m 'not docker_boundary and not live_provider' -q
       - name: Trusted-provision exact package and proxy images
         run: |
-          PYTHONPATH=evals/harness python - <<'PY'
+          PYTHONPATH=evals/harness uv run --locked --extra test python - <<'PY'
           import subprocess
           import runtime_image_provision as provision
           inventory=provision.inventory()["images"]
@@ -74,7 +90,7 @@ jobs:
           command -v tcpdump
       - name: Verify package sandbox policy and proxy handlers hermetically
         run: |
-          python -m pytest \
+          uv run --locked --extra test python -m pytest \
             evals/harness/tests/test_artifact_staging.py \
             evals/harness/tests/test_artifact_layout.py \
             evals/harness/tests/test_artifact_execution_graph.py \
@@ -115,18 +131,15 @@ jobs:
           mkdir -m 700 "$evidence_dir"
           started=$SECONDS
           set +e
-          STEP4_EVIDENCE_DIR="$evidence_dir" python -m pytest \
-            evals/harness/tests/test_sandboxed_package_runner.py \
-            evals/harness/tests/test_sandboxed_package_runner_limits.py \
-            evals/harness/tests/test_sandboxed_package_runner_canonical_bind.py \
-            evals/harness/tests/test_sandbox_proxy_supervisor_contract.py \
-            evals/harness/tests/test_sandbox_python_preflight.py \
-            evals/harness/tests/test_sandbox_tunnel_poll.py \
-            -m docker_boundary -q
+          STEP4_EVIDENCE_DIR="$evidence_dir" \
+            uv run --locked --extra test python -m pytest \
+            -m 'docker_boundary and docker_sandbox and not live_provider' \
+            evals/harness/tests -q
           pytest_status=$?
           set -e
           elapsed=$((SECONDS-started))
-          STEP4_EVIDENCE_DIR="$evidence_dir" STEP4_COMBINED_PATH="$combined" STEP4_PYTEST_STATUS="$pytest_status" STEP4_ELAPSED="$elapsed" PYTHONPATH=evals/harness python - <<'PY'
+          STEP4_EVIDENCE_DIR="$evidence_dir" STEP4_COMBINED_PATH="$combined" STEP4_PYTEST_STATUS="$pytest_status" STEP4_ELAPSED="$elapsed" PYTHONPATH=evals/harness \
+            uv run --locked --extra test python - <<'PY'
           import os
           from pathlib import Path
           import step4_evidence
@@ -154,7 +167,7 @@ jobs:
           set +e
           timeout --signal=TERM --kill-after=30s 1800s \
             env PYTHONPATH=evals/harness \
-            python -c 'import os,tempfile,wp_env_network_guard as g; result=g.run_linux_canary(tempfile.mkdtemp(prefix="wp-step0-parent-")+"/canary",os.environ["RUNNER_TEMP"]+"/wp-step0-result.json"); assert result["status"] == "pass", result'
+            uv run --locked --extra test python -c 'import os,tempfile,wp_env_network_guard as g; result=g.run_linux_canary(tempfile.mkdtemp(prefix="wp-step0-parent-")+"/canary",os.environ["RUNNER_TEMP"]+"/wp-step0-result.json"); assert result["status"] == "pass", result'
           sandbox_status=$?
           set -e
           elapsed=$((SECONDS-started))
@@ -239,15 +252,28 @@ jobs:
           git -c protocol.version=2 fetch --no-tags --depth=1 origin "$CANARY_COMMIT_SHA"
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "$CANARY_COMMIT_SHA"
-      - name: Install test dependencies without cache credentials
-        run: python -m pip install --no-cache-dir pytest==8.4.2 PyYAML==6.0.3
+      - name: Set up exact Python without repository credentials
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version-file: ".python-version"
+          token: ""
+      - name: Set up exact uv without repository credentials or cache
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.9.27"
+          github-token: ""
+          enable-cache: false
+      - name: Sync locked validation dependencies
+        run: |
+          uv lock --check
+          uv sync --locked --extra test
       - name: Install pinned PHP tools for the block full profile
         run: >-
           composer install --no-interaction --no-progress --no-scripts
           --no-plugins --prefer-dist --working-dir evals/harness/php-tools
       - name: Trusted-provision exact block build and proxy images
         run: |
-          PYTHONPATH=evals/harness python - <<'PY'
+          PYTHONPATH=evals/harness uv run --locked --extra test python - <<'PY'
           import subprocess
           import runtime_image_provision as provision
           inventory=provision.inventory()["images"]
@@ -268,9 +294,9 @@ jobs:
           started=$SECONDS
           set +e
           timeout --signal=TERM --kill-after=30s 1800s \
-            python -m pytest \
-              evals/harness/tests/test_wp_staged_runtime_docker.py \
-              -m docker_boundary -q
+            uv run --locked --extra test python -m pytest \
+              -m 'docker_boundary and docker_generated_runtime and not live_provider' \
+              evals/harness/tests -q
           runtime_status=$?
           set -e
           elapsed=$((SECONDS-started))
@@ -332,7 +358,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           ref: ${{ env.REVIEWED_COMMIT_SHA }}
           persist-credentials: false
@@ -341,17 +367,24 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT_SHA"
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
-          python-version: "3.13"
+          python-version-file: ".python-version"
 
-      - name: Install validation dependencies
-        run: python -m pip install --upgrade pytest pyyaml
+      - name: Set up exact uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.9.27"
+
+      - name: Sync locked validation dependencies
+        run: |
+          uv lock --check
+          uv sync --locked --extra test
 
       # ubuntu-latest ships PHP and Composer; installing the pinned toolchain
       # lets the API-existence lint gate run for real instead of skipping.
       - name: Cache Composer downloads
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ~/.cache/composer/files
           key: composer-${{ hashFiles('evals/harness/php-tools/composer.lock') }}
@@ -364,13 +397,13 @@ jobs:
 
       - name: Validate distribution, frontmatter, and WordPress API contracts
         run: |
-          python scripts/validate-distribution-parity.py
-          python scripts/validate-agent-frontmatter.py
-          python scripts/validate-wordpress-exact-api-contract.py
+          uv run --locked --extra test python scripts/validate-distribution-parity.py
+          uv run --locked --extra test python scripts/validate-agent-frontmatter.py
+          uv run --locked --extra test python scripts/validate-wordpress-exact-api-contract.py
 
       - name: Validate selected WordPress eval suites
         run: |
-          python scripts/validate-eval-suite-integrity.py \
+          uv run --locked --extra test python scripts/validate-eval-suite-integrity.py \
             --strict-suites wordpress-plugin-executor \
             --strict-suites wordpress-block-executor \
             --strict-suites wordpress-security-critic \
@@ -382,61 +415,21 @@ jobs:
 
       - name: Run WordPress harness tests
         run: |
-          python -m pytest \
-            evals/harness/tests/test_invoke_claude_command.py \
-            evals/harness/tests/test_install_sh.py \
-            evals/harness/tests/test_distribution_parity.py \
-            evals/harness/tests/test_workspace_lease.py \
-            evals/harness/tests/test_runtime_image_provision.py \
-            evals/harness/tests/test_wp_env_network_guard.py \
-            evals/harness/tests/test_runtime_assertions.py \
-            evals/harness/tests/test_eval_suite_integrity.py \
-            evals/harness/tests/test_runtime_request_policy.py \
-            evals/harness/tests/test_isolated_runtime_contract.py \
-            evals/harness/tests/test_wp_staged_runtime.py \
-            evals/harness/tests/test_safe_curl.py \
-            evals/harness/tests/test_provider_preflight.py \
-            evals/harness/tests/test_executor_repair_loop.py \
-            evals/harness/tests/test_artifact_layout.py \
-            evals/harness/tests/test_artifact_execution_graph.py \
-            evals/harness/tests/test_artifact_execution_gate.py \
-            evals/harness/tests/test_bounded_subprocess.py \
-            evals/harness/tests/test_php_scanner_aliases.py \
-            evals/harness/tests/test_artifact_explicit_scanners.py \
-            evals/harness/tests/test_artifact_traversal.py \
-            evals/harness/tests/test_runtime_artifact_pipeline.py \
-            evals/harness/tests/test_isolated_block_artifact_contract.py \
-            evals/harness/tests/test_wordpress_runtime_artifact_gate.py \
-            evals/harness/tests/test_wordpress_runtime_smoke.py \
-            evals/harness/tests/test_wordpress_artifact_oracle.py \
-            evals/harness/tests/test_wordpress_blueprint_launch_readiness.py \
-            evals/harness/tests/test_wordpress_executor_packet_oracle.py \
-            evals/harness/tests/test_wp_symbol_db.py \
-            evals/harness/tests/test_wordpress_exact_api_contract.py \
-            evals/harness/tests/test_wordpress_executor_artifact_certifier.py \
-            evals/harness/tests/test_wordpress_packet_materializer.py \
-            evals/harness/tests/test_wordpress_high_risk_answer_keys.py \
-            evals/harness/tests/test_wordpress_high_risk_saved_outputs.py \
-            evals/harness/tests/test_wordpress_skill_output_contract.py \
-            evals/harness/tests/test_answer_key_score.py \
-            evals/harness/tests/test_pairwise_pilot.py \
-            evals/harness/tests/test_wordpress_candidate_pilot_generation.py \
-            evals/harness/tests/test_wp_api_lint.py \
-            evals/harness/tests/test_wp_security_gate.py \
-            evals/harness/tests/test_plan010_artifact_measurement.py \
-            -m 'not docker_boundary and not live_provider' -q
+          uv run --locked --extra test python -m pytest \
+            -m 'not docker_boundary and not live_provider' \
+            evals/harness/tests -q
 
       - name: Measure Plan 010 artifact certification boundary
         run: |
           record="$RUNNER_TEMP/plan010-artifact-measurement.json"
           set +e
-          python scripts/measure-plan010-artifact-path.py \
+          uv run --locked --extra test python scripts/measure-plan010-artifact-path.py \
             --profile ci \
             --output "$record" \
             > "$RUNNER_TEMP/plan010-artifact-measurement.log"
           measurement_status=$?
           set -e
-          python - "$record" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          uv run --locked --extra test python - "$record" <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           import sys
           record=json.load(open(sys.argv[1], encoding="utf-8"))
@@ -456,7 +449,7 @@ jobs:
 
       - name: Upload Plan 010 measurement evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: plan010-artifact-measurement-${{ env.REVIEWED_COMMIT_SHA }}
           path: ${{ runner.temp }}/plan010-artifact-measurement.json
