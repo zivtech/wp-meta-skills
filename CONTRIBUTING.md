@@ -46,6 +46,7 @@ python3 scripts/validate-eval-suite-integrity.py \
   --allow-known-gaps
 python3 -m pytest \
   evals/harness/tests/test_invoke_claude_command.py \
+  evals/harness/tests/test_install_sh.py \
   evals/harness/tests/test_workspace_lease.py \
   evals/harness/tests/test_runtime_image_provision.py \
   evals/harness/tests/test_wp_env_network_guard.py \
@@ -118,6 +119,20 @@ an operator-selected current model and provide
 to ordinary CI. A pass proves TLS/header transport, exact metadata identity, and
 metadata-advertised `generateContent`; it does not prove generation quota or
 billing authorization.
+
+## Standalone installer ownership
+
+`install.sh` owns only links whose existing targets resolve inside the
+`wp-meta-skills` checkout running the command. Normal installation preserves
+unrelated and dangling symlinks as well as every regular file or directory.
+`--remove` deletes only existing links owned by that checkout.
+
+`--force` is an install-only recovery boundary. It may replace an unrelated or
+dangling symlink at a known skill or agent destination; it never replaces a
+regular file or directory. Before replacement, the installer prints the exact
+destination and a shell-escaped copy of the prior raw link target. Preserve
+that line until installation completes so the link can be reconstructed if the
+operation is interrupted. The option does not inspect or read target contents.
 
 Plan 010 also requires the two-profile artifact-certification measurement after
 the pinned Composer toolchain is installed:

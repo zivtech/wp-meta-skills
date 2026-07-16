@@ -1,18 +1,18 @@
 #!/bin/bash
-# install.sh — Symlink all zivtech-meta-skills into Claude and Codex skill dirs.
+# install.sh — Symlink wp-meta-skills into Claude and Codex skill dirs.
 #
 # Usage:
 #   ./install.sh              # install (symlink) all skills
 #   ./install.sh --remove     # remove all symlinks created by this script
 #   ./install.sh --verify     # verify integrity without installing
 #   ./install.sh --no-verify  # install without integrity checks
+#   ./install.sh --force      # replace unrelated symlinks, never files/dirs
 #
 # Skills update automatically when you git pull. Re-run after adding new skills.
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-PARENT_DIR="$(dirname "$REPO_DIR")"
 CLAUDE_SKILLS_DIR="$HOME/.claude/skills"
 CODEX_SKILLS_DIR="$HOME/.codex/skills"
 LEGACY_AGENTS_SKILLS_DIR="$HOME/.agents/skills"
@@ -21,19 +21,9 @@ SKILL_TARGET_DIRS=("$CLAUDE_SKILLS_DIR" "$CODEX_SKILLS_DIR" "$LEGACY_AGENTS_SKIL
 INSTALL_LOG="$HOME/.claude/install.log"
 MANIFEST="$REPO_DIR/MANIFEST.sha256"
 VERIFY_ONLY=false
-
-# ── Security: Expected git remotes for external repos ─────────────
-# Returns the expected GitHub org/repo for a given repo name.
-# Add new external repos here.
-expected_remote_for() {
-  case "$1" in
-    drupal-meta-skills) echo "zivtech/drupal-meta-skills" ;;
-    meta-router)       echo "zivtech/meta-router" ;;
-    harsh-critic)      echo "zivtech/harsh-critic" ;;
-    react-critic)      echo "zivtech/react-critic" ;;
-    *)                 echo "" ;;
-  esac
-}
+MODE="install"
+SKIP_VERIFY=false
+FORCE=false
 
 # ── Security: Suspicious patterns in agent prompts ────────────────
 SUSPICIOUS_PATTERNS=(
@@ -67,52 +57,25 @@ log_install() {
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $action $name commit=$commit source=$source" >> "$INSTALL_LOG"
 }
 
-is_managed_target() {
-  local target="$1"
-  local roots=(
-    "$REPO_DIR"
-    "$PARENT_DIR/drupal-meta-skills"
-    "$PARENT_DIR/meta-router"
-    "$PARENT_DIR/harsh-critic"
-    "$PARENT_DIR/react-critic"
-  )
+is_managed_link() {
+  local link_path="$1"
+  local raw_target
+  local candidate
+  local resolved_target
+  local resolved_repo
 
-  for root in "${roots[@]}"; do
-    [[ "$target" == "$root"* ]] && return 0
-  done
-
-  return 1
-}
-
-# ── Security: Verify git remote matches expected ──────────────────
-verify_remote() {
-  local repo_dir="$1"
-  local repo_name="$2"
-  local expected
-  expected=$(expected_remote_for "$repo_name")
-
-  if [ -z "$expected" ]; then
-    return 0  # No expected remote registered — skip check
+  [ -L "$link_path" ] || return 1
+  raw_target=$(readlink "$link_path") || return 1
+  if [[ "$raw_target" = /* ]]; then
+    candidate="$raw_target"
+  else
+    candidate="$(dirname "$link_path")/$raw_target"
   fi
+  [ -e "$candidate" ] || return 1
+  resolved_target=$(realpath "$candidate" 2>/dev/null) || return 1
+  resolved_repo=$(realpath "$REPO_DIR" 2>/dev/null) || return 1
 
-  if [ ! -d "$repo_dir/.git" ]; then
-    echo "  WARNING: $repo_name is not a git repo — skipping (cannot verify origin)"
-    return 1
-  fi
-
-  local actual_remote
-  actual_remote=$(git -C "$repo_dir" remote get-url origin 2>/dev/null || echo "none")
-
-  if [[ "$actual_remote" != *"$expected"* ]]; then
-    echo "  SECURITY: $repo_name remote mismatch!"
-    echo "    Expected: *$expected*"
-    echo "    Actual:   $actual_remote"
-    echo "    Skipping this repo. Use --no-verify to override."
-    log_install "BLOCKED" "$repo_name" "$repo_dir (remote mismatch: $actual_remote)"
-    return 1
-  fi
-
-  return 0
+  [[ "$resolved_target" == "$resolved_repo" || "$resolved_target" == "$resolved_repo/"* ]]
 }
 
 # ── Security: Scan agent files for suspicious patterns ────────────
@@ -216,8 +179,41 @@ generate_manifest() {
   echo "  Commit MANIFEST.sha256 to track integrity."
 }
 
+# ── Command-line mode ─────────────────────────────────────────────
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --remove|--verify|--generate-manifest)
+      if [ "$MODE" != "install" ]; then
+        echo "Only one operation may be selected" >&2
+        exit 2
+      fi
+      MODE="${1#--}"
+      ;;
+    --no-verify)
+      SKIP_VERIFY=true
+      ;;
+    --force)
+      FORCE=true
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [ "$MODE" != "install" ] && [ "$FORCE" = true ]; then
+  echo "--force is valid only for installation" >&2
+  exit 2
+fi
+if [ "$MODE" != "install" ] && [ "$SKIP_VERIFY" = true ]; then
+  echo "--no-verify is valid only for installation" >&2
+  exit 2
+fi
+
 # ── Uninstall mode ────────────────────────────────────────────────
-if [[ "${1:-}" == "--remove" ]]; then
+if [ "$MODE" = "remove" ]; then
   echo "Removing symlinks managed by $REPO_DIR ..."
   removed=0
 
@@ -226,7 +222,7 @@ if [[ "${1:-}" == "--remove" ]]; then
     for link in "$skills_dir"/*; do
       [ -L "$link" ] || continue
       target="$(readlink "$link")"
-      is_managed_target "$target" || continue
+      is_managed_link "$link" || continue
       rm "$link"
       echo "  removed skill: $(basename "$link") from $skills_dir"
       log_install "REMOVE" "$(basename "$link")" "$target"
@@ -235,10 +231,11 @@ if [[ "${1:-}" == "--remove" ]]; then
   done
 
   for link in "$CLAUDE_AGENTS_DIR"/*.md; do
-    [ -L "$link" ] && is_managed_target "$(readlink "$link")" && {
+    [ -L "$link" ] && is_managed_link "$link" && {
+      target="$(readlink "$link")"
       rm "$link"
       echo "  removed agent: $(basename "$link")"
-      log_install "REMOVE" "$(basename "$link")" "$CLAUDE_AGENTS_DIR"
+      log_install "REMOVE" "$(basename "$link")" "$target"
       ((removed++))
     }
   done
@@ -248,22 +245,20 @@ if [[ "${1:-}" == "--remove" ]]; then
 fi
 
 # ── Verify-only mode ─────────────────────────────────────────────
-if [[ "${1:-}" == "--verify" ]]; then
+if [ "$MODE" = "verify" ]; then
   VERIFY_ONLY=true
   verify_manifest
   exit $?
 fi
 
 # ── Generate manifest mode ────────────────────────────────────────
-if [[ "${1:-}" == "--generate-manifest" ]]; then
+if [ "$MODE" = "generate-manifest" ]; then
   generate_manifest
   exit 0
 fi
 
 # ── Install mode ──────────────────────────────────────────────────
-SKIP_VERIFY=false
-if [[ "${1:-}" == "--no-verify" ]]; then
-  SKIP_VERIFY=true
+if [ "$SKIP_VERIFY" = true ]; then
   echo "WARNING: Skipping integrity verification (--no-verify)"
   echo ""
 fi
@@ -285,6 +280,36 @@ installed=0
 skipped=0
 scan_warnings=0
 
+link_destination() {
+  local source="$1"
+  local destination="$2"
+  local label="$3"
+  local raw_target
+
+  if [ -L "$destination" ]; then
+    if is_managed_link "$destination"; then
+      rm "$destination"
+    elif [ "$FORCE" = true ]; then
+      raw_target=$(readlink "$destination")
+      printf '  FORCE replace: destination=%q prior-target=%q\n' \
+        "$destination" "$raw_target"
+      rm "$destination"
+    else
+      printf '  PRESERVE %s at %q (unowned symlink)\n' "$label" "$destination"
+      ((skipped++))
+      return 1
+    fi
+  elif [ -e "$destination" ]; then
+    printf '  SKIP %s at %q (regular file or directory exists)\n' \
+      "$label" "$destination"
+    ((skipped++))
+    return 1
+  fi
+
+  ln -s "$source" "$destination"
+  return 0
+}
+
 link_one_skill() {
   local skill_path="$1"
   local name
@@ -293,15 +318,7 @@ link_one_skill() {
   name="$(basename "$skill_path")"
 
   for skills_dir in "${SKILL_TARGET_DIRS[@]}"; do
-    if [ -L "$skills_dir/$name" ]; then
-      ln -sfn "$skill_path" "$skills_dir/$name"
-    elif [ -d "$skills_dir/$name" ]; then
-      echo "  SKIP skill $name in $skills_dir (non-symlink directory exists)"
-      ((skipped++))
-      continue
-    else
-      ln -sfn "$skill_path" "$skills_dir/$name"
-    fi
+    link_destination "$skill_path" "$skills_dir/$name" "skill:$name" || continue
 
     log_install "INSTALL" "skill:$name" "$skill_path -> $skills_dir"
     ((installed++))
@@ -317,14 +334,9 @@ link_one_agent() {
   # Scan agent file for suspicious patterns.
   scan_agent_file "$agent_file"
 
-  if [ -L "$CLAUDE_AGENTS_DIR/$name" ]; then
-    ln -sfn "$agent_file" "$CLAUDE_AGENTS_DIR/$name"
-  elif [ -f "$CLAUDE_AGENTS_DIR/$name" ]; then
-    echo "  SKIP agent $name (non-symlink file exists)"
-    ((skipped++))
+  if ! link_destination \
+    "$agent_file" "$CLAUDE_AGENTS_DIR/$name" "agent:$name"; then
     return
-  else
-    ln -sfn "$agent_file" "$CLAUDE_AGENTS_DIR/$name"
   fi
 
   log_install "INSTALL" "agent:$name" "$agent_file"
@@ -353,23 +365,7 @@ install_repo_tree() {
   )
 }
 
-install_named_entries() {
-  local root="$1"
-  shift
-  local name
-  local skill_path
-  local agent_file
-
-  for name in "$@"; do
-    skill_path="$root/.claude/skills/$name"
-    [ -f "$skill_path/SKILL.md" ] && link_one_skill "$skill_path"
-
-    agent_file="$root/.claude/agents/$name.md"
-    [ -f "$agent_file" ] && link_one_agent "$agent_file"
-  done
-}
-
-echo "Installing zivtech-meta-skills from $REPO_DIR"
+echo "Installing wp-meta-skills from $REPO_DIR"
 echo "  Claude skills -> $CLAUDE_SKILLS_DIR"
 echo "  Codex skills  -> $CODEX_SKILLS_DIR"
 echo "  Legacy skills -> $LEGACY_AGENTS_SKILLS_DIR"
@@ -381,51 +377,6 @@ echo ""
 log_install "SESSION_START" "install.sh" "$REPO_DIR"
 
 install_repo_tree "$REPO_DIR"
-
-# External companion repos (sibling directories) — with remote verification
-for ext_repo in drupal-meta-skills meta-router; do
-  ext_path="$PARENT_DIR/$ext_repo"
-  if [ -d "$ext_path/.claude" ]; then
-    echo ""
-    echo "Installing external repo: $ext_repo"
-
-    # Verify git remote matches expected origin
-    if [ "$SKIP_VERIFY" = false ]; then
-      if ! verify_remote "$ext_path" "$ext_repo"; then
-        echo "  Skipped $ext_repo (failed remote verification)"
-        continue
-      fi
-    fi
-
-    install_repo_tree "$ext_path"
-  fi
-done
-
-# External critic repos contain some duplicate first-party skills; install only
-# the canonical external commands that the registry routes to.
-for ext_repo in harsh-critic react-critic; do
-  ext_path="$PARENT_DIR/$ext_repo"
-  if [ -d "$ext_path/.claude" ]; then
-    echo ""
-    echo "Installing external repo: $ext_repo"
-
-    if [ "$SKIP_VERIFY" = false ]; then
-      if ! verify_remote "$ext_path" "$ext_repo"; then
-        echo "  Skipped $ext_repo (failed remote verification)"
-        continue
-      fi
-    fi
-
-    case "$ext_repo" in
-      harsh-critic)
-        install_named_entries "$ext_path" harsh-critic
-        ;;
-      react-critic)
-        install_named_entries "$ext_path" react-critic next-critic react-native-critic js-critic-router
-        ;;
-    esac
-  fi
-done
 
 # Log install session end
 log_install "SESSION_END" "install.sh" "$REPO_DIR (installed=$installed, skipped=$skipped)"

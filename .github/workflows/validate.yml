@@ -376,6 +376,7 @@ jobs:
         run: |
           python -m pytest \
             evals/harness/tests/test_invoke_claude_command.py \
+            evals/harness/tests/test_install_sh.py \
             evals/harness/tests/test_workspace_lease.py \
             evals/harness/tests/test_runtime_image_provision.py \
             evals/harness/tests/test_wp_env_network_guard.py \
