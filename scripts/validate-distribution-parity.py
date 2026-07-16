@@ -79,7 +79,7 @@ BASE_AGENT_TAGS = frozenset(
 )
 GROUP_FOR_TYPE = {"planner": "Planning", "executor": "Execution", "critic": "Review"}
 INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
-MANIFEST_RECORD_RE = re.compile(r"^([0-9a-f]{64})  ([^/].*)$")
+MANIFEST_RECORD_RE = re.compile(r"^([0-9a-f]{64})  ([^/\r\n][^\r\n]*)$")
 MAX_MANIFEST_BYTES = 1024 * 1024
 
 
@@ -259,7 +259,12 @@ def _skill_sections(body: str, path: Path) -> tuple[dict[str, str], list[str]]:
             body,
         )
         if match:
-            sections[heading] = match.group(1).strip("\n")
+            raw = match.group(1)
+            suffix = "\n" if heading == "Provenance" else "\n\n"
+            if not raw.startswith("\n") or not raw.endswith(suffix):
+                issues.append(f"{path}: {heading} section wrapper mismatch")
+                continue
+            sections[heading] = raw[1 : -len(suffix)]
     return sections, issues
 
 
@@ -308,7 +313,9 @@ def _unwrap_record(line: str, prefix: str, label: str) -> str:
 
 
 def _protocol_records(value: str, skill_side: bool) -> tuple[str, ...]:
-    lines = tuple(line for line in value.splitlines() if line)
+    lines = tuple(value.split("\n"))
+    if any(not line for line in lines):
+        raise ValueError("Protocol contains an empty record")
     records = tuple(
         _unwrap_record(
             line,
@@ -327,20 +334,21 @@ def _protocol_records(value: str, skill_side: bool) -> tuple[str, ...]:
 
 def _gate_records(value: str, skill_side: bool) -> tuple[str, ...]:
     records: list[str] = []
-    index = 0
-    for line in value.splitlines():
-        if not line:
-            continue
+    lines = value.split("\n")
+    if any(not line for line in lines):
+        raise ValueError("Hard Gates contains an empty record")
+    for index, line in enumerate(lines):
         prefix = ("" if index == 0 else "    ") if skill_side else "    "
         records.append(_unwrap_record(line, f"{prefix}- ", "Hard Gates"))
-        index += 1
     if not records:
         raise ValueError("Hard Gates is empty")
     return tuple(records)
 
 
 def _api_records(value: str, skill_side: bool) -> tuple[str, ...]:
-    lines = tuple(line for line in value.splitlines() if line)
+    lines = tuple(value.split("\n"))
+    if any(not line for line in lines):
+        raise ValueError("Exact API contract contains an empty record")
     prefix = "" if skill_side else "    "
     records = tuple(_unwrap_record(line, prefix, "Exact API contract") for line in lines)
     if len(records) != 1:
@@ -350,7 +358,9 @@ def _api_records(value: str, skill_side: bool) -> tuple[str, ...]:
 
 def _output_records(value: str, skill_side: bool) -> tuple[str, ...]:
     records: list[str] = []
-    for line in value.splitlines():
+    lines = value.split("\n")
+    heading_indexes: list[int] = []
+    for index, line in enumerate(lines):
         if skill_side and line.startswith("- "):
             candidate = _unwrap_record(line, "- ", "Output contract")
         elif not skill_side and line.startswith("    "):
@@ -361,12 +371,17 @@ def _output_records(value: str, skill_side: bool) -> tuple[str, ...]:
             candidate.startswith("**") and candidate.endswith("**")
         ):
             records.append(candidate)
+            heading_indexes.append(index)
     if not records:
         raise ValueError("Output contract contains no headings")
+    if any(not lines[index] for index in range(heading_indexes[0], heading_indexes[-1] + 1)):
+        raise ValueError("Output contract contains inner blank whitespace")
     return tuple(records)
 
 
 def _project(value: str, section: str, skill_side: bool) -> tuple[str, ...]:
+    if value.endswith("\n"):
+        value = value[:-1]
     if section == "Protocol":
         return _protocol_records(value, skill_side)
     if section == "Hard Gates":
@@ -539,6 +554,16 @@ def _filesystem_manifest_issues(root: Path) -> list[str]:
     return issues
 
 
+def _distribution_file_issues(root: Path) -> list[str]:
+    issues: list[str] = []
+    for relative in expected_manifest_paths():
+        try:
+            _read_regular(root, relative)
+        except (OSError, ValueError) as exc:
+            issues.append(f"{relative}: distributed file is unavailable or unsafe: {exc}")
+    return issues
+
+
 def _read_regular(root: Path, path: Path | str, limit: int | None = None) -> bytes:
     if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
         raise ValueError("secure no-follow file traversal is unavailable")
@@ -589,7 +614,7 @@ def _manifest_records(encoded: bytes) -> tuple[dict[str, str], list[str]]:
         return {}, ["MANIFEST.sha256: missing terminal newline"]
     records: dict[str, str] = {}
     issues: list[str] = []
-    for number, line in enumerate(text.splitlines(), 1):
+    for number, line in enumerate(text[:-1].split("\n"), 1):
         match = MANIFEST_RECORD_RE.fullmatch(line)
         if not match:
             issues.append(f"MANIFEST.sha256:{number}: malformed checksum record")
@@ -682,6 +707,7 @@ def validate(root: Path) -> list[str]:
     claude_agents = _agent_inventory(root, ".claude", ".md")
     codex_agents = _agent_inventory(root, ".codex", ".toml")
     issues = _distribution_parent_issues(root)
+    issues.extend(_distribution_file_issues(root))
     for label, actual, expected in (
         (".claude/skills", set(claude_skills), expected_skills),
         (".agents/skills", set(agents_skills), expected_skills),
@@ -711,8 +737,7 @@ def validate(root: Path) -> list[str]:
             continue
         skill_sections, skill_issues = _skill_sections(skill_bodies[skill], claude_skills[skill])
         agent_sections, agent_issues = _agent_sections(agent_bodies[agent], claude_agents[agent], agent)
-        issues.extend(skill_issues)
-        issues.extend(agent_issues)
+        issues.extend((*skill_issues, *agent_issues))
         if not skill_issues and not agent_issues:
             issues.extend(
                 _compare_shared(

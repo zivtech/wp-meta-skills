@@ -157,6 +157,29 @@ def test_lone_carriage_returns_are_not_normalized_as_newlines(tmp_path: Path) ->
     _assert_failure(root, "wordpress-planner", "parse")
 
 
+def test_inner_lone_carriage_return_drift_fails(tmp_path: Path) -> None:
+    root = _copy_surfaces(tmp_path)
+    for path in _skill_paths(root, "wordpress-planner"):
+        encoded = path.read_bytes()
+        old = b"\n    Phase 1 - Repository and runtime triage"
+        assert old in encoded
+        path.write_bytes(encoded.replace(old, old.replace(b"\n", b"\r"), 1))
+
+    _assert_failure(root, "wordpress-planner", "Protocol")
+
+
+def test_inner_blank_shared_record_fails(tmp_path: Path) -> None:
+    root = _copy_surfaces(tmp_path)
+    for path in _skill_paths(root, "wordpress-planner"):
+        _replace(
+            path,
+            "\n    Phase 1 - Repository and runtime triage",
+            "\n\n    Phase 1 - Repository and runtime triage",
+        )
+
+    _assert_failure(root, "wordpress-planner", "Protocol")
+
+
 def test_model_family_drift_fails(tmp_path: Path) -> None:
     root = _copy_surfaces(tmp_path)
     path = root / ".agents/skills/wordpress-planner/SKILL.md"
@@ -454,6 +477,19 @@ def test_manifest_record_policy_fails(
     assert needle in result.stdout
 
 
+def test_manifest_lone_carriage_return_separator_fails(tmp_path: Path) -> None:
+    root = _copy_install_tree(tmp_path)
+    path = root / "MANIFEST.sha256"
+    encoded = path.read_bytes()
+    assert b"\n" in encoded
+    path.write_bytes(encoded.replace(b"\n", b"\r", 1))
+
+    result = _install(root, "--verify")
+
+    assert result.returncode != 0
+    assert "malformed" in result.stdout
+
+
 @pytest.mark.parametrize(
     "relative",
     [
@@ -511,6 +547,16 @@ def test_manifest_rejects_symlinked_distribution_parent(
 
     assert result.returncode != 0
     assert "distribution parent" in result.stdout or "unsafe" in result.stdout
+
+
+def test_direct_parity_rejects_symlinked_skill_parent(tmp_path: Path) -> None:
+    root = _copy_surfaces(tmp_path)
+    path = root / ".claude/skills/wordpress-planner"
+    outside = root.parent / "outside-wordpress-planner"
+    path.rename(outside)
+    path.symlink_to(outside, target_is_directory=True)
+
+    _assert_failure(root, "wordpress-planner/SKILL.md", "unavailable or unsafe")
 
 
 def test_default_install_accepts_complete_verified_distribution(tmp_path: Path) -> None:
