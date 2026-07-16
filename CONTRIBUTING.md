@@ -33,6 +33,7 @@ Then run the validation bundle:
 
 ```bash
 ./install.sh --verify
+python3 scripts/validate-distribution-parity.py
 python3 scripts/validate-agent-frontmatter.py
 python3 scripts/validate-wordpress-exact-api-contract.py
 python3 scripts/validate-eval-suite-integrity.py \
@@ -47,6 +48,7 @@ python3 scripts/validate-eval-suite-integrity.py \
 python3 -m pytest \
   evals/harness/tests/test_invoke_claude_command.py \
   evals/harness/tests/test_install_sh.py \
+  evals/harness/tests/test_distribution_parity.py \
   evals/harness/tests/test_workspace_lease.py \
   evals/harness/tests/test_runtime_image_provision.py \
   evals/harness/tests/test_wp_env_network_guard.py \
@@ -87,6 +89,14 @@ python3 -m pytest \
   evals/harness/tests/test_plan010_artifact_measurement.py \
   -m 'not docker_boundary and not live_provider' -q
 ```
+
+The distribution parity gate compares all five publication surfaces:
+`.claude/skills`, `.agents/skills`, `.claude/agents`, `.codex/agents`, and
+`skills.sh.json`. `MANIFEST.sha256` is a deterministic 57-file checksum control
+for those surfaces. After an intentional publication change, regenerate the
+manifest, review its diff, and then run `./install.sh --verify`; verification
+fails closed on missing, extra, symlinked, non-regular, or changed distribution
+files.
 
 The symbol snapshot test is hermetic: it checks the committed source hashes,
 Composer-lock identities, container inventory, and normalized symbol digest.

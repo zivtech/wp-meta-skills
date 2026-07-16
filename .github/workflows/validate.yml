@@ -355,8 +355,9 @@ jobs:
       - name: Verify manifest
         run: ./install.sh --verify
 
-      - name: Validate agent/skill frontmatter and WordPress API contracts
+      - name: Validate distribution, frontmatter, and WordPress API contracts
         run: |
+          python scripts/validate-distribution-parity.py
           python scripts/validate-agent-frontmatter.py
           python scripts/validate-wordpress-exact-api-contract.py
 
@@ -377,6 +378,7 @@ jobs:
           python -m pytest \
             evals/harness/tests/test_invoke_claude_command.py \
             evals/harness/tests/test_install_sh.py \
+            evals/harness/tests/test_distribution_parity.py \
             evals/harness/tests/test_workspace_lease.py \
             evals/harness/tests/test_runtime_image_provision.py \
             evals/harness/tests/test_wp_env_network_guard.py \

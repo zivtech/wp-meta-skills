@@ -98,7 +98,6 @@ LEGACY_AGENTS_SKILLS_DIR="$HOME/.agents/skills"
 CLAUDE_AGENTS_DIR="$HOME/.claude/agents"
 SKILL_TARGET_DIRS=("$CLAUDE_SKILLS_DIR" "$CODEX_SKILLS_DIR" "$LEGACY_AGENTS_SKILLS_DIR")
 INSTALL_LOG="$HOME/.claude/install.log"
-MANIFEST="$REPO_DIR/MANIFEST.sha256"
 VERIFY_ONLY=false
 MODE="install"
 SKIP_VERIFY=false
@@ -209,81 +208,20 @@ scan_agent_file() {
 
 # ── Security: Verify manifest checksums ───────────────────────────
 verify_manifest() {
-  if [ ! -f "$MANIFEST" ]; then
-    echo "  No MANIFEST.sha256 found — skipping integrity check"
-    echo "  Run './install.sh --generate-manifest' to create one"
-    return 0
-  fi
-
   echo "Verifying file integrity against MANIFEST.sha256..."
-  local failures=0
-
-  while IFS= read -r line; do
-    # Skip empty lines and comments
-    [[ -z "$line" || "$line" == \#* ]] && continue
-
-    local expected_hash file_path
-    expected_hash=$(echo "$line" | awk '{print $1}')
-    file_path=$(echo "$line" | awk '{print $2}')
-
-    if [ ! -f "$REPO_DIR/$file_path" ]; then
-      echo "  MISSING: $file_path"
-      failures=$((failures + 1))
-      continue
-    fi
-
-    local actual_hash
-    actual_hash=$(shasum -a 256 "$REPO_DIR/$file_path" | awk '{print $1}')
-
-    if [ "$expected_hash" != "$actual_hash" ]; then
-      echo "  MODIFIED: $file_path"
-      echo "    Expected: $expected_hash"
-      echo "    Actual:   $actual_hash"
-      failures=$((failures + 1))
-    fi
-  done < "$MANIFEST"
-
-  if [ "$failures" -gt 0 ]; then
-    echo ""
-    echo "  INTEGRITY CHECK FAILED: $failures file(s) differ from manifest"
-    echo "  This could indicate unauthorized modifications."
-    echo "  If changes are intentional, run './install.sh --generate-manifest' to update."
-    log_install "INTEGRITY_FAIL" "manifest" "$REPO_DIR ($failures failures)"
+  if ! python3 "$REPO_DIR/scripts/validate-distribution-parity.py" \
+    --root "$REPO_DIR" --verify-manifest; then
+    log_install "INTEGRITY_FAIL" "manifest" "$REPO_DIR (verification failed)"
     return 1
   fi
-
-  echo "  All files match manifest checksums."
   return 0
 }
 
 # ── Generate manifest ─────────────────────────────────────────────
 generate_manifest() {
   echo "Generating MANIFEST.sha256..."
-  {
-    echo "# MANIFEST.sha256 — Integrity checksums for skill and agent files"
-    echo "# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    echo "# Commit: $(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
-    echo "#"
-    echo "# Verify with: shasum -a 256 -c MANIFEST.sha256"
-    echo "# Or run: ./install.sh --verify"
-    echo ""
-  } > "$MANIFEST"
-
-  # Hash all agent and skill files in the repo, excluding local worktrees.
-  find "$REPO_DIR" \
-    \( -path '*/.git' -o -path '*/.claude/worktrees' \) -prune -o \
-    \( -path '*/.claude/agents/*.md' -o -path '*/.claude/skills/*/SKILL.md' \) \
-    -type f -print | \
-    sort | \
-    while IFS= read -r file; do
-      local rel_path="${file#"$REPO_DIR"/}"
-      shasum -a 256 "$file" | awk -v rp="$rel_path" '{print $1 "  " rp}'
-    done >> "$MANIFEST"
-
-  local count
-  count=$(grep -c '^[a-f0-9]' "$MANIFEST" || echo 0)
-  echo "  Generated checksums for $count files."
-  echo "  Commit MANIFEST.sha256 to track integrity."
+  python3 "$REPO_DIR/scripts/validate-distribution-parity.py" \
+    --root "$REPO_DIR" --generate-manifest
 }
 
 # ── Command-line mode ─────────────────────────────────────────────
@@ -375,7 +313,7 @@ fi
 mkdir -p "$CLAUDE_SKILLS_DIR" "$CODEX_SKILLS_DIR" "$LEGACY_AGENTS_SKILLS_DIR" "$CLAUDE_AGENTS_DIR"
 
 # Run integrity check (unless --no-verify)
-if [ "$SKIP_VERIFY" = false ] && [ -f "$MANIFEST" ]; then
+if [ "$SKIP_VERIFY" = false ]; then
   if ! verify_manifest; then
     echo ""
     echo "Install aborted due to integrity check failure."

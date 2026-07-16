@@ -37,6 +37,7 @@ reports `blocked` (honest evidence, never a pass):
 ```bash
 composer install --working-dir evals/harness/php-tools  # optional, needs PHP >= 8.1
 ./install.sh --verify
+python3 scripts/validate-distribution-parity.py
 python3 scripts/validate-agent-frontmatter.py
 python3 scripts/validate-wordpress-exact-api-contract.py
 python3 scripts/validate-eval-suite-integrity.py \
@@ -50,6 +51,8 @@ python3 scripts/validate-eval-suite-integrity.py \
   --allow-known-gaps
 python3 -m pytest \
   evals/harness/tests/test_invoke_claude_command.py \
+  evals/harness/tests/test_install_sh.py \
+  evals/harness/tests/test_distribution_parity.py \
   evals/harness/tests/test_workspace_lease.py \
   evals/harness/tests/test_executor_repair_loop.py \
   evals/harness/tests/test_wordpress_runtime_smoke.py \
@@ -69,6 +72,12 @@ python3 -m pytest \
   evals/harness/tests/test_wp_security_gate.py \
   -q
 ```
+
+The parity command is local and network-free. It compares the five published
+skill/agent/index surfaces, while the deterministic 57-file manifest binds
+their exact bytes. Manifest verification fails closed when a listed surface is
+missing, changed, symlinked, or not a regular file; it does not authenticate a
+release or replace review of the prompt contracts.
 
 ## Non-Claims
 
