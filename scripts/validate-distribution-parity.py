@@ -81,6 +81,7 @@ GROUP_FOR_TYPE = {"planner": "Planning", "executor": "Execution", "critic": "Rev
 INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 MANIFEST_RECORD_RE = re.compile(r"^([0-9a-f]{64})  ([^/\r\n][^\r\n]*)$")
 MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_DISTRIBUTED_FILE_BYTES = 1024 * 1024
 
 
 if yaml is not None:
@@ -124,17 +125,18 @@ def _normalize_newlines(text: str) -> str:
     return text.replace("\r\n", "\n")
 
 
-def _read_text(path: Path) -> str:
+def _read_text(root: Path, path: Path) -> str:
     try:
-        return _normalize_newlines(path.read_bytes().decode("utf-8"))
-    except (OSError, UnicodeError) as exc:
+        encoded = _read_regular(root, path, MAX_DISTRIBUTED_FILE_BYTES)
+        return _normalize_newlines(encoded.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"read failed: {exc.__class__.__name__}") from exc
 
 
-def _parse_markdown(path: Path) -> tuple[dict[str, Any], str]:
+def _parse_markdown(root: Path, path: Path) -> tuple[dict[str, Any], str]:
     if yaml is None:
         raise ValueError("PyYAML is required for parity validation")
-    text = _read_text(path)
+    text = _read_text(root, path)
     if not text.startswith("---\n"):
         raise ValueError("frontmatter parse failed: missing opening fence")
     end = text.find("\n---\n", 4)
@@ -191,7 +193,7 @@ def _normalized_model(value: str, expected_prefix: str) -> str | None:
     return family if family and family.isascii() else None
 
 
-def _parse_json_strict(path: Path) -> dict[str, Any]:
+def _parse_json_strict(root: Path, path: Path) -> dict[str, Any]:
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in items:
@@ -201,7 +203,7 @@ def _parse_json_strict(path: Path) -> dict[str, Any]:
         return result
 
     try:
-        value = json.loads(_read_text(path), object_pairs_hook=pairs)
+        value = json.loads(_read_text(root, path), object_pairs_hook=pairs)
     except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError("JSON parse failed") from exc
     if not isinstance(value, dict):
@@ -215,7 +217,7 @@ def _validate_skills_sh(
 ) -> list[str]:
     path = root / "skills.sh.json"
     try:
-        data = _parse_json_strict(path)
+        data = _parse_json_strict(root, path)
     except ValueError as exc:
         return [f"skills.sh.json: {exc}"]
     if set(data) != {"$schema", "notGrouped", "groupings"}:
@@ -423,17 +425,18 @@ def _claude_agent_body(body: str, path: Path) -> tuple[str | None, list[str]]:
 
 
 def _validate_skill_pair(
+    root: Path,
     name: str,
     claude_path: Path,
     agents_path: Path,
 ) -> tuple[dict[str, Any] | None, str | None, list[str]]:
     issues: list[str] = []
     try:
-        claude_fields, claude_body = _parse_markdown(claude_path)
+        claude_fields, claude_body = _parse_markdown(root, claude_path)
     except ValueError as exc:
         return None, None, [f"{claude_path}: parse failed: {exc}"]
     try:
-        agents_fields, agents_body = _parse_markdown(agents_path)
+        agents_fields, agents_body = _parse_markdown(root, agents_path)
     except ValueError as exc:
         return None, None, [f"{agents_path}: parse failed: {exc}"]
     issues.extend(_check_string_fields(claude_path, claude_fields, SKILL_FIELDS))
@@ -453,17 +456,18 @@ def _validate_skill_pair(
 
 
 def _validate_agent_pair(
+    root: Path,
     name: str,
     claude_path: Path,
     codex_path: Path,
 ) -> tuple[str | None, list[str]]:
     issues: list[str] = []
     try:
-        claude_fields, raw_body = _parse_markdown(claude_path)
+        claude_fields, raw_body = _parse_markdown(root, claude_path)
     except ValueError as exc:
         return None, [f"{claude_path}: parse failed: {exc}"]
     try:
-        codex_fields = tomllib.loads(_read_text(codex_path))
+        codex_fields = tomllib.loads(_read_text(root, codex_path))
     except (ValueError, tomllib.TOMLDecodeError) as exc:
         return None, [f"{codex_path}: parse failed: {exc}"]
     expected = frozenset({"name", "description", "model"})
@@ -719,15 +723,13 @@ def validate(root: Path) -> list[str]:
     skill_bodies: dict[str, str] = {}
     agent_bodies: dict[str, str] = {}
     for name in sorted(expected_skills & set(claude_skills) & set(agents_skills)):
-        fields, body, pair_issues = _validate_skill_pair(
-            name, claude_skills[name], agents_skills[name]
-        )
+        fields, body, pair_issues = _validate_skill_pair(root, name, claude_skills[name], agents_skills[name])
         issues.extend(pair_issues)
         if fields is not None and body is not None:
             skill_fields[name] = fields
             skill_bodies[name] = body
     for name in sorted(expected_agents & set(claude_agents) & set(codex_agents)):
-        body, pair_issues = _validate_agent_pair(name, claude_agents[name], codex_agents[name])
+        body, pair_issues = _validate_agent_pair(root, name, claude_agents[name], codex_agents[name])
         issues.extend(pair_issues)
         if body is not None:
             agent_bodies[name] = body

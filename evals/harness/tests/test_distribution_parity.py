@@ -84,6 +84,7 @@ def _run(root: Path) -> subprocess.CompletedProcess[str]:
         text=True,
         capture_output=True,
         check=False,
+        timeout=10,
     )
 
 
@@ -555,6 +556,15 @@ def test_direct_parity_rejects_symlinked_skill_parent(tmp_path: Path) -> None:
     outside = root.parent / "outside-wordpress-planner"
     path.rename(outside)
     path.symlink_to(outside, target_is_directory=True)
+
+    _assert_failure(root, "wordpress-planner/SKILL.md", "unavailable or unsafe")
+
+
+def test_direct_parity_rejects_fifo_without_blocking(tmp_path: Path) -> None:
+    root = _copy_surfaces(tmp_path)
+    path = root / ".agents/skills/wordpress-planner/SKILL.md"
+    path.unlink()
+    os.mkfifo(path)
 
     _assert_failure(root, "wordpress-planner/SKILL.md", "unavailable or unsafe")
 
