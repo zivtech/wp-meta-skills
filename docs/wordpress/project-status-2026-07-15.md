@@ -77,8 +77,8 @@ contract and runtime gates prove only the exact checks and fixtures they record.
 
 ## Plan 019 Validation After First Critic Remediation
 
-The direct public-document validator passed, its focused suite passed `23`
-tests, and the locked general partition passed `2202` tests with `3` skipped and
+The direct public-document validator passed, its focused suite passed `26`
+tests, and the locked general partition passed `2205` tests with `3` skipped and
 `41` deselected. Manifest, distribution parity, frontmatter, exact WordPress API
 contract, and selected-suite integrity gates also passed. Final critic
 acceptances and the tracked review checkpoint still remain before the plan is

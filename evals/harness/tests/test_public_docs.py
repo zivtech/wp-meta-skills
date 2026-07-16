@@ -28,6 +28,7 @@ EVIDENCE_FIXTURE = """# Evidence
 ## Validation Bundle
 
 ```bash
+./install.sh --verify
 python scripts/check.py
 python -m pytest evals/harness/tests/test_sample.py
 ```
@@ -96,6 +97,7 @@ def _valid_repo(tmp_path: Path) -> Path:
     _write_controls(root)
     _write_status_controls(root)
     _write(root, "scripts/check.py")
+    _write(root, "install.sh")
     _write(root, "evals/harness/tests/test_sample.py")
     _write(root, "evals/harness/tool.py")
     _write(root, "evals/harness/helper.py")
@@ -196,10 +198,31 @@ def test_command_form_harness_inventory_entry_fails(tmp_path: Path) -> None:
     _assert_failure(root, "Shipped WordPress Tool Inventory", "missing.py")
 
 
+def test_traversing_harness_inventory_entry_fails(tmp_path: Path) -> None:
+    root = _valid_repo(tmp_path)
+    _replace(
+        root, "evals/harness/README.md",
+        "evals/harness/tool.py", "python ../evals/harness/missing.py --flag",
+    )
+    _assert_failure(root, "Shipped WordPress Tool Inventory", "traversal")
+
+
 def test_invalid_validation_command_fails(tmp_path: Path) -> None:
     root = _valid_repo(tmp_path)
     _replace(root, "EVIDENCE.md", "scripts/check.py", "scripts/missing.py")
     _assert_failure(root, "Validation Bundle", "scripts/missing.py")
+
+
+def test_missing_root_shell_validation_command_fails(tmp_path: Path) -> None:
+    root = _valid_repo(tmp_path)
+    _replace(root, "EVIDENCE.md", "./install.sh", "./missing.sh")
+    _assert_failure(root, "Validation Bundle", "missing.sh")
+
+
+def test_missing_root_python_validation_command_fails(tmp_path: Path) -> None:
+    root = _valid_repo(tmp_path)
+    _replace(root, "EVIDENCE.md", "scripts/check.py", "missing.py")
+    _assert_failure(root, "Validation Bundle", "missing.py")
 
 
 def test_missing_pytest_directory_target_fails(tmp_path: Path) -> None:

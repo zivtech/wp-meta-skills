@@ -39,12 +39,10 @@ STALE_PATTERNS = (
 )
 CODE_SPAN = re.compile(r"`([^`\n]+)`")
 MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
-INVENTORY_EXECUTABLE = re.compile(
-    r"(?<![\w/.-])(evals/harness/[\w./-]+\.(?:py|js))(?![\w.])"
-)
+EXECUTABLE_TOKEN = re.compile(r"(?<!\S)([^\s`]+\.(?:py|js))(?=\s|$)")
 COMMAND_TARGET = re.compile(
-    r"(?<![\w/.-])((?:scripts|evals/harness)/[\w.-]+"
-    r"(?:/[\w.-]+)*)(?![\w./-])"
+    r"(?<![\w/.-])((?:\./)?(?:[\w.-]+/)*[\w.-]+\.(?:py|js|sh)"
+    r"|(?:scripts|evals/harness)/[\w.-]+(?:/[\w.-]+)*)(?![\w./-])"
 )
 FENCED_CODE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
 COMMAND_PREFIX = re.compile(
@@ -168,6 +166,8 @@ def _require_command_target(
     root: Path, tracked: set[str], value: str, context: str,
     errors: list[str],
 ) -> None:
+    if value.startswith("./"):
+        value = value[2:]
     relative, problem = _safe_reference(value)
     if problem:
         errors.append(f"{context}: {value}: {problem}")
@@ -255,14 +255,21 @@ def _validate_inventory(
     if section is None:
         errors.append(f"{context}: missing section")
         return
-    paths = sorted({
-        path
-        for item in CODE_SPAN.findall(section)
-        for path in INVENTORY_EXECUTABLE.findall(item)
-    })
+    paths: set[str] = set()
+    for item in CODE_SPAN.findall(section):
+        for path in EXECUTABLE_TOKEN.findall(item):
+            relative, problem = _safe_reference(path)
+            if problem:
+                errors.append(f"{context}: {path}: {problem}")
+                continue
+            assert relative is not None
+            if not relative.startswith("evals/harness/"):
+                errors.append(f"{context}: {path}: unsupported executable location")
+                continue
+            paths.add(relative)
     if not paths:
         errors.append(f"{context}: no executable inventory entries")
-    for path in paths:
+    for path in sorted(paths):
         _require_file(root, tracked, path, context, errors)
 
 
