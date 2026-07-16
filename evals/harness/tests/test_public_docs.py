@@ -139,6 +139,13 @@ def test_non_git_root_fails(tmp_path: Path) -> None:
     _assert_failure(root, "Git worktree")
 
 
+def test_empty_git_worktree_fails(tmp_path: Path) -> None:
+    root = tmp_path / "empty-git"
+    root.mkdir()
+    assert _git(root, "init", "-q").returncode == 0
+    _assert_failure(root, "no tracked files")
+
+
 def test_missing_current_proof_path_fails(tmp_path: Path) -> None:
     root = _valid_repo(tmp_path)
     _replace(root, "EVIDENCE.md", "evidence/proof.md", "evidence/missing.md")
@@ -180,10 +187,38 @@ def test_absent_harness_inventory_entry_fails(tmp_path: Path) -> None:
     _assert_failure(root, "Shipped WordPress Tool Inventory", "missing.py")
 
 
+def test_command_form_harness_inventory_entry_fails(tmp_path: Path) -> None:
+    root = _valid_repo(tmp_path)
+    _replace(
+        root, "evals/harness/README.md",
+        "evals/harness/tool.py", "python evals/harness/missing.py --flag",
+    )
+    _assert_failure(root, "Shipped WordPress Tool Inventory", "missing.py")
+
+
 def test_invalid_validation_command_fails(tmp_path: Path) -> None:
     root = _valid_repo(tmp_path)
     _replace(root, "EVIDENCE.md", "scripts/check.py", "scripts/missing.py")
     _assert_failure(root, "Validation Bundle", "scripts/missing.py")
+
+
+def test_missing_pytest_directory_target_fails(tmp_path: Path) -> None:
+    root = _valid_repo(tmp_path)
+    _replace(
+        root, "EVIDENCE.md",
+        "evals/harness/tests/test_sample.py", "evals/harness/missing-tests",
+    )
+    _assert_failure(root, "Validation Bundle", "missing-tests")
+
+
+def test_tracked_pytest_directory_target_passes(tmp_path: Path) -> None:
+    root = _valid_repo(tmp_path)
+    _replace(
+        root, "EVIDENCE.md",
+        "evals/harness/tests/test_sample.py", "evals/harness/tests",
+    )
+    result = _run(root)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_json_reference_is_not_misparsed_as_javascript(tmp_path: Path) -> None:

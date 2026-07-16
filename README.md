@@ -4,10 +4,11 @@
 
 WP Meta Skills is a verification-first WordPress skill and harness collection.
 It combines planner, executor, and critic instructions with deterministic checks
-for generated WordPress artifacts. The repository is public and the 14 skills
-are listed on [skills.sh](https://www.skills.sh/zivtech/wp-meta-skills).
+for generated WordPress artifacts. As observed on 2026-07-15, the
+[GitHub repository](https://github.com/zivtech/wp-meta-skills) was public and
+[skills.sh](https://www.skills.sh/zivtech/wp-meta-skills) listed 14 skills.
 
-The current project snapshot is maintained through the
+That external state is dated; the current project snapshot is maintained through the
 [stable status pointer](docs/wordpress/project-status-current.md). Evidence
 scope and proof boundaries are documented in [EVIDENCE.md](EVIDENCE.md).
 

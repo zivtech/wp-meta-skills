@@ -39,9 +39,16 @@ STALE_PATTERNS = (
 )
 CODE_SPAN = re.compile(r"`([^`\n]+)`")
 MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
-COMMAND_PATH = re.compile(
-    r"(?<![\w/.-])((?:scripts|evals/harness)/[\w./-]+\.(?:py|js|sh))"
-    r"(?![\w.])"
+INVENTORY_EXECUTABLE = re.compile(
+    r"(?<![\w/.-])(evals/harness/[\w./-]+\.(?:py|js))(?![\w.])"
+)
+COMMAND_TARGET = re.compile(
+    r"(?<![\w/.-])((?:scripts|evals/harness)/[\w.-]+"
+    r"(?:/[\w.-]+)*)(?![\w./-])"
+)
+FENCED_CODE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+COMMAND_PREFIX = re.compile(
+    r"(?:^|\s)(?:python(?:3)?|uv|pytest|composer|\./install\.sh)(?:\s|$)"
 )
 DATED_STATUS = re.compile(r"project-status-(\d{4}-\d{2}-\d{2})\.md\Z")
 
@@ -66,10 +73,13 @@ def _tracked_files(root: Path, errors: list[str]) -> set[str]:
     if result.returncode != 0:
         errors.append("git ls-files failed")
         return set()
-    return {
+    tracked = {
         item.decode("utf-8", "surrogateescape")
         for item in result.stdout.split(b"\0") if item
     }
+    if not tracked:
+        errors.append(f"{root}: Git worktree has no tracked files")
+    return tracked
 
 
 def _read(root: Path, relative: str, errors: list[str]) -> str:
@@ -139,6 +149,45 @@ def _require_file(
         errors.append(f"{context}: {relative}: {detail}")
 
 
+def _directory_non_symlink(root: Path, relative: str) -> tuple[bool, str]:
+    current = root
+    for part in PurePosixPath(relative).parts:
+        current /= part
+        try:
+            details = current.lstat()
+        except OSError as exc:
+            return False, f"missing or unreadable: {exc}"
+        if stat.S_ISLNK(details.st_mode):
+            return False, "symlink paths are not accepted"
+    if not stat.S_ISDIR(details.st_mode):
+        return False, "path is not a directory"
+    return True, ""
+
+
+def _require_command_target(
+    root: Path, tracked: set[str], value: str, context: str,
+    errors: list[str],
+) -> None:
+    relative, problem = _safe_reference(value)
+    if problem:
+        errors.append(f"{context}: {value}: {problem}")
+        return
+    assert relative is not None
+    if relative in tracked:
+        _require_file(root, tracked, relative, context, errors)
+        return
+    matches = sorted(path for path in tracked if path.startswith(f"{relative}/"))
+    if not matches:
+        errors.append(f"{context}: {relative}: no tracked file or directory target")
+        return
+    valid, detail = _directory_non_symlink(root, relative)
+    if not valid:
+        errors.append(f"{context}: {relative}: {detail}")
+        return
+    if not any(_regular_non_symlink(root, path)[0] for path in matches):
+        errors.append(f"{context}: {relative}: contains no tracked regular file")
+
+
 def _proof_references(text: str, errors: list[str]) -> list[str]:
     section = _section(text, "Current Proof Surfaces")
     if section is None:
@@ -206,14 +255,24 @@ def _validate_inventory(
     if section is None:
         errors.append(f"{context}: missing section")
         return
-    paths = [
-        item for item in CODE_SPAN.findall(section)
-        if item.startswith("evals/harness/") and item.endswith((".py", ".js"))
-    ]
+    paths = sorted({
+        path
+        for item in CODE_SPAN.findall(section)
+        for path in INVENTORY_EXECUTABLE.findall(item)
+    })
     if not paths:
         errors.append(f"{context}: no executable inventory entries")
     for path in paths:
         _require_file(root, tracked, path, context, errors)
+
+
+def _command_sources(section: str) -> list[str]:
+    sources = FENCED_CODE.findall(section)
+    sources.extend(
+        item for item in CODE_SPAN.findall(section)
+        if COMMAND_PREFIX.search(item)
+    )
+    return sources
 
 
 def _validate_commands(
@@ -226,11 +285,15 @@ def _validate_commands(
         if section is None:
             errors.append(f"{context}: missing section")
             continue
-        paths = sorted(set(COMMAND_PATH.findall(section)))
+        paths = sorted({
+            path
+            for source in _command_sources(section)
+            for path in COMMAND_TARGET.findall(source)
+        })
         if not paths:
             errors.append(f"{context}: no validation command paths")
         for path in paths:
-            _require_file(root, tracked, path, context, errors)
+            _require_command_target(root, tracked, path, context, errors)
 
 
 def _relative_links(text: str) -> list[str]:

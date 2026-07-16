@@ -2,9 +2,11 @@
 
 This directory contains the WordPress-specific generation, certification,
 runtime, and diagnostic tools shipped by `wp-meta-skills`. It is not a generic
-cross-domain evaluation harness. The inventory below is authoritative for the
-standalone repository; every named path is checked as a tracked regular file by
-the public-documentation validator.
+cross-domain evaluation harness. The inventory below covers supported
+operator-facing tools and selected internal helpers; it is deliberately not an
+exhaustive list of every top-level module. Every executable named in the
+inventory is checked as a tracked regular file by the public-documentation
+validator.
 
 ## Shipped WordPress Tool Inventory
 
