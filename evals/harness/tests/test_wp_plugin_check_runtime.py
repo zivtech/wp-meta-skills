@@ -357,14 +357,15 @@ def test_cleanup_rejects_wrong_directory_or_sentinel_identity(tmp_path, offset):
     assert content.is_dir()
 
 
-def test_cleanup_rejects_an_ordinary_copied_sentinel(tmp_path):
+def test_cleanup_rejects_a_preexisting_distinct_sentinel_copy(tmp_path):
     content, plugins, _source = _fixture_paths(tmp_path)
     identity = _setup(content, plugins)
     owner = content / plugin_check.OWNER_FILENAME
     copy = tmp_path / "owner-copy"
     shutil.copyfile(owner, copy)
+    assert copy.stat().st_ino != owner.stat().st_ino
     owner.unlink()
-    shutil.copyfile(copy, owner)
+    copy.rename(owner)
     owner.chmod(0o600)
     result = _cleanup(content, plugins, identity)
     assert result.returncode == plugin_check.CLEANUP_FAILURE_EXIT
