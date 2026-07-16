@@ -171,20 +171,58 @@ def test_symlink_launcher_uses_physical_checkout_root(tmp_path: Path) -> None:
     assert not _skill_link(home, ".claude", "not-from-checkout").exists()
 
 
-def test_control_bearing_checkout_path_has_one_line_output_and_log(
+def test_trailing_newline_checkout_fails_before_sibling_discovery(
+    tmp_path: Path,
+) -> None:
+    original_root = tmp_path / "original"
+    original_root.mkdir()
+    original, home = _make_repo(original_root)
+    repo = tmp_path / "checkout\n"
+    original.rename(repo)
+    sibling = tmp_path / "checkout"
+    _write(sibling / ".claude/skills/fake/SKILL.md")
+
+    result = _run(repo, home, "--no-verify", check=False)
+
+    assert result.returncode != 0
+    assert "control character" in result.stderr
+    assert not _skill_link(home, ".codex", "fake").is_symlink()
+
+
+def test_trailing_newline_raw_target_is_never_owned_or_forced(
+    tmp_path: Path,
+) -> None:
+    repo, home = _make_repo(tmp_path)
+    stripped = tmp_path / "alias"
+    stripped.symlink_to(repo / ".claude/skills/current-skill")
+    raw_target = _write(tmp_path / "alias\n")
+    link = _skill_link(home, ".claude")
+    link.parent.mkdir(parents=True)
+    link.symlink_to(raw_target)
+
+    install = _run(repo, home)
+    remove = _run(repo, home, "--remove")
+    forced = _run(repo, home, "--force")
+
+    assert "PRESERVE" in install.stdout
+    assert "Removed 3 symlinks" in remove.stdout
+    assert "unsafe raw link target" in forced.stdout
+    assert link.is_symlink()
+    assert os.readlink(link) == str(raw_target)
+
+
+def test_control_bearing_checkout_path_fails_closed(
     tmp_path: Path,
 ) -> None:
     controlled_root = tmp_path / "checkout\npath"
     controlled_root.mkdir()
     repo, home = _make_repo(controlled_root)
 
-    result = _run(repo, home, "--no-verify")
-    log_text = (home / ".claude/install.log").read_text(encoding="utf-8")
+    result = _run(repo, home, "--no-verify", check=False)
 
-    assert str(repo) not in result.stdout
-    assert str(repo) not in log_text
-    assert "\\n" in result.stdout
-    assert "\\n" in log_text
+    assert result.returncode != 0
+    assert "control character" in result.stderr
+    assert not (home / ".claude/install.log").exists()
 
 
 def test_remove_deletes_current_repo_links(tmp_path: Path) -> None:
