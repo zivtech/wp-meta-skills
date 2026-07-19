@@ -553,13 +553,13 @@ acceptance.
 
 The revised plan was executed on local branch
 `codex/gutenberg-contracts-2026-07-16` in all three repositories. The two
-migration runtimes are complete. The `wp-meta-skills` native x86_64 runtime
-remains an explicit hosted-CI authorization boundary; its static contract is
-complete, but it is not represented as runtime-proven.
+migration runtimes are complete. After explicit approval on 2026-07-17, the
+`wp-meta-skills` branch was pushed and the existing no-secrets hosted x86_64
+runtime jobs were run without weakening their production guards.
 
 | Repository | Frozen commit | Verified result |
 |---|---|---|
-| `wp-meta-skills` | `26b902df2fe89b4473f3c8f3b5630f1f91d11d96` | 2,333 pytest cases passed, 3 skipped, and 41 deliberately deselected; repository validators and general, security, and performance criticism accepted. The unchanged 15-second runtime preflight failed after 16.9 seconds under arm64 emulation, so no runtime guard or timeout was weakened. |
+| `wp-meta-skills` | `45ca898e220f5c3dae0f9296c4f6180e141d6575` | Branch `codex/gutenberg-contracts-2026-07-16` was pushed. Hosted `validate.yml` run [29549405335](https://github.com/zivtech/wp-meta-skills/actions/runs/29549405335) passed `validate`, `No-secrets generated WordPress runtime boundary`, and `No-secrets Linux Docker sandbox feasibility`. The prior hosted attempt failed on mutable Docker tag provenance drift for `wordpress:7.0.1-php8.3-apache`; the follow-up commit refreshed only the reviewed multi-platform index digest, with reviewed platform child digests unchanged. |
 | `contentful_migration_wp` | `153a82bc31c5e9d57cf6ef5e02eca10237950a02` | 76 tests and 231 assertions plus static, lint, ShellCheck, and secret-scan gates passed. A fresh WordPress 7.0.1 environment passed product, editor clone/save/reload/restore, frontend, hostile-attribute parity, classic, unresolved-reference, and full smoke paths; teardown left no owned resources. |
 | `drupal-to-wp-ai-migration` | `44ea9d4dfa5220c42e39f822a018f0623dcb2a72` | 450 tests and 2,713 assertions, package smoke 48/48, PHPStan 0/33, Node 5/5, ShellCheck, and Composer validation passed. Fresh WordPress 7.0.1 local VIP parity passed product 28/28, vertical 12/12, and host probes 39/39 in both packets. The security critic accepted the final retained-evidence and symlink-ancestor remediation with no remaining finding. |
 
@@ -573,8 +573,9 @@ The twelve admitted user-owned `proof/wave-2-5/*` diffs remained unstaged and
 their binary-diff digest remained
 `2bbe33b9c7fb98a1e46d446a727bac0643bbab86316b834eb478c8cb453ff182`.
 
-No branch was pushed and no hosted CI job was started. These results do not
-claim browser execution, stored-XSS absence, cross-browser support, WordPress
-VIP production approval, or production performance. Closing `WPMS-RUN-01`
-requires pushing the exact WPMS commit and running the existing no-secrets
-native x86_64 hosted job without changing its production guards.
+These results do not claim stored-XSS absence, cross-browser support, WordPress
+VIP production approval, production performance, or hosted runtime proof for
+later documentation-only commits unless the hosted gates are rerun at that
+later commit. `WPMS-RUN-01` is closed by hosted run
+[29549405335](https://github.com/zivtech/wp-meta-skills/actions/runs/29549405335)
+at commit `45ca898e220f5c3dae0f9296c4f6180e141d6575`.

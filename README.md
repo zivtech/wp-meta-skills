@@ -166,6 +166,8 @@ including GPLv2-or-later for WordPress.org distribution.
 - [Agent registry and lifecycle](AGENTS.md)
 - [Planner → executor → critic flow](docs/wordpress/lifecycle.md)
 - [Runtime oracle runbook](docs/wordpress/runtime-oracle-runbook.md)
+- [Gutenberg cross-repo hardening plan and execution record](docs/wordpress/gutenberg-cross-repo-hardening-2026-07-16.md)
+- [Verification toolchain visual explainer](docs/wordpress/wp-verification-toolchain-explainer.html)
 - [Current project status](docs/wordpress/project-status-current.md)
 - [Evidence map](EVIDENCE.md)
 - [Contribution and validation contract](CONTRIBUTING.md)
