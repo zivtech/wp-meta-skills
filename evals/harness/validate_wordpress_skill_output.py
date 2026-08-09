@@ -733,7 +733,124 @@ def check_security_gate_consumption(text: str, report: dict[str, Any]) -> Check:
     )
 
 
-def validate_output(skill: str, text: str, security_gate: dict[str, Any] | None = None) -> dict[str, Any]:
+def load_capability_manifest(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"capability manifest JSON is invalid: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("capability manifest JSON must contain an object")
+    return payload
+
+
+CODE_REGION_RE = re.compile(r"```[^\n]*\n(.*?)```|`([^`\n]+)`", re.DOTALL)
+WP_CLI_INVOCATION_RE = re.compile(
+    r"(?<![\w./-])wp\b(?:\s+@[\w.-]+)?(?:\s+--[\w-]+(?:=\S+)?)*\s+([a-z][a-z0-9-]*)"
+)
+VERIFICATION_TOOL_INVOCATIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("plugin_check", re.compile(r"(?<![\w./-])wp\b[^\n`]*?\bplugin\s+check\b")),
+    ("phpcs", re.compile(r"(?<![\w./-])(?:vendor/bin/)?phpcs\b")),
+    ("phpstan", re.compile(r"(?<![\w./-])(?:vendor/bin/)?phpstan\b")),
+    ("phpunit", re.compile(r"(?<![\w./-])(?:vendor/bin/)?phpunit\b")),
+    ("wp_env", re.compile(r"(?<![\w./-])(?:npx\s+)?(?:@wordpress/env|wp-env)\b")),
+    ("playground_cli", re.compile(r"@wp-playground/cli")),
+)
+UNRESOLVED_STATUSES = frozenset({"BLOCKED", "UNKNOWN"})
+
+
+def _code_regions(text: str) -> list[str]:
+    """Return fenced-block and inline-code spans, where commands actually live."""
+    return [
+        (match.group(1) or match.group(2) or "")
+        for match in CODE_REGION_RE.finditer(text)
+    ]
+
+
+def _instructed_wp_subcommands(regions: list[str]) -> list[str]:
+    found: list[str] = []
+    for region in regions:
+        for match in WP_CLI_INVOCATION_RE.finditer(region):
+            root = match.group(1)
+            if root and root not in found:
+                found.append(root)
+    return found
+
+
+def _instructed_verification_tools(regions: list[str]) -> list[str]:
+    found: list[str] = []
+    for tool, pattern in VERIFICATION_TOOL_INVOCATIONS:
+        if tool in found:
+            continue
+        if any(pattern.search(region) for region in regions):
+            found.append(tool)
+    return found
+
+
+def check_capability_grounding(text: str, manifest: dict[str, Any]) -> Check:
+    """Fail any output that instructs a command the manifest marks unavailable.
+
+    BLOCKED and UNKNOWN never satisfy a requirement, so they are surfaced as
+    named unresolved states rather than passing silently.
+    """
+    regions = _code_regions(text)
+    failures: list[str] = []
+    unresolved: list[str] = []
+
+    wp_cli = manifest.get("wp_cli") if isinstance(manifest.get("wp_cli"), dict) else {}
+    commands = wp_cli.get("commands") if isinstance(wp_cli.get("commands"), dict) else {}
+    subcommands = _instructed_wp_subcommands(regions)
+    cli_status = wp_cli.get("status")
+
+    if subcommands and cli_status == "UNAVAILABLE":
+        reason = wp_cli.get("reason") or "wp_cli_unavailable"
+        failures.append(f"wp-cli unavailable ({reason}) but output instructs: {', '.join(subcommands)}")
+    else:
+        if subcommands and cli_status in UNRESOLVED_STATUSES:
+            unresolved.append(f"wp_cli.status={cli_status}")
+        for subcommand in subcommands:
+            state = commands.get(subcommand)
+            if not isinstance(state, dict):
+                unresolved.append(f"wp {subcommand}: not probed")
+                continue
+            status = state.get("status")
+            if status == "UNAVAILABLE":
+                failures.append(f"wp {subcommand}: {state.get('reason') or 'UNAVAILABLE'}")
+            elif status in UNRESOLVED_STATUSES:
+                unresolved.append(f"wp {subcommand}: {status}")
+
+    tools = (
+        manifest.get("verification_tools")
+        if isinstance(manifest.get("verification_tools"), dict)
+        else {}
+    )
+    for tool in _instructed_verification_tools(regions):
+        state = tools.get(tool)
+        if not isinstance(state, dict):
+            unresolved.append(f"{tool}: not probed")
+            continue
+        status = state.get("status")
+        if status == "UNAVAILABLE":
+            failures.append(f"{tool}: {state.get('reason') or 'UNAVAILABLE'}")
+        elif status in UNRESOLVED_STATUSES:
+            unresolved.append(f"{tool}: {status}")
+
+    if failures:
+        detail = "ungrounded instructions: " + "; ".join(sorted(set(failures)))
+        if unresolved:
+            detail += " | unresolved: " + "; ".join(sorted(set(unresolved)))
+    elif unresolved:
+        detail = "grounded, unresolved states named: " + "; ".join(sorted(set(unresolved)))
+    else:
+        detail = "every instructed command is AVAILABLE in the capability manifest"
+    return Check("capability_grounding", not failures, 3, detail)
+
+
+def validate_output(
+    skill: str,
+    text: str,
+    security_gate: dict[str, Any] | None = None,
+    capability_manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     requested_skill = skill
     skill = ALIASES.get(skill, skill)
     if skill not in CONTRACTS:
@@ -750,6 +867,8 @@ def validate_output(skill: str, text: str, security_gate: dict[str, Any] | None 
     ]
     if skill == "wordpress-security-critic" and security_gate is not None:
         checks.append(check_security_gate_consumption(text, security_gate))
+    if capability_manifest is not None:
+        checks.append(check_capability_grounding(text, capability_manifest))
     total = sum(check.weight for check in checks)
     earned = sum(check.weight for check in checks if check.passed)
     return {
@@ -769,6 +888,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--security-gate",
         help="Optional security-gate.json sidecar to require in wordpress-security-critic output.",
+    )
+    parser.add_argument(
+        "--capability-manifest",
+        help=(
+            "Optional capability-manifest.json sidecar from probe_wordpress_environment.py. "
+            "When supplied, any instruction to run a command the manifest marks UNAVAILABLE fails."
+        ),
     )
     return parser
 
@@ -790,7 +916,29 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(json.dumps({"pass": False, "error": str(exc)}, indent=2), file=sys.stderr)
             return 1
-    result = validate_output(args.skill, output_path.read_text(encoding="utf-8"), security_gate=security_gate)
+    capability_manifest = None
+    if args.capability_manifest:
+        manifest_path = Path(args.capability_manifest)
+        if not manifest_path.exists():
+            print(
+                json.dumps(
+                    {"pass": False, "error": f"capability manifest file not found: {manifest_path}"},
+                    indent=2,
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            capability_manifest = load_capability_manifest(manifest_path)
+        except ValueError as exc:
+            print(json.dumps({"pass": False, "error": str(exc)}, indent=2), file=sys.stderr)
+            return 1
+    result = validate_output(
+        args.skill,
+        output_path.read_text(encoding="utf-8"),
+        security_gate=security_gate,
+        capability_manifest=capability_manifest,
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["pass"] else 1
 

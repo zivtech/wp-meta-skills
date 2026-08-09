@@ -1,0 +1,302 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zivtech.com/wp-meta-skills/schemas/capability-manifest.schema.json",
+  "title": "WordPress capability manifest",
+  "description": "Machine-readable record of what an agent can actually run in a WordPress environment. LOAD-BEARING RULE: the statuses BLOCKED and UNKNOWN never satisfy a capability requirement. Absence of a failure is not a pass. Any consumer that treats a non-AVAILABLE status as permission to proceed is violating this schema's contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "probe_version",
+    "probe_argv",
+    "allow_eval",
+    "environment",
+    "wp_cli",
+    "wordpress",
+    "abilities",
+    "mcp",
+    "verification_tools",
+    "capabilities",
+    "blockers",
+    "evidence"
+  ],
+  "$defs": {
+    "status": {
+      "description": "AVAILABLE = probed, works, evidence attached. UNAVAILABLE = probed, definitively absent. BLOCKED = a prerequisite failed so the question could not be asked. UNKNOWN = not probed, or the probe was inconclusive. Only AVAILABLE satisfies a requirement.",
+      "type": "string",
+      "enum": ["AVAILABLE", "UNAVAILABLE", "BLOCKED", "UNKNOWN"]
+    },
+    "reason": {
+      "type": ["string", "null"],
+      "description": "Stable machine-readable reason string, snake_case. Consumers may quote it verbatim to the user."
+    },
+    "notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": []
+    },
+    "commandState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "reason": {"$ref": "#/$defs/reason"}
+      }
+    },
+    "toolState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "version": {"type": ["string", "null"]},
+        "reason": {"$ref": "#/$defs/reason"},
+        "invocation": {
+          "type": ["array", "null"],
+          "items": {"type": "string"}
+        },
+        "standards": {
+          "type": ["array", "null"],
+          "items": {"type": "string"}
+        },
+        "runtime": {"type": ["string", "null"]},
+        "wp_stubs_version": {"type": ["string", "null"]},
+        "notes": {"$ref": "#/$defs/notes"}
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "description": "UTC RFC 3339 timestamp. A probe is a snapshot, not a subscription: consumers must treat a manifest generated before the current session as stale.",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "probe_version": {"type": "string"},
+    "probe_argv": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "allow_eval": {
+      "type": "boolean",
+      "description": "True when --allow-eval was passed and `wp eval` was therefore permitted. `wp eval` runs arbitrary PHP in the WordPress context; it is the strongest safety boundary in the WP-CLI surface and is off by default."
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "kind", "invocation_prefix", "cwd", "host"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "kind": {
+          "type": "string",
+          "enum": [
+            "ddev",
+            "lando",
+            "wp-env",
+            "remote-alias",
+            "studio",
+            "localwp",
+            "generic-local",
+            "UNKNOWN"
+          ]
+        },
+        "invocation_prefix": {
+          "type": ["array", "null"],
+          "items": {"type": "string"},
+          "description": "Argv prefix that reaches WP-CLI. Null when no prefix was validated by `<prefix> --info`."
+        },
+        "marker_file": {"type": ["string", "null"]},
+        "other_markers_present": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Losing detection candidates. Ambiguity is signal, not noise."
+        },
+        "wp_env_runtime": {
+          "type": ["string", "null"],
+          "enum": ["docker", "playground", null]
+        },
+        "remote_alias": {"type": ["string", "null"]},
+        "cwd": {"type": "string"},
+        "host": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Host facts. Exempt from the evidence-tracing rule.",
+          "properties": {
+            "os": {"type": ["string", "null"]},
+            "php": {"type": ["string", "null"]},
+            "node": {"type": ["string", "null"]},
+            "composer": {"type": ["string", "null"]}
+          }
+        }
+      }
+    },
+    "wp_cli": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "commands"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "version": {"type": ["string", "null"]},
+        "reason": {"$ref": "#/$defs/reason"},
+        "is_stable_release": {"type": ["boolean", "null"]},
+        "assumed_3x": {
+          "type": "boolean",
+          "description": "Always false. The probe reports the version it finds and never assumes a 3.x release exists."
+        },
+        "commands": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/commandState"}
+        },
+        "notes": {"$ref": "#/$defs/notes"}
+      }
+    },
+    "wordpress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "reason": {"$ref": "#/$defs/reason"},
+        "core_version": {"type": ["string", "null"]},
+        "php_version": {"type": ["string", "null"]},
+        "is_multisite": {"type": ["boolean", "null"]},
+        "is_installed": {"type": ["boolean", "null"]},
+        "siteurl": {"type": ["string", "null"]},
+        "home": {"type": ["string", "null"]},
+        "active_plugins": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "status"],
+            "properties": {
+              "name": {"type": "string"},
+              "version": {"type": ["string", "null"]},
+              "status": {"type": "string"}
+            }
+          }
+        },
+        "active_themes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "status"],
+            "properties": {
+              "name": {"type": "string"},
+              "version": {"type": ["string", "null"]},
+              "status": {"type": "string"}
+            }
+          }
+        },
+        "notes": {"$ref": "#/$defs/notes"}
+      }
+    },
+    "abilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "reason": {"$ref": "#/$defs/reason"},
+        "api_present": {"type": ["boolean", "null"]},
+        "api_source": {"type": ["string", "null"]},
+        "registered_count": {"type": ["integer", "null"], "minimum": 0},
+        "registered": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "publicly_exposed_count": {"type": ["integer", "null"], "minimum": 0},
+        "notes": {"$ref": "#/$defs/notes"}
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "reason": {"$ref": "#/$defs/reason"},
+        "adapter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["present"],
+          "properties": {
+            "present": {"type": "boolean"},
+            "version": {"type": ["string", "null"]},
+            "prerelease": {"type": ["boolean", "null"]}
+          }
+        },
+        "transports": {"type": "array", "items": {"type": "string"}},
+        "servers": {"type": "array", "items": {"type": "string"}},
+        "tools": {"type": "array", "items": {"type": "string"}},
+        "deprecated_detected": {"type": "array", "items": {"type": "string"}},
+        "notes": {"$ref": "#/$defs/notes"}
+      }
+    },
+    "verification_tools": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/toolState"}
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "Every value is derived strictly from an AVAILABLE status. A BLOCKED or UNKNOWN input yields false, never true.",
+      "additionalProperties": false,
+      "required": [
+        "can_run_wp_cli",
+        "can_read_site_state",
+        "can_run_static_analysis",
+        "can_run_plugin_check",
+        "can_provision_ephemeral_site",
+        "can_reach_mcp_abilities",
+        "can_register_abilities"
+      ],
+      "properties": {
+        "can_run_wp_cli": {"type": "boolean"},
+        "can_read_site_state": {"type": "boolean"},
+        "can_run_static_analysis": {"type": "boolean"},
+        "can_run_plugin_check": {"type": "boolean"},
+        "can_provision_ephemeral_site": {"type": "boolean"},
+        "can_reach_mcp_abilities": {"type": "boolean"},
+        "can_register_abilities": {"type": "boolean"}
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "severity", "affects", "detail"],
+        "properties": {
+          "code": {"type": "string"},
+          "severity": {"type": "string", "enum": ["CRITICAL", "MAJOR", "MINOR"]},
+          "affects": {"type": "array", "items": {"type": "string"}},
+          "detail": {"type": "string"},
+          "remediation_hint": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Every probed fact traces here by claim path. stdout_excerpt is truncated to 2000 characters and redacted; raw bytes are never persisted. This is a manifest, not a log.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim", "argv", "exit_code"],
+        "properties": {
+          "claim": {"type": "string"},
+          "argv": {"type": "array", "items": {"type": "string"}},
+          "exit_code": {"type": ["integer", "null"]},
+          "stdout_excerpt": {"type": ["string", "null"], "maxLength": 2000},
+          "stderr_excerpt": {"type": ["string", "null"], "maxLength": 2000},
+          "duration_ms": {"type": ["integer", "null"], "minimum": 0}
+        }
+      }
+    }
+  }
+}

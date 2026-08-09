@@ -38,6 +38,7 @@ SKILL_TO_AGENT = {
     "wordpress-security-critic": "wordpress-security-critic",
     "wordpress-performance-critic": "wordpress-performance-critic",
     "wordpress-theme-critic": "wordpress-theme-critic",
+    "wordpress-environment-probe": "wordpress-environment-probe",
 }
 EXECUTOR_SKILLS = frozenset(
     {
@@ -77,7 +78,15 @@ BASE_AGENT_TAGS = frozenset(
         "Output_Format",
     }
 )
-GROUP_FOR_TYPE = {"planner": "Planning", "executor": "Execution", "critic": "Review"}
+GROUP_FOR_TYPE = {
+    "planner": "Planning",
+    "executor": "Execution",
+    "critic": "Review",
+    # A prober measures the environment and writes no artifact but its own manifest.
+    "prober": "Environment",
+}
+EXPECTED_GROUP_COUNT = len(set(GROUP_FOR_TYPE.values()))
+DISTRIBUTED_SURFACES_PER_SKILL = 4  # .agents skill, .claude skill, .claude agent, .codex agent
 INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 MANIFEST_RECORD_RE = re.compile(r"^([0-9a-f]{64})  ([^/\r\n][^\r\n]*)$")
 MAX_MANIFEST_BYTES = 1024 * 1024
@@ -223,7 +232,7 @@ def _validate_skills_sh(
     if set(data) != {"$schema", "notGrouped", "groupings"}:
         return ["skills.sh.json: field allowlist mismatch"]
     groups = data.get("groupings")
-    if not isinstance(groups, list) or len(groups) != 3:
+    if not isinstance(groups, list) or len(groups) != EXPECTED_GROUP_COUNT:
         return ["skills.sh.json: group inventory mismatch"]
     seen: list[str] = []
     issues: list[str] = []
@@ -507,8 +516,9 @@ def expected_manifest_paths() -> tuple[str, ...]:
             )
         )
     result = tuple(sorted(paths))
-    if len(result) != 57 or len(set(result)) != 57:
-        raise RuntimeError("manifest policy must contain exactly 57 unique paths")
+    expected = 1 + DISTRIBUTED_SURFACES_PER_SKILL * len(SKILL_TO_AGENT)
+    if len(result) != expected or len(set(result)) != expected:
+        raise RuntimeError(f"manifest policy must contain exactly {expected} unique paths")
     return result
 
 
@@ -767,7 +777,7 @@ def main(argv: list[str] | None = None) -> int:
             for issue in issues:
                 print(f"  - {issue}")
             return 1
-        print("Manifest verification passed (57 distributed files).")
+        print(f"Manifest verification passed ({len(expected_manifest_paths())} distributed files).")
         return 0
     if args.generate_manifest:
         try:
@@ -775,7 +785,7 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError) as exc:
             print(f"Manifest generation failed: {exc}")
             return 1
-        print("Generated deterministic manifest (57 distributed files).")
+        print(f"Generated deterministic manifest ({len(expected_manifest_paths())} distributed files).")
         return 0
     issues = validate(args.root)
     if issues:
@@ -783,7 +793,8 @@ def main(argv: list[str] | None = None) -> int:
         for issue in issues:
             print(f"  - {issue}")
         return 1
-    print("Distribution parity passed: 14 skill pairs, 14 agent pairs, 14 skills.sh entries.")
+    count = len(SKILL_TO_AGENT)
+    print(f"Distribution parity passed: {count} skill pairs, {count} agent pairs, {count} skills.sh entries.")
     return 0
 
 

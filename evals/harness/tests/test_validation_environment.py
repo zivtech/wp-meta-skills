@@ -317,6 +317,7 @@ def test_marker_registry_is_centralized_in_pyproject():
         "live_provider",
         "real_api_lint",
         "real_security_gate",
+        "real_wp_env",
     }
     assert not (ROOT / "pytest.ini").exists()
 

@@ -20,4 +20,5 @@ markers = [
   "live_provider: authorized live provider metadata preflight excluded from ordinary CI",
   "real_api_lint: pinned PHPStan and API toolchain integration",
   "real_security_gate: pinned PHPCS and WPCS security integration",
+  "real_wp_env: live wp-env Docker capability probe excluded from ordinary CI",
 ]
