@@ -383,12 +383,17 @@ jobs:
       - name: Provision and start a scratch wp-env project
         run: |
           node --version
+          # Global install, not npx --yes: the probe validates the invocation
+          # prefix `wp-env run cli wp`, so the wp-env binary must be on PATH
+          # exactly as it is on a real developer machine.
+          npm install -g "@wordpress/env@${WP_ENV_VERSION}"
+          wp-env --version
           scratch="$RUNNER_TEMP/wp-env-live-probe"
           mkdir -p "$scratch"
           printf '%s\n' '{"core": null, "plugins": ["https://downloads.wordpress.org/plugin/plugin-check.zip"], "testsEnvironment": false}' > "$scratch/.wp-env.json"
           echo "WP_ENV_SCRATCH=$scratch" >> "$GITHUB_ENV"
           cd "$scratch"
-          npx --yes "@wordpress/env@${WP_ENV_VERSION}" start
+          wp-env start
       - name: Run the live Scenario C probe invariants
         run: |
           WP_META_SKILLS_REQUIRE_TOOL=wp-env \
@@ -401,9 +406,9 @@ jobs:
         run: |
           set +e
           cleanup_status=0
-          if test -n "${WP_ENV_SCRATCH:-}" && test -d "$WP_ENV_SCRATCH"; then
+          if test -n "${WP_ENV_SCRATCH:-}" && test -d "$WP_ENV_SCRATCH" && command -v wp-env; then
             cd "$WP_ENV_SCRATCH"
-            printf 'y\n' | npx --yes "@wordpress/env@${WP_ENV_VERSION}" destroy || cleanup_status=1
+            printf 'y\n' | wp-env destroy || cleanup_status=1
           fi
           docker ps -aq --filter 'name=wp-env-live-probe' | xargs -r docker rm -f || cleanup_status=1
           remaining=$(docker ps -aq --filter 'name=wp-env-live-probe') || cleanup_status=1
