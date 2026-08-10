@@ -187,6 +187,7 @@ NON_FACT_KEYS = frozenset(
         "detail",
         "remediation_hint",
         "affects",
+        "api_source",  # names the probe's own method, like reason/notes
     }
 )
 TRACEABLE_SECTIONS = ("wp_cli", "wordpress", "abilities", "mcp", "verification_tools")
@@ -458,7 +459,10 @@ def _wp_env_runtime(root: Path) -> str:
 
     If the Playground runtime is configured rather than Docker, `wp-env run`
     does not exist, which means no WP-CLI at all. This is the trap most likely
-    to produce a confidently wrong plan.
+    to produce a confidently wrong plan. The override file wins outright: an
+    override declaring `{"runtime": "docker"}` over a playground base is
+    docker, so the loop returns on the first file that declares a runtime
+    rather than on the first playground hit.
     """
     for name in (".wp-env.override.json", ".wp-env.json"):
         payload = _read_json(root / name)
@@ -468,8 +472,8 @@ def _wp_env_runtime(root: Path) -> str:
         env_section = payload.get("env")
         if runtime is None and isinstance(env_section, dict):
             runtime = env_section.get("runtime")
-        if isinstance(runtime, str) and runtime.strip().lower() == "playground":
-            return "playground"
+        if isinstance(runtime, str) and runtime.strip():
+            return "playground" if runtime.strip().lower() == "playground" else "docker"
         if payload.get("playground"):
             return "playground"
     return "docker"
@@ -501,10 +505,13 @@ def _is_localwp(root: Path) -> bool:
     return "local sites" in str(root).lower() or (root / "conf").is_dir()
 
 
-def _is_studio(root: Path) -> bool:
-    return (root / ".studio").exists() or (root / "wp-config.php").exists() and (
-        root / ".wp-studio.json"
-    ).exists()
+def _studio_marker(root: Path) -> str | None:
+    """Return the Studio marker that actually matched, not a presumed one."""
+    if (root / ".studio").exists():
+        return ".studio"
+    if (root / "wp-config.php").exists() and (root / ".wp-studio.json").exists():
+        return ".wp-studio.json"
+    return None
 
 
 def detect_candidates(runner: ProbeRunner, root: Path) -> list[tuple[int, str, str]]:
@@ -520,8 +527,12 @@ def detect_candidates(runner: ProbeRunner, root: Path) -> list[tuple[int, str, s
         if kind == "localwp" and not _is_localwp(root):
             continue
         found.append((priority, marker, kind))
-    if _is_studio(root):
-        found.append((5, ".wp-studio.json", "studio"))
+    studio_marker = _studio_marker(root)
+    runner.note_filesystem(
+        "environment.marker_file", "exists", studio_marker or ".studio", studio_marker is not None
+    )
+    if studio_marker:
+        found.append((5, studio_marker, "studio"))
     found.sort(key=lambda item: item[0])
     return found
 
@@ -606,6 +617,23 @@ def validate_against_schema(
 
     if "enum" in schema and instance not in schema["enum"]:
         errors.append(f"{path}: {instance!r} not in enum {schema['enum']}")
+    if "const" in schema and instance != schema["const"]:
+        errors.append(f"{path}: {instance!r} is not const {schema['const']!r}")
+    all_of = schema.get("allOf")
+    if isinstance(all_of, list):
+        for index, subschema in enumerate(all_of):
+            if isinstance(subschema, dict):
+                errors.extend(
+                    validate_against_schema(instance, subschema, root, f"{path}(allOf[{index}])")
+                )
+    if_schema = schema.get("if")
+    if isinstance(if_schema, dict):
+        branch = "then" if not validate_against_schema(instance, if_schema, root, path) else "else"
+        branch_schema = schema.get(branch)
+        if isinstance(branch_schema, dict):
+            errors.extend(
+                validate_against_schema(instance, branch_schema, root, f"{path}({branch})")
+            )
     if isinstance(instance, str):
         pattern = schema.get("pattern")
         if pattern and not re.search(pattern, instance):
@@ -622,6 +650,12 @@ def validate_against_schema(
         for key in schema.get("required", []):
             if key not in instance:
                 errors.append(f"{path}: missing required property {key!r}")
+        names_schema = schema.get("propertyNames")
+        if isinstance(names_schema, dict):
+            for key in instance:
+                errors.extend(
+                    validate_against_schema(key, names_schema, root, f"{path}.{key}(propertyName)")
+                )
         properties = schema.get("properties", {})
         additional = schema.get("additionalProperties", True)
         for key, value in instance.items():
@@ -669,8 +703,17 @@ def evidence_gaps(manifest: dict[str, Any]) -> list[str]:
     claims = {entry.get("claim", "") for entry in manifest.get("evidence", [])}
 
     def covered(claim_path: str) -> bool:
+        """A fact leaf needs a claim of its own, or a dotted ancestor claim.
+
+        A bare section-root claim ("wp_cli") must not bless deep fact leaves:
+        that is exactly how is_stable_release once passed with no probe behind
+        it. Dotted claims ("verification_tools.phpcs") still cover the leaves
+        beneath them, because the entry's excerpt is where those values came
+        from.
+        """
         return any(
-            claim and (claim_path == claim or claim_path.startswith(claim + "."))
+            claim
+            and (claim_path == claim or ("." in claim and claim_path.startswith(claim + ".")))
             for claim in claims
         )
 
@@ -954,7 +997,12 @@ def _probe_wordpress(
 
     core = runner.run("wordpress.core_version", [*prefix, "core", "version", "--extra"])
     installed = runner.run("wordpress.is_installed", [*prefix, "core", "is-installed"])
-    wordpress["is_installed"] = bool(installed["ok"])
+    # Exit 1 with no execution error is WP-CLI's probed "not installed"; a
+    # timeout or missing executable is no answer at all, so it stays None
+    # rather than conflating "unknown" with "no".
+    wordpress["is_installed"] = (
+        True if installed["ok"] else False if installed["error"] is None else None
+    )
     wordpress["core_version"] = _version_string(core["stdout"]) if core["ok"] else None
 
     if allow_eval:
@@ -1005,11 +1053,14 @@ def _probe_wordpress(
     )
     payload = _json_payload(plugins["stdout"]) if plugins["ok"] else None
     if isinstance(payload, list):
+        # WP-CLI's field is named `status`; the manifest key is
+        # `activation_state` so the free string (active/inactive/must-use/
+        # dropin) cannot be confused with the four-value status enum.
         wordpress["active_plugins"] = [
             {
                 "name": str(item.get("name", "")),
                 "version": item.get("version") or None,
-                "status": str(item.get("status", "unknown")),
+                "activation_state": str(item.get("status", "unknown")),
             }
             for item in payload
             if isinstance(item, dict) and item.get("name")
@@ -1025,7 +1076,7 @@ def _probe_wordpress(
             {
                 "name": str(item.get("name", "")),
                 "version": item.get("version") or None,
-                "status": str(item.get("status", "unknown")),
+                "activation_state": str(item.get("status", "unknown")),
             }
             for item in payload
             if isinstance(item, dict) and item.get("name")
@@ -1052,7 +1103,8 @@ def _probe_abilities(
 
     ability_command = manifest["wp_cli"]["commands"].get("ability", {}).get("status")
     if ability_command == "AVAILABLE":
-        listed = runner.run("abilities", [*prefix, "ability", "list", "--format=json"])
+        list_argv = [*prefix, "ability", "list", "--format=json"]
+        listed = runner.run("abilities.registered", list_argv)
         payload = _json_payload(listed["stdout"]) if listed["ok"] else None
         if isinstance(payload, list):
             names = [
@@ -1071,16 +1123,20 @@ def _probe_abilities(
                 if isinstance(item, dict)
                 and str(item.get("mcp_public", item.get("public", ""))).lower() in {"1", "true", "yes"}
             )
+            runner.note_derived("abilities.api_present", list_argv, True)
+            runner.note_derived(
+                "abilities.registered_count", list_argv, abilities["registered_count"]
+            )
+            runner.note_derived(
+                "abilities.publicly_exposed_count", list_argv, abilities["publicly_exposed_count"]
+            )
             if abilities["registered_count"] == 0:
                 abilities["notes"].append("abilities_api_present_but_surface_empty")
             return
 
     if allow_eval:
-        probe = runner.run(
-            "abilities",
-            [*prefix, "eval", 'echo json_encode(function_exists("wp_register_ability"));'],
-            eval_exception=True,
-        )
+        eval_argv = [*prefix, "eval", 'echo json_encode(function_exists("wp_register_ability"));']
+        probe = runner.run("abilities.api_present", eval_argv, eval_exception=True)
         payload = _json_payload(probe["stdout"]) if probe["ok"] else None
         if payload is not None:
             abilities["api_present"] = bool(payload)
@@ -1090,6 +1146,8 @@ def _probe_abilities(
                 abilities["notes"].append("abilities_api_present_but_surface_empty")
                 abilities["registered_count"] = 0
                 abilities["publicly_exposed_count"] = 0
+                runner.note_derived("abilities.registered_count", eval_argv, 0)
+                runner.note_derived("abilities.publicly_exposed_count", eval_argv, 0)
             return
 
     abilities["status"] = "UNKNOWN"
@@ -1105,7 +1163,7 @@ def _probe_mcp(runner: ProbeRunner, manifest: dict[str, Any]) -> None:
     names = {plugin["name"].lower(): plugin for plugin in plugins}
     runner.evidence.append(
         {
-            "claim": "mcp",
+            "claim": "mcp.adapter",
             "argv": ["<derived>", "plugin-list-scan", "mcp-adapter"],
             "exit_code": 0,
             "stdout_excerpt": _excerpt(", ".join(sorted(names)) or "no plugin inventory available"),
@@ -1129,6 +1187,11 @@ def _probe_mcp(runner: ProbeRunner, manifest: dict[str, Any]) -> None:
         deprecated.append("wp-now")
     mcp["deprecated_detected"] = deprecated
     if deprecated:
+        runner.note_derived(
+            "mcp.deprecated_detected",
+            ["<derived>", "plugin-list-scan"],
+            ", ".join(deprecated),
+        )
         mcp["notes"].append("deprecated_tooling_detected")
 
     if adapter is None:
@@ -1165,6 +1228,19 @@ def _probe_mcp(runner: ProbeRunner, manifest: dict[str, Any]) -> None:
         mcp["notes"].append("ability_not_publicly_exposed")
 
 
+# Anchored on the phrase, not on `split("are")`, which broke on the
+# single-standard phrasing ("The only installed coding standard is PEAR") and
+# on any standard name containing "are".
+PHPCS_STANDARDS_RE = re.compile(r"(?i)installed coding standards?\s+(?:are|is)\s+(.+)")
+
+
+def _phpcs_standards(stdout: str) -> list[str]:
+    match = PHPCS_STANDARDS_RE.search(stdout or "")
+    if not match:
+        return []
+    return [item.strip() for item in re.split(r",\s*|\s+and\s+", match.group(1)) if item.strip()]
+
+
 def _tool(status: str, **fields: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "status": status,
@@ -1193,13 +1269,7 @@ def _probe_verification_tools(
     phpcs = runner.run("verification_tools.phpcs", [*phpcs_argv, "--version"])
     if phpcs["ok"]:
         standards_result = runner.run("verification_tools.phpcs", [*phpcs_argv, "-i"])
-        standards = []
-        if standards_result["ok"]:
-            standards = [
-                item.strip()
-                for item in re.split(r",| and ", standards_result["stdout"].split("are")[-1])
-                if item.strip()
-            ]
+        standards = _phpcs_standards(standards_result["stdout"]) if standards_result["ok"] else []
         tools["phpcs"] = _tool(
             "AVAILABLE",
             version=_version_string(phpcs["stdout"]),
@@ -1272,10 +1342,14 @@ def _probe_verification_tools(
         "verification_tools.wp_env", ["npx", "--no-install", "@wordpress/env", "--version"]
     )
     if wp_env["ok"]:
+        runtime = manifest["environment"].get("wp_env_runtime")
         tools["wp_env"] = _tool(
             "AVAILABLE",
             version=_version_string(wp_env["stdout"]),
-            runtime=manifest["environment"].get("wp_env_runtime"),
+            runtime=runtime,
+            # Present even when wp-env lost the marker race: a plan reaching
+            # for `wp-env run` here would find no CLI behind it.
+            notes=["wp_env_playground_runtime_has_no_cli"] if runtime == "playground" else [],
         )
     else:
         tools["wp_env"] = _tool("UNAVAILABLE", reason=wp_env["error"] or "wp_env_absent")
@@ -1403,6 +1477,7 @@ def probe(
     root: Path,
     *,
     allow_eval: bool = False,
+    allow_remote: bool = False,
     argv: list[str] | None = None,
     budget_seconds: float | None = DEFAULT_BUDGET_SEC,
 ) -> dict[str, Any]:
@@ -1414,12 +1489,16 @@ def probe(
     environment = manifest["environment"]
     environment["other_markers_present"] = [marker for _, marker, _ in candidates[1:]]
 
+    if any(candidate_kind == "wp-env" for _, _, candidate_kind in candidates):
+        # Recorded whenever a wp-env config exists, winning marker or not, so
+        # verification_tools.wp_env can carry the playground warning even when
+        # ddev or lando is the environment that answers.
+        environment["wp_env_runtime"] = _wp_env_runtime(root)
+
     prefix: list[str] | None = None
     if candidates:
         _, marker, kind = candidates[0]
         environment["marker_file"] = marker
-        if kind == "wp-env":
-            environment["wp_env_runtime"] = _wp_env_runtime(root)
         if kind == "remote-alias":
             environment["remote_alias"] = _remote_alias(root)
         prefix = invocation_prefix_for(kind, root)
@@ -1428,10 +1507,12 @@ def probe(
 
     _probe_host(runner, manifest)
 
-    playground_runtime = environment.get("wp_env_runtime") == "playground"
+    playground_runtime = kind == "wp-env" and environment.get("wp_env_runtime") == "playground"
     if playground_runtime:
         # wp-env with the Playground runtime has no `wp-env run`, which means no
-        # WP-CLI at all. Refuse to validate a prefix that cannot exist.
+        # WP-CLI at all. Refuse to validate a prefix that cannot exist. Only
+        # when wp-env is the winning marker: a losing wp-env config must not
+        # block a working ddev or lando CLI.
         manifest["wp_cli"]["status"] = "UNAVAILABLE"
         manifest["wp_cli"]["reason"] = "wp_env_playground_runtime_has_no_cli"
         _add_blocker(
@@ -1441,6 +1522,26 @@ def probe(
             ["can_run_wp_cli"],
             "wp-env is configured with the Playground runtime, which provides no `wp-env run` and therefore no WP-CLI.",
             "Switch the wp-env runtime to docker (out of scope for the probe - see rec 07).",
+        )
+        environment["status"] = "UNKNOWN"
+        environment["kind"] = "UNKNOWN"
+        environment["invocation_prefix"] = None
+        prefix = None
+        wp_info = None
+    elif kind == "remote-alias" and prefix is not None and not allow_remote:
+        # A checked-in .wp-cli.yml with an ssh alias would make the probe open
+        # an outbound SSH connection to a third-party host purely from cloning
+        # a repository. Read-only does not extend to dialing out, so remote
+        # probing requires an explicit opt-in.
+        manifest["wp_cli"]["status"] = "BLOCKED"
+        manifest["wp_cli"]["reason"] = "remote_probing_requires_allow_remote"
+        _add_blocker(
+            manifest,
+            "remote_probing_requires_allow_remote",
+            "MAJOR",
+            ["can_run_wp_cli"],
+            f"Marker {marker} carries ssh alias {environment['remote_alias']}; validating it would open an outbound SSH connection.",
+            "Re-run with --allow-remote to validate the remote alias over SSH.",
         )
         environment["status"] = "UNKNOWN"
         environment["kind"] = "UNKNOWN"
@@ -1553,9 +1654,19 @@ def build_parser() -> argparse.ArgumentParser:
         description="Probe a WordPress environment and emit a capability manifest."
     )
     parser.add_argument("--path", default=".", help="Project root to probe.")
-    parser.add_argument("--out", default=DEFAULT_OUT, help="Manifest output path.")
     parser.add_argument(
-        "--print", dest="print_only", action="store_true", help="Write the manifest to stdout."
+        "--out",
+        default=None,
+        help=f"Manifest output path (default {DEFAULT_OUT} unless --print is given).",
+    )
+    parser.add_argument(
+        "--print",
+        dest="print_only",
+        action="store_true",
+        help=(
+            "Write the manifest to stdout. Combines with --out: both are honoured; "
+            "without --out it suppresses the default file."
+        ),
     )
     parser.add_argument(
         "--allow-eval",
@@ -1574,6 +1685,15 @@ def build_parser() -> argparse.ArgumentParser:
             "remaining probes are recorded as global_budget_exhausted instead of run."
         ),
     )
+    parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help=(
+            "Permit probing a remote-alias environment over SSH. Off by default: "
+            "a checked-in .wp-cli.yml must not make a fresh clone dial out to a "
+            "third-party host."
+        ),
+    )
     return parser
 
 
@@ -1586,6 +1706,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = probe(
         root,
         allow_eval=args.allow_eval,
+        allow_remote=args.allow_remote,
         argv=recorded_argv,
         budget_seconds=args.budget_seconds,
     )
@@ -1605,13 +1726,15 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     payload = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-    if args.print_only:
-        sys.stdout.write(payload)
-    else:
-        out_path = Path(args.out)
+    # --print and --out compose; passing both used to exit 0 having printed
+    # nothing and written nothing.
+    if args.out is not None or not args.print_only:
+        out_path = Path(args.out if args.out is not None else DEFAULT_OUT)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(payload, encoding="utf-8")
         sys.stderr.write(f"capability manifest written to {out_path}\n")
+    if args.print_only:
+        sys.stdout.write(payload)
     return 0
 
 

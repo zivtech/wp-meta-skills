@@ -107,6 +107,7 @@ def _run_probe(
     path_dirs: list[str],
     *,
     allow_eval: bool = False,
+    allow_remote: bool = False,
     argv: list[str] | None = None,
 ) -> dict:
     env_path = os.pathsep.join(path_dirs)
@@ -114,7 +115,10 @@ def _run_probe(
     os.environ["PATH"] = env_path
     try:
         return probe.probe(
-            root, allow_eval=allow_eval, argv=argv or ["probe", "--path", str(root)]
+            root,
+            allow_eval=allow_eval,
+            allow_remote=allow_remote,
+            argv=argv or ["probe", "--path", str(root)],
         )
     finally:
         if previous is None:
@@ -190,6 +194,9 @@ def test_scenario_b_documented_command_absent_from_stable_phar(tmp_path: Path) -
         "command_documented_but_not_in_stable_phar"
     )
     assert manifest["wp_cli"]["commands"]["plugin"]["status"] == "AVAILABLE"
+    assert manifest["wordpress"]["active_plugins"] == [
+        {"name": "plugin-check", "version": "2.0.0", "activation_state": "active"}
+    ], "WP-CLI's free-form status maps to activation_state, distinct from the status enum"
     assert _schema_errors(manifest) == []
     assert probe.evidence_gaps(manifest) == []
 
@@ -666,7 +673,7 @@ def test_mcp_adapter_prerelease_comes_from_the_version_string(
     manifest["wp_cli"]["status"] = "AVAILABLE"
     manifest["wordpress"]["status"] = "AVAILABLE"
     manifest["wordpress"]["active_plugins"] = [
-        {"name": "mcp-adapter", "version": version, "status": "active"}
+        {"name": "mcp-adapter", "version": version, "activation_state": "active"}
     ]
     runner = probe.ProbeRunner(tmp_path, allow_eval=False)
 
@@ -679,17 +686,21 @@ def test_mcp_adapter_prerelease_comes_from_the_version_string(
 # --- Safety: subprocess hardening ---------------------------------------------
 
 
-def _install_fake_php(tmp_path: Path, payload: bytes) -> Path:
-    """Write a fake `php` that emits raw bytes and return its PATH directory."""
+def _install_fake_tool(tmp_path: Path, name: str, payload: bytes) -> Path:
+    """Write a fake tool that emits raw bytes and return its PATH directory."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
-    script = bin_dir / "php"
+    script = bin_dir / name
     script.write_text(
         f"#!{sys.executable}\nimport sys\nsys.stdout.buffer.write({payload!r})\n",
         encoding="utf-8",
     )
     script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return bin_dir
+
+
+def _install_fake_php(tmp_path: Path, payload: bytes) -> Path:
+    return _install_fake_tool(tmp_path, "php", payload)
 
 
 def test_non_utf8_tool_output_does_not_crash_the_probe(tmp_path: Path) -> None:
@@ -763,6 +774,125 @@ def test_wp_env_playground_runtime_reports_no_wp_cli(tmp_path: Path) -> None:
     assert "wp_env_playground_runtime_has_no_cli" in codes
 
 
+def test_wp_env_override_runtime_wins_over_base(tmp_path: Path) -> None:
+    """Override precedence was inverted: docker-over-playground yielded
+    playground and manufactured a false CRITICAL blocker."""
+    root = tmp_path / "site"
+    root.mkdir()
+    (root / ".wp-env.json").write_text(json.dumps({"runtime": "playground"}), encoding="utf-8")
+    (root / ".wp-env.override.json").write_text(
+        json.dumps({"runtime": "docker"}), encoding="utf-8"
+    )
+
+    assert probe._wp_env_runtime(root) == "docker"
+
+
+def test_wp_env_override_playground_still_wins(tmp_path: Path) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    (root / ".wp-env.json").write_text(json.dumps({"runtime": "docker"}), encoding="utf-8")
+    (root / ".wp-env.override.json").write_text(
+        json.dumps({"runtime": "playground"}), encoding="utf-8"
+    )
+
+    assert probe._wp_env_runtime(root) == "playground"
+
+
+def test_wp_env_override_without_runtime_falls_through_to_base(tmp_path: Path) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    (root / ".wp-env.json").write_text(json.dumps({"runtime": "playground"}), encoding="utf-8")
+    (root / ".wp-env.override.json").write_text(json.dumps({"port": 8901}), encoding="utf-8")
+
+    assert probe._wp_env_runtime(root) == "playground"
+
+
+def test_losing_wp_env_playground_config_does_not_block_a_winning_marker(tmp_path: Path) -> None:
+    """A ddev environment with a stray playground wp-env config must record
+    the runtime without manufacturing the playground CRITICAL blocker."""
+    root = tmp_path / "site"
+    root.mkdir()
+    (root / ".ddev").mkdir()
+    (root / ".ddev" / "config.yaml").write_text("name: demo\n", encoding="utf-8")
+    (root / ".wp-env.json").write_text(json.dumps({"runtime": "playground"}), encoding="utf-8")
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+
+    manifest = _run_probe(root, [str(empty_bin)])
+
+    assert manifest["environment"]["marker_file"] == ".ddev/config.yaml"
+    assert manifest["environment"]["wp_env_runtime"] == "playground"
+    assert manifest["wp_cli"]["reason"] != "wp_env_playground_runtime_has_no_cli"
+    codes = {entry["code"] for entry in manifest["blockers"]}
+    assert "wp_env_playground_runtime_has_no_cli" not in codes
+
+
+def test_wp_env_tool_carries_the_playground_reason_when_not_winning(tmp_path: Path) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    (root / ".ddev").mkdir()
+    (root / ".ddev" / "config.yaml").write_text("name: demo\n", encoding="utf-8")
+    (root / ".wp-env.json").write_text(json.dumps({"runtime": "playground"}), encoding="utf-8")
+    bin_dir = _install_fake_tool(tmp_path, "npx", b"11.12.0\n")
+
+    manifest = _run_probe(root, [str(bin_dir)])
+
+    wp_env_tool = manifest["verification_tools"]["wp_env"]
+    assert wp_env_tool["status"] == "AVAILABLE"
+    assert wp_env_tool["runtime"] == "playground"
+    assert "wp_env_playground_runtime_has_no_cli" in wp_env_tool["notes"]
+
+
+def test_studio_marker_is_labeled_with_the_file_that_matched(tmp_path: Path) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    (root / ".studio").mkdir()
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+
+    manifest = _run_probe(root, [str(empty_bin)])
+
+    assert manifest["environment"]["marker_file"] == ".studio"
+    rows = [
+        entry
+        for entry in manifest["evidence"]
+        if entry["argv"][:2] == ["<filesystem>", "exists"] and entry["argv"][2] == ".studio"
+    ]
+    assert rows and rows[0]["stdout_excerpt"] == "present"
+
+
+def test_remote_alias_is_not_probed_without_allow_remote(tmp_path: Path) -> None:
+    """A checked-in ssh alias must not make a fresh clone dial out."""
+    root = tmp_path / "site"
+    root.mkdir()
+    (root / ".wp-cli.yml").write_text("@prod:\n  ssh: user@example.test\n", encoding="utf-8")
+    bin_dir = _install_fake_wp(tmp_path)
+
+    manifest = _run_probe(root, [str(bin_dir)])
+
+    assert manifest["wp_cli"]["status"] == "BLOCKED"
+    assert manifest["wp_cli"]["reason"] == "remote_probing_requires_allow_remote"
+    assert manifest["environment"]["remote_alias"] == "@prod"
+    assert manifest["capabilities"]["can_run_wp_cli"] is False
+    codes = {entry["code"] for entry in manifest["blockers"]}
+    assert "remote_probing_requires_allow_remote" in codes
+    assert not any(
+        "@prod" in entry["argv"] for entry in manifest["evidence"]
+    ), "no command may carry the alias without the opt-in"
+
+
+def test_allow_remote_opts_into_alias_probing(tmp_path: Path) -> None:
+    root = tmp_path / "site"
+    root.mkdir()
+    (root / ".wp-cli.yml").write_text("@prod:\n  ssh: user@example.test\n", encoding="utf-8")
+    bin_dir = _install_fake_wp(tmp_path)
+
+    manifest = _run_probe(root, [str(bin_dir)], allow_remote=True)
+
+    assert manifest["environment"]["kind"] == "remote-alias"
+    assert manifest["wp_cli"]["status"] == "AVAILABLE"
+
+
 def test_losing_markers_are_recorded_as_signal(tmp_path: Path) -> None:
     root = tmp_path / "ambiguous"
     root.mkdir()
@@ -815,11 +945,139 @@ def test_blocked_and_unknown_never_satisfy_a_capability() -> None:
         assert all(value is False for value in manifest["capabilities"].values()), status
 
 
+def test_a_section_root_claim_does_not_bless_deep_fact_leaves(tmp_path: Path) -> None:
+    """One `claim: "wp_cli"` entry used to cover every leaf beneath it,
+    including fields that probe nothing."""
+    manifest = probe._blank_manifest([], False, tmp_path)
+    manifest["wp_cli"]["status"] = "AVAILABLE"
+    manifest["wp_cli"]["version"] = "2.12.0"
+    manifest["wp_cli"]["is_stable_release"] = True
+    manifest["evidence"] = [
+        {"claim": "wp_cli", "argv": ["wp", "--info"], "exit_code": 0},
+        {"claim": "wp_cli.version", "argv": ["wp", "cli", "version"], "exit_code": 0},
+    ]
+
+    assert "wp_cli.is_stable_release" in probe.evidence_gaps(manifest)
+
+    manifest["evidence"].append(
+        {"claim": "wp_cli.is_stable_release", "argv": ["wp", "cli", "version"], "exit_code": 0}
+    )
+    assert "wp_cli.is_stable_release" not in probe.evidence_gaps(manifest)
+
+
+@pytest.mark.parametrize(
+    "stdout,expected",
+    [
+        (
+            "The installed coding standards are MySource, PEAR, Zend and WordPress\n",
+            ["MySource", "PEAR", "Zend", "WordPress"],
+        ),
+        ("The only installed coding standard is PEAR\n", ["PEAR"]),
+        (
+            "The installed coding standards are SquareBracket and WordPress\n",
+            ["SquareBracket", "WordPress"],
+        ),
+        ("no standards here\n", []),
+    ],
+)
+def test_phpcs_standards_parsing(stdout: str, expected: list[str]) -> None:
+    """split(\"are\") broke on the single-standard phrasing and on names
+    containing \"are\"."""
+    assert probe._phpcs_standards(stdout) == expected
+
+
+def test_is_installed_distinguishes_no_from_unknown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _project(tmp_path)
+    failing = ("help ability", "help block", "help doctor", "help profile", "core is-installed")
+    bin_dir = _install_fake_wp(tmp_path, failing=failing)
+
+    manifest = _run_probe(root, [str(bin_dir)])
+    assert manifest["wordpress"]["is_installed"] is False, "exit 1 is a probed no"
+
+    real_execute = probe.ProbeRunner._execute
+
+    def timing_out(self: probe.ProbeRunner, argv: list[str], timeout: float) -> dict:
+        if argv and argv[-1] == "is-installed":
+            return {"error": "timeout"}
+        return real_execute(self, argv, timeout)
+
+    monkeypatch.setattr(probe.ProbeRunner, "_execute", timing_out)
+    bin_dir = _install_fake_wp(tmp_path)
+    manifest = _run_probe(root, [str(bin_dir)])
+    assert manifest["wordpress"]["is_installed"] is None, "a timeout is no answer, not a no"
+
+
+def test_print_and_out_are_both_honoured(tmp_path: Path) -> None:
+    """--print used to silently discard --out: exit 0, nothing printed,
+    nothing written."""
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    root = tmp_path / "nothing"
+    root.mkdir()
+    out = tmp_path / "manifest.json"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(Path(probe.__file__)),
+            "--path",
+            str(root),
+            "--out",
+            str(out),
+            "--print",
+        ],
+        env={"PATH": str(empty_bin), "PYTHONPATH": str(Path(probe.__file__).parent)},
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    printed = json.loads(completed.stdout)
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert printed == written
+
+
 def test_schema_declares_the_load_bearing_rule() -> None:
     schema = probe.load_schema()
 
     assert "never satisfy" in schema["description"]
     assert schema["$defs"]["status"]["enum"] == ["AVAILABLE", "UNAVAILABLE", "BLOCKED", "UNKNOWN"]
+    assert isinstance(schema.get("allOf"), list) and len(schema["allOf"]) >= 4, (
+        "the rule is machine-checked via if/then, not description-only"
+    )
+
+
+def test_schema_machine_checks_the_load_bearing_rule(tmp_path: Path) -> None:
+    """capabilities.can_run_wp_cli=true with wp_cli.status UNKNOWN must fail
+    validation, not just violate a description nobody executes."""
+    manifest = probe._blank_manifest([], False, tmp_path)
+    assert _schema_errors(manifest) == []
+
+    manifest["capabilities"]["can_run_wp_cli"] = True
+
+    errors = _schema_errors(manifest)
+    assert any("wp_cli" in error and "AVAILABLE" in error for error in errors), errors
+
+
+@pytest.mark.parametrize(
+    "section,key",
+    [
+        ("wp_cli_commands", "ability list"),
+        ("verification_tools", "plugin check"),
+    ],
+)
+def test_key_drift_fails_schema_validation(tmp_path: Path, section: str, key: str) -> None:
+    """A drifted key like 'ability list' used to validate cleanly, silently
+    converting every real gate failure into a warning."""
+    manifest = probe._blank_manifest([], False, tmp_path)
+    if section == "wp_cli_commands":
+        manifest["wp_cli"]["commands"][key] = {"status": "AVAILABLE"}
+    else:
+        manifest["verification_tools"][key] = {"status": "AVAILABLE"}
+
+    assert any("propertyName" in error for error in _schema_errors(manifest))
 
 
 # ---------------------------------------------------------------------------

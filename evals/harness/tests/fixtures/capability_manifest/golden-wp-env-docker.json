@@ -161,6 +161,18 @@
     },
     {
       "argv": [
+        "<filesystem>",
+        "exists",
+        ".studio"
+      ],
+      "claim": "environment.marker_file",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "absent"
+    },
+    {
+      "argv": [
         "php",
         "--version"
       ],
@@ -204,7 +216,7 @@
       "duration_ms": 0,
       "exit_code": 0,
       "stderr_excerpt": "\u2139 Starting 'wp --info' on the cli container. \n\n\u2714 Ran `wp --info` in 'cli'. (in <normalized>)",
-      "stdout_excerpt": "OS:\tLinux 7.0.11-orbstack-00360-gc9bc4d96ac70 #1 SMP PREEMPT Thu Jun  4 16:40:25 UTC 2026 aarch64\nShell:\t\nPHP binary:\t/usr/local/bin/php\nPHP version:\t8.3.33\nphp.ini used:\t/usr/local/etc/php/php.ini\nMySQL binary:\t/usr/bin/mariadb\nMySQL version:\tmariadb from 11.8.8-MariaDB, client 15.2 for Linux (aarch64) using readline 5.1\nSQL modes:\t\nWP-CLI root dir:\tphar://wp-cli.phar/vendor/wp-cli/wp-cli\nWP-CLI vendor dir:\tphar://wp-cli.phar/vendor\nWP_CLI phar path:\tphar:///usr/local/bin/wp\nWP-CLI packages dir:\t\nWP-CLI cache dir:\t~/.wp-cli/cache\nWP-CLI global config:\t\nWP-CLI project config:\t/var/www/html/wp-cli.yml\nWP-CLI version:\t2.12.0"
+      "stdout_excerpt": "OS:\tLinux [REDACTED]\nShell:\t\nPHP binary:\t/usr/local/bin/php\nPHP version:\t8.3.33\nphp.ini used:\t/usr/local/etc/php/php.ini\nMySQL binary:\t/usr/bin/mariadb\nMySQL version:\tmariadb from 11.8.8-MariaDB, client 15.2 for Linux (aarch64) using readline 5.1\nSQL modes:\t\nWP-CLI root dir:\tphar://wp-cli.phar/vendor/wp-cli/wp-cli\nWP-CLI vendor dir:\tphar://wp-cli.phar/vendor\nWP_CLI phar path:\tphar:///usr/local/bin/wp\nWP-CLI packages dir:\t\nWP-CLI cache dir:\t~/.wp-cli/cache\nWP-CLI global config:\t\nWP-CLI project config:\t/var/www/html/wp-cli.yml\nWP-CLI version:\t2.12.0"
     },
     {
       "argv": [
@@ -220,6 +232,21 @@
       "exit_code": 0,
       "stderr_excerpt": "\u2139 Starting 'wp cli version' on the cli container. \n\n\u2714 Ran `wp cli version` in 'cli'. (in <normalized>)",
       "stdout_excerpt": "WP-CLI 2.12.0"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "cli",
+        "version"
+      ],
+      "claim": "wp_cli.is_stable_release",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "2.12.0"
     },
     {
       "argv": [
@@ -389,14 +416,33 @@
     },
     {
       "argv": [
-        "php",
-        "--version"
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "--info"
       ],
       "claim": "wordpress.php_version",
       "duration_ms": 0,
       "exit_code": 0,
       "stderr_excerpt": "",
-      "stdout_excerpt": "host php version used as lower-fidelity fallback"
+      "stdout_excerpt": "PHP version:\t8.3.33"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "config",
+        "get",
+        "MULTISITE"
+      ],
+      "claim": "wordpress.is_multisite",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "\u2139 Starting 'wp config get MULTISITE' on the cli container. \n\nError: The constant or variable 'MULTISITE' is not defined in the 'wp-config.php' file.\n\u2716 Command failed with exit code 1\nCommand failed with exit code 1",
+      "stdout_excerpt": ""
     },
     {
       "argv": [
@@ -470,7 +516,7 @@
         "plugin-list-scan",
         "mcp-adapter"
       ],
-      "claim": "mcp",
+      "claim": "mcp.adapter",
       "duration_ms": 0,
       "exit_code": 0,
       "stderr_excerpt": "",
@@ -534,7 +580,7 @@
       "duration_ms": 0,
       "exit_code": 0,
       "stderr_excerpt": "",
-      "stdout_excerpt": "wp-env run <container> [command...]\n\nRuns an arbitrary command in one of the underlying Docker containers. Use a double dash to pass\narguments to it. You can use bash to open a shell session. composer and phpunit are available in all\nWordPress and CLI containers. wp is also available in the CLI containers.\n\nPositionals:\n  container  The underlying Docker service to run the command on.\n        [string] [required] [choices: \"mysql\", \"tests-mysql\", \"wordpress\", \"tests-wordpress\", \"cli\",\n                                                                          \"tests-cli\", \"phpmyadmin\"]\n  command    The command to run.                                               [array] [default: []]\n\nOptions:\n  --help     Show help                                                                     [boolean]\n  --debug    Enable debug output.                                         [boolean] [default: false]\n  --config   Path to a custom .wp-env.json configuration file.                              [string]\n  --version  Show version number                                                           [boolean]\n  --env-cwd  The command's working directory inside of the container. Paths without a leading slash\n             are relative to the WordPress root.                             [string] [default: \".\"]"
+      "stdout_excerpt": "wp-env run <container> [command...]\n\nRuns an arbitrary command in one of the underlying Docker containers. Use a double dash to pass\narguments to it. You can use bash to open a shell session. composer and phpunit are available in all\nWordPress and CLI containers. wp is also available in the CLI containers.\n\nPositionals:\n  container  The underlying Docker service to run the command on.\n        [string] [required] [choices: \"mysql\", \"tests-mysql\", \"wordpress\", \"tests-wordpress\", \"cli\","
     },
     {
       "argv": [
@@ -559,7 +605,7 @@
       "claim": "verification_tools.playground_cli",
       "duration_ms": 0,
       "exit_code": 1,
-      "stderr_excerpt": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\nnpm error npx canceled due to missing packages and no YES option: [\"@wp-playground/cli@3.1.48\"]\nnpm error A complete log of this run can be found in: ~/.npm/_logs/<normalized>-debug-0.log",
+      "stderr_excerpt": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\nnpm error npx canceled due to missing packages and no YES option: [\"@wp-playground/cli@3.1.49\"]\nnpm error A complete log of this run can be found in: ~/.npm/_logs/<normalized>-debug-0.log",
       "stdout_excerpt": ""
     }
   ],
@@ -691,101 +737,101 @@
   "wordpress": {
     "active_plugins": [
       {
+        "activation_state": "inactive",
         "name": "hello",
-        "status": "inactive",
         "version": "1.7.2"
       },
       {
+        "activation_state": "active",
         "name": "plugin-check",
-        "status": "active",
         "version": "2.0.0"
       }
     ],
     "active_themes": [
       {
+        "activation_state": "inactive",
         "name": "twentyeleven",
-        "status": "inactive",
         "version": "5.1"
       },
       {
+        "activation_state": "inactive",
         "name": "twentyfifteen",
-        "status": "inactive",
         "version": "4.2"
       },
       {
+        "activation_state": "inactive",
         "name": "twentyfourteen",
-        "status": "inactive",
         "version": "4.5"
       },
       {
+        "activation_state": "inactive",
         "name": "twentynineteen",
-        "status": "inactive",
         "version": "3.3"
       },
       {
+        "activation_state": "inactive",
         "name": "twentyseventeen",
-        "status": "inactive",
         "version": "4.1"
       },
       {
+        "activation_state": "inactive",
         "name": "twentysixteen",
-        "status": "inactive",
         "version": "3.8"
       },
       {
+        "activation_state": "inactive",
         "name": "twentyten",
-        "status": "inactive",
         "version": "4.6"
       },
       {
+        "activation_state": "inactive",
         "name": "twentythirteen",
-        "status": "inactive",
         "version": "4.6"
       },
       {
+        "activation_state": "inactive",
         "name": "twentytwelve",
-        "status": "inactive",
         "version": "4.8"
       },
       {
+        "activation_state": "inactive",
         "name": "twentytwenty",
-        "status": "inactive",
         "version": "3.1"
       },
       {
+        "activation_state": "active",
         "name": "twentytwentyfive",
-        "status": "active",
         "version": "1.5"
       },
       {
+        "activation_state": "inactive",
         "name": "twentytwentyfour",
-        "status": "inactive",
         "version": "1.5"
       },
       {
+        "activation_state": "inactive",
         "name": "twentytwentyone",
-        "status": "inactive",
         "version": "2.8"
       },
       {
+        "activation_state": "inactive",
         "name": "twentytwentythree",
-        "status": "inactive",
         "version": "1.6"
       },
       {
+        "activation_state": "inactive",
         "name": "twentytwentytwo",
-        "status": "inactive",
         "version": "2.1"
       }
     ],
     "core_version": "7.0.3",
     "home": "http://localhost:8901",
     "is_installed": true,
-    "is_multisite": null,
+    "is_multisite": false,
     "notes": [
-      "facts_from_core_version_fallback"
+      "facts_from_wp_cli_read_probes"
     ],
-    "php_version": "8.5.8",
+    "php_version": "8.3.33",
     "reason": null,
     "siteurl": "http://localhost:8901",
     "status": "AVAILABLE"
