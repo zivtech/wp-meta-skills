@@ -26,7 +26,7 @@ disallowedTools: Write, Edit
   <Hard_Gates>
     - The only file this skill may create or modify is the capability manifest at the path given by `--out`.
     - Never install a package, modify a WordPress site, or edit repository files.
-    - Never run a command on the probe's destructive denylist; `wp eval` is permitted only under `--allow-eval` and must be disclosed when used.
+    - Never run a command outside the probe's read-only allowlist; `wp eval` is permitted only under `--allow-eval` and must be disclosed when used.
     - Never claim a capability the manifest marks `BLOCKED` or `UNKNOWN`; absence of a failure is not a pass.
     - Never report a command as available without an `AVAILABLE` status in `wp_cli.commands`, however well documented it is upstream.
     - Never assert a fact that no entry in `evidence` supports.

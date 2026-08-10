@@ -86,38 +86,52 @@ DEPRECATED_TOOLING = {
 MCP_ADAPTER_PRERELEASE_CEILING = 1
 
 # --- Safety ------------------------------------------------------------------
+# The probe is read-only, so it declares exactly what it may run and refuses
+# everything else at the single choke point below. A denylist over a
+# ~400-command WP-CLI surface fails open the moment a command is missing from
+# it (`wp db export`, `wp site delete`, and eleven more destructive commands
+# passed the old list); the allowlist fails closed and fits on one screen.
 
-DESTRUCTIVE_DENYLIST = frozenset(
+# Exact WP-CLI subcommand paths the probe issues. "" is `<prefix> --info`,
+# a global-flags-only invocation with no subcommand.
+READ_ONLY_WP_SUBCOMMANDS = frozenset(
     {
-        "db drop",
-        "db reset",
-        "db import",
-        "db query",
-        "site empty",
-        "search-replace",  # writes by default; --dry-run is not global
-        "post delete",
-        "user delete",
-        "term delete",
-        "plugin delete",
-        "theme delete",
-        "plugin install",
-        "theme install",
-        "core update",
-        "core update-db",
-        "core download",
-        "rewrite flush",
-        "cache flush",
-        "transient delete",
-        "eval",
-        "eval-file",
-        "shell",
+        "",
+        "cli version",
+        "core version",
+        "core is-installed",
+        "option get siteurl",
+        "option get home",
+        "plugin list",
+        "theme list",
+        "ability list",
+        "plugin check",
     }
 )
 
-# `wp eval` is the one deliberate exception to the denylist above. It is the
-# highest-privilege command in the surface and also the only reliable way to get
-# structured PHP/WP facts, so it is gated behind --allow-eval (default off).
+# `wp help <anything>` renders documentation and never touches the site.
+HELP_WP_SUBCOMMAND = "help"
+
+# `wp eval` is the one gated exception: the highest-privilege command in the
+# surface and also the only reliable way to get structured PHP/WP facts, so it
+# is permitted only behind --allow-eval (default off).
 EVAL_EXCEPTION_COMMANDS = frozenset({"eval"})
+
+# Host tools the probe may invoke directly, keyed by executable basename, with
+# the exact argument vectors permitted for each.
+HOST_TOOL_ALLOWLIST: dict[str, frozenset[tuple[str, ...]]] = {
+    "php": frozenset({("--version",)}),
+    "node": frozenset({("--version",)}),
+    "composer": frozenset({("--version",)}),
+    "phpcs": frozenset({("--version",), ("-i",)}),
+    "phpstan": frozenset({("--version",)}),
+    "npx": frozenset(
+        {
+            ("--no-install", "@wordpress/env", "--version"),
+            ("--no-install", "@wp-playground/cli", "--version"),
+        }
+    ),
+}
 
 # Matched anywhere in a line, not just at its start: a credential printed
 # mid-line must not escape redaction. Only the value is replaced, so the key
@@ -154,8 +168,8 @@ NON_FACT_KEYS = frozenset(
 TRACEABLE_SECTIONS = ("wp_cli", "wordpress", "abilities", "mcp", "verification_tools")
 
 
-class DenylistViolation(RuntimeError):
-    """A probe tried to run a command that can modify the environment."""
+class CommandRefused(RuntimeError):
+    """A probe tried to run a command outside the read-only allowlist."""
 
 
 def _redact(text: str | None) -> str | None:
@@ -180,8 +194,8 @@ def _excerpt(text: str | None) -> str | None:
     return scrubbed[:EXCERPT_LIMIT]
 
 
-def _subcommand_path(argv: list[str]) -> str:
-    """Return the WP-CLI subcommand path from a full argv, ignoring the prefix."""
+def _wp_argv_split(argv: list[str]) -> tuple[bool, str]:
+    """Return (argv reaches WP-CLI, subcommand path after the prefix)."""
     words: list[str] = []
     seen_wp = False
     for token in argv:
@@ -198,17 +212,33 @@ def _subcommand_path(argv: list[str]) -> str:
         if token.startswith("@") and not words:
             continue  # `wp @alias db drop` must still resolve to `db drop`
         words.append(token)
-    return " ".join(words)
+    return seen_wp, " ".join(words)
 
 
-def _denylist_hit(argv: list[str]) -> str | None:
-    path = _subcommand_path(argv)
-    if not path:
+def _refusal(
+    argv: list[str],
+    *,
+    allow_eval: bool = False,
+    eval_exception: bool = False,
+) -> str | None:
+    """Return why `argv` is refused, or None when it is on the allowlist."""
+    is_wp, path = _wp_argv_split(argv)
+    if is_wp:
+        root = path.split(" ", 1)[0] if path else ""
+        if root in EVAL_EXCEPTION_COMMANDS:
+            if eval_exception and allow_eval:
+                return None
+            return f"wp {root} requires --allow-eval"
+        if path in READ_ONLY_WP_SUBCOMMANDS or root == HELP_WP_SUBCOMMAND:
+            return None
+        return f"wp {path} is not on the read-only allowlist"
+    if not argv:
+        return "empty argv"
+    name = Path(argv[0]).name
+    permitted = HOST_TOOL_ALLOWLIST.get(name)
+    if permitted is not None and tuple(argv[1:]) in permitted:
         return None
-    for entry in sorted(DESTRUCTIVE_DENYLIST, key=len, reverse=True):
-        if path == entry or path.startswith(entry + " "):
-            return entry
-    return None
+    return f"{' '.join([name, *argv[1:]])} is not on the read-only allowlist"
 
 
 def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
@@ -255,12 +285,10 @@ class ProbeRunner:
         timeout: int = DEFAULT_TIMEOUT_SEC,
         eval_exception: bool = False,
     ) -> dict[str, Any]:
-        """Run one non-destructive command and record evidence for `claim`."""
-        hit = _denylist_hit(argv)
-        if hit is not None:
-            permitted = eval_exception and self.allow_eval and hit in EVAL_EXCEPTION_COMMANDS
-            if not permitted:
-                raise DenylistViolation(f"destructive command refused: wp {hit}")
+        """Run one allowlisted read-only command and record evidence for `claim`."""
+        refusal = _refusal(argv, allow_eval=self.allow_eval, eval_exception=eval_exception)
+        if refusal is not None:
+            raise CommandRefused(refusal)
 
         started = time.monotonic()
         outcome: dict[str, Any] = {

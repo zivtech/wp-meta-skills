@@ -311,30 +311,92 @@ def test_scenario_c_live_wp_env_matches_the_golden_manifest() -> None:
     assert probe.normalize_manifest(manifest) == golden
 
 
-# --- Safety: the denylist ----------------------------------------------------
+# --- Safety: the read-only allowlist ------------------------------------------
+# The old denylist failed open: thirteen of sixteen destructive commands passed
+# it. Every case below that the denylist caught must still refuse, plus the
+# thirteen that slipped through, plus a positive control per invocation the
+# probe actually issues.
+
+MUST_REFUSE = [
+    # The cases the old denylist caught, kept as regression anchors.
+    ["wp", "db", "drop"],
+    ["wp", "search-replace", "old.test", "new.test"],
+    ["wp", "--path=/srv/site", "db", "drop"],
+    ["wp", "@production", "db", "drop"],
+    ["wp-env", "run", "cli", "wp", "post", "delete", "5"],
+    ["wp", "--url=http://x", "db", "drop"],
+    ["wp", "eval-file", "x.php"],
+    ["wp", "shell"],
+    # The thirteen that passed the denylist.
+    ["wp", "db", "cli"],
+    ["wp", "db", "export"],
+    ["wp", "site", "delete", "3"],
+    ["wp", "plugin", "uninstall", "hello"],
+    ["wp", "option", "update", "siteurl", "http://evil.test"],
+    ["wp", "option", "delete", "transient"],
+    ["wp", "config", "set", "WP_DEBUG", "true"],
+    ["wp", "core", "multisite-convert"],
+    ["wp", "user", "session", "destroy", "1"],
+    ["wp", "cron", "event", "run", "--all"],
+    ["wp", "media", "regenerate", "--yes"],
+    ["wp", "rewrite", "structure", "/%postname%/"],
+    ["wp-env", "run", "cli", "wp", "db", "export"],
+    # Host commands the probe has no business running.
+    ["rm", "-rf", "/srv/site"],
+    ["composer", "install"],
+    ["npx", "--yes", "@wordpress/env", "start"],
+    ["phpcs", "--standard=WordPress", "."],
+]
+
+PROBE_ISSUED_INVOCATIONS = [
+    ["php", "--version"],
+    ["node", "--version"],
+    ["composer", "--version"],
+    ["phpcs", "--version"],
+    ["phpcs", "-i"],
+    ["/srv/site/vendor/bin/phpcs", "--version"],
+    ["/srv/site/vendor/bin/phpstan", "--version"],
+    ["phpstan", "--version"],
+    ["npx", "--no-install", "@wordpress/env", "--version"],
+    ["npx", "--no-install", "@wp-playground/cli", "--version"],
+    ["wp", "--info"],
+    ["wp", "--path=/srv/site", "--info"],
+    ["wp-env", "run", "cli", "wp", "--info"],
+    ["ddev", "wp", "--info"],
+    ["lando", "wp", "cli", "version"],
+    ["wp", "cli", "version"],
+    ["wp", "help", "ability"],
+    ["wp", "help", "block"],
+    ["wp", "help", "doctor"],
+    ["wp", "help", "dist-archive"],
+    ["wp", "core", "version", "--extra"],
+    ["wp", "core", "is-installed"],
+    ["wp", "option", "get", "siteurl"],
+    ["wp", "option", "get", "home"],
+    ["wp", "plugin", "list", "--format=json", "--fields=name,status,version,update"],
+    ["wp", "theme", "list", "--format=json", "--fields=name,status,version"],
+    ["wp", "ability", "list", "--format=json"],
+    ["wp", "plugin", "check", "--help"],
+]
+
+
+@pytest.mark.parametrize("argv", MUST_REFUSE, ids=[" ".join(argv) for argv in MUST_REFUSE])
+def test_everything_off_the_allowlist_is_refused(argv: list[str]) -> None:
+    assert probe._refusal(argv) is not None
 
 
 @pytest.mark.parametrize(
-    "argv,expected",
-    [
-        (["wp", "db", "drop"], "db drop"),
-        (["wp", "search-replace", "old.test", "new.test"], "search-replace"),
-        (["wp", "--path=/srv/site", "db", "drop"], "db drop"),
-        (["wp", "@production", "db", "drop"], "db drop"),
-        (["wp-env", "run", "cli", "wp", "post", "delete", "5"], "post delete"),
-        (["wp", "plugin", "list", "--format=json"], None),
-        (["wp", "option", "get", "siteurl"], None),
-    ],
+    "argv", PROBE_ISSUED_INVOCATIONS, ids=[" ".join(argv) for argv in PROBE_ISSUED_INVOCATIONS]
 )
-def test_denylist_classification(argv: list[str], expected: str | None) -> None:
-    assert probe._denylist_hit(argv) == expected
+def test_every_probe_issued_invocation_is_allowlisted(argv: list[str]) -> None:
+    assert probe._refusal(argv) is None
 
 
 @pytest.mark.parametrize("argv", [["wp", "db", "drop"], ["wp", "search-replace", "a", "b"]])
 def test_runner_refuses_destructive_commands(tmp_path: Path, argv: list[str]) -> None:
     runner = probe.ProbeRunner(tmp_path, allow_eval=True)
 
-    with pytest.raises(probe.DenylistViolation):
+    with pytest.raises(probe.CommandRefused):
         runner.run("test", argv)
 
     assert runner.evidence == [], "a refused command must leave no evidence"
@@ -343,8 +405,16 @@ def test_runner_refuses_destructive_commands(tmp_path: Path, argv: list[str]) ->
 def test_eval_is_refused_unless_allow_eval_is_set(tmp_path: Path) -> None:
     runner = probe.ProbeRunner(tmp_path, allow_eval=False)
 
-    with pytest.raises(probe.DenylistViolation):
+    with pytest.raises(probe.CommandRefused):
         runner.run("test", ["wp", "eval", "echo 1;"], eval_exception=True)
+
+
+def test_eval_stays_gated_behind_both_flags() -> None:
+    argv = ["wp", "eval", "echo 1;"]
+
+    assert probe._refusal(argv, allow_eval=True, eval_exception=True) is None
+    assert probe._refusal(argv, allow_eval=True, eval_exception=False) is not None
+    assert probe._refusal(argv, allow_eval=False, eval_exception=True) is not None
 
 
 # --- Safety: --allow-eval defaults off ---------------------------------------
