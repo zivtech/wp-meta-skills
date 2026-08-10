@@ -99,12 +99,20 @@ def _project(tmp_path: Path) -> Path:
     return root
 
 
-def _run_probe(root: Path, path_dirs: list[str], *, allow_eval: bool = False) -> dict:
+def _run_probe(
+    root: Path,
+    path_dirs: list[str],
+    *,
+    allow_eval: bool = False,
+    argv: list[str] | None = None,
+) -> dict:
     env_path = os.pathsep.join(path_dirs)
     previous = os.environ.get("PATH")
     os.environ["PATH"] = env_path
     try:
-        return probe.probe(root, allow_eval=allow_eval, argv=["probe", "--path", str(root)])
+        return probe.probe(
+            root, allow_eval=allow_eval, argv=argv or ["probe", "--path", str(root)]
+        )
     finally:
         if previous is None:
             os.environ.pop("PATH", None)
@@ -484,6 +492,119 @@ def test_planted_credentials_never_reach_the_manifest(tmp_path: Path) -> None:
     assert PLANTED_APPLICATION_PASSWORD not in serialized
     assert PLANTED_DB_PASSWORD not in serialized
     assert probe.REDACTED in serialized
+
+
+@pytest.mark.parametrize(
+    "sample,gone,kept",
+    [
+        pytest.param(
+            "siteurl is http://admin:hunter2@example.test/wp",
+            "admin:hunter2",
+            "http://[REDACTED]@example.test/wp",
+            id="http-basic-auth",
+        ),
+        pytest.param(
+            "dsn mysql://wp_user:wp_pass@db:3306/wp",
+            "wp_user:wp_pass",
+            "mysql://[REDACTED]@db:3306/wp",
+            id="mysql-dsn",
+        ),
+        pytest.param(
+            "ERROR 1045: mysql -u root -phunter2 failed",
+            "-phunter2",
+            "[REDACTED]",
+            id="mysql-short-flag",
+        ),
+        pytest.param(
+            "mariadb --user=root --password=hunter2",
+            "hunter2",
+            "--password=[REDACTED]",
+            id="password-eq-flag",
+        ),
+        pytest.param(
+            "| DB_PASSWORD | hunter2 | constant |",
+            "hunter2",
+            "DB_PASSWORD",
+            id="wp-config-list-table-row",
+        ),
+        pytest.param(
+            "path C:\\Users\\someone\\Local Sites\\demo",
+            "someone",
+            "path ~\\Local Sites\\demo",
+            id="windows-home-path",
+        ),
+        pytest.param(
+            "OS:\tLinux 7.0.11-orbstack-00360-gc9bc4d96ac70 #1 SMP aarch64",
+            "orbstack",
+            "OS:\tLinux [REDACTED]",
+            id="kernel-build-string",
+        ),
+    ],
+)
+def test_redaction_covers_urls_cli_flags_tables_and_hosts(
+    sample: str, gone: str, kept: str
+) -> None:
+    scrubbed = probe._redact(sample)
+
+    assert gone not in scrubbed
+    assert kept in scrubbed
+
+
+def test_application_password_redaction_requires_a_cue_or_a_bare_line() -> None:
+    """Six four-letter words in ordinary prose must survive; the excerpt is
+    what a reviewer diagnoses a failure from."""
+    prose = "the unit test data here goes fine"
+    assert probe._redact(prose) == prose
+
+    cued = f"application password {PLANTED_APPLICATION_PASSWORD} here"
+    assert PLANTED_APPLICATION_PASSWORD not in probe._redact(cued)
+
+    porcelain = PLANTED_APPLICATION_PASSWORD
+    assert probe._redact(porcelain) == probe.REDACTED
+
+
+def test_short_p_flag_survives_on_non_mysql_lines() -> None:
+    line = "ssh -p2222 deploy-host"
+    assert probe._redact(line) == line
+
+
+def test_stdout_of_a_secret_naming_argv_is_redacted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`wp config get DB_PASSWORD` output is the bare value: no key on the
+    line to anchor on, so the argv guard withholds the whole excerpt."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    script = bin_dir / "wp"
+    script.write_text(
+        f"#!{sys.executable}\nimport sys\nsys.stdout.write('hunter2\\n')\n", encoding="utf-8"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setattr(probe, "_refusal", lambda *args, **kwargs: None)
+    runner = probe.ProbeRunner(tmp_path, allow_eval=False)
+
+    outcome = runner.run("wordpress.db_password", ["wp", "config", "get", "DB_PASSWORD"])
+
+    assert outcome["stdout"].strip() == "hunter2", "raw stdout stays usable internally"
+    assert runner.evidence[-1]["stdout_excerpt"] == probe.REDACTED
+
+
+def test_manifest_argv_fields_are_redacted(tmp_path: Path) -> None:
+    """probe_argv, invocation_prefix, and tool invocations must not leak the
+    username; normalize_manifest scrubs them for golden comparison only, so
+    the emitted manifest has to be clean on its own."""
+    root = _project(tmp_path)
+    bin_dir = _install_fake_wp(tmp_path)
+
+    manifest = _run_probe(root, [str(bin_dir)], argv=["probe", "--path", "/Users/someone/site"])
+
+    assert manifest["probe_argv"] == ["probe", "--path", "~/site"]
+    assert probe._redact_argv(["wp", "--path=/Users/someone/site"]) == ["wp", "--path=~/site"]
+    assert probe._redact_argv(["/Users/someone/site/vendor/bin/phpcs", "--version"]) == [
+        "~/site/vendor/bin/phpcs",
+        "--version",
+    ]
 
 
 # --- Safety: subprocess hardening ---------------------------------------------

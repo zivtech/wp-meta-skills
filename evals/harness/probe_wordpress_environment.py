@@ -133,21 +133,48 @@ HOST_TOOL_ALLOWLIST: dict[str, frozenset[tuple[str, ...]]] = {
     ),
 }
 
+# Shared by the value pattern below and by the argv guard in ProbeRunner.run:
+# a command whose argv names one of these keys gets its whole stdout excerpt
+# redacted, because output like `wp config get DB_PASSWORD` is the bare value
+# with no key on the line for the pattern to anchor on.
+SECRET_KEY_NAMES = (
+    "DB_PASSWORD", "DB_USER", "DB_NAME", "DB_HOST",
+    "AUTH_KEY", "SECURE_AUTH_KEY", "LOGGED_IN_KEY", "NONCE_KEY",
+    "AUTH_SALT", "SECURE_AUTH_SALT", "LOGGED_IN_SALT", "NONCE_SALT",
+    "WP_API_PASSWORD", "WORDPRESS_DB_PASSWORD", "WORDPRESS_DB_USER", "WORDPRESS_DB_NAME",
+)
+SECRET_ARGV_TOKENS = frozenset(SECRET_KEY_NAMES)
 # Matched anywhere in a line, not just at its start: a credential printed
 # mid-line must not escape redaction. Only the value is replaced, so the key
-# stays visible and the manifest still says which secret was withheld.
+# stays visible and the manifest still says which secret was withheld. `|` is
+# a separator because `wp config list` renders `| DB_PASSWORD | hunter2 |`.
 SECRET_KEY_PATTERN = re.compile(
-    r"(?i)\b(DB_PASSWORD|DB_USER|DB_NAME|DB_HOST|AUTH_KEY|SECURE_AUTH_KEY|LOGGED_IN_KEY"
-    r"|NONCE_KEY|AUTH_SALT|SECURE_AUTH_SALT|LOGGED_IN_SALT|NONCE_SALT"
-    r"|WP_API_PASSWORD|WORDPRESS_DB_PASSWORD|WORDPRESS_DB_USER|WORDPRESS_DB_NAME)\b"
-    r"['\"]?\s*[:=,]\s*"
-    r"(?P<value>'[^']*'|\"[^\"]*\"|[^\s,;)]+)"
+    r"(?i)\b(" + "|".join(SECRET_KEY_NAMES) + r")\b"
+    r"['\"]?\s*[:=,|]\s*"
+    r"(?P<value>'[^']*'|\"[^\"]*\"|[^\s,;|)]+)"
 )
+# A URL userinfo component is a credential wherever it appears: a siteurl
+# carrying basic-auth, or a mysql:// DSN in ddev/wp-env stderr on a DB failure.
+URL_USERINFO_PATTERN = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)(?:[^/\s@:]+(?::[^/\s@]*)?)@")
+# `mysql -u root -phunter2` in DB-failure stderr. The short form only redacts
+# on lines that name a mysql-family tool, so `-p...` tokens in other tools'
+# output stay legible; `--password=` is unambiguous and redacts anywhere.
+MYSQL_PASSWORD_FLAG_PATTERN = re.compile(r"(?:^|(?<=\s))-p[^\s]+")
+MYSQL_CUE = re.compile(r"(?i)\b(?:mysql|mariadb|mysqladmin|mysqldump)\b")
+PASSWORD_EQ_PATTERN = re.compile(r"(?i)--password=[^\s]+")
 # WordPress application passwords are 24 characters rendered in six space
-# separated groups. The spaces are load-bearing, which makes them easy to log by
-# accident. They are never recorded, in any form.
+# separated groups. Matching that shape alone corrupts ordinary prose (any six
+# four-character words in a row), so redaction requires a password cue on the
+# line, or the value standing alone as the whole line (`--porcelain` output).
 APPLICATION_PASSWORD_PATTERN = re.compile(r"\b[A-Za-z0-9]{4}(?: [A-Za-z0-9]{4}){5}\b")
-HOME_PATH_PATTERN = re.compile(r"(?:/Users|/home)/[^/\s:'\"]+")
+APPLICATION_PASSWORD_CUE = re.compile(r"(?i)\b(?:app(?:lication)?[-_ ]?pass(?:word)?s?|password)\b")
+HOME_PATH_PATTERN = re.compile(
+    r"(?:/Users|/home)/[^/\s:'\"]+|(?i:[A-Z]:[\\/]Users[\\/][^\\/\s:'\"]+)"
+)
+# `wp --info` prints the kernel build string on its OS: line, which is
+# host-identifying (it put a developer's orbstack kernel ID into the golden
+# fixture). Keep the OS family token, drop the rest.
+WP_INFO_OS_LINE_PATTERN = re.compile(r"(?im)^(OS:[ \t]+)(\S+)[ \t]+\S.*$")
 REDACTED = "[REDACTED]"
 
 # Leaf keys that describe the probe's own reasoning rather than a probed fact.
@@ -173,15 +200,35 @@ class CommandRefused(RuntimeError):
 
 
 def _redact(text: str | None) -> str | None:
-    """Strip credentials, salts, application passwords and home paths."""
+    """Strip credentials, salts, application passwords, home paths and
+    host-identifying kernel strings. Runs before excerpt truncation, so a
+    secret can never be split past a pattern by the 2000-char cut."""
     if text is None:
         return None
-    scrubbed = APPLICATION_PASSWORD_PATTERN.sub(REDACTED, text)
+    lines = []
+    for line in text.split("\n"):
+        if APPLICATION_PASSWORD_CUE.search(line) or APPLICATION_PASSWORD_PATTERN.fullmatch(
+            line.strip()
+        ):
+            line = APPLICATION_PASSWORD_PATTERN.sub(REDACTED, line)
+        if MYSQL_CUE.search(line):
+            line = MYSQL_PASSWORD_FLAG_PATTERN.sub(REDACTED, line)
+        lines.append(line)
+    scrubbed = "\n".join(lines)
     scrubbed = SECRET_KEY_PATTERN.sub(
         lambda match: match.group(0).replace(match.group("value"), REDACTED), scrubbed
     )
+    scrubbed = URL_USERINFO_PATTERN.sub(r"\1" + REDACTED + "@", scrubbed)
+    scrubbed = PASSWORD_EQ_PATTERN.sub("--password=" + REDACTED, scrubbed)
+    scrubbed = WP_INFO_OS_LINE_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)} {REDACTED}", scrubbed
+    )
     scrubbed = HOME_PATH_PATTERN.sub("~", scrubbed)
     return scrubbed
+
+
+def _redact_argv(argv: list[str]) -> list[str]:
+    return [str(_redact(token)) for token in argv]
 
 
 def _excerpt(text: str | None) -> str | None:
@@ -306,12 +353,18 @@ class ProbeRunner:
             outcome.update(self._execute(argv, timeout if remaining is None else min(timeout, remaining)))
 
         duration_ms = int((time.monotonic() - started) * 1000)
+        # Output of a command whose argv names a secret key is the bare value:
+        # nothing on the line for SECRET_KEY_PATTERN to anchor on, so the whole
+        # excerpt is withheld.
+        secret_requested = any(token in SECRET_ARGV_TOKENS for token in argv)
         self.evidence.append(
             {
                 "claim": claim,
-                "argv": [str(_redact(token)) for token in argv],
+                "argv": _redact_argv(argv),
                 "exit_code": outcome["exit_code"],
-                "stdout_excerpt": _excerpt(outcome["stdout"]),
+                "stdout_excerpt": (
+                    REDACTED if secret_requested and outcome["stdout"] else _excerpt(outcome["stdout"])
+                ),
                 "stderr_excerpt": _excerpt(outcome["stderr"] or outcome["error"] or ""),
                 "duration_ms": duration_ms,
             }
@@ -679,7 +732,7 @@ def _blank_manifest(argv: list[str], allow_eval: bool, cwd: Path) -> dict[str, A
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "probe_version": PROBE_VERSION,
-        "probe_argv": argv,
+        "probe_argv": _redact_argv(argv),
         "allow_eval": allow_eval,
         "environment": {
             "status": "UNKNOWN",
@@ -805,7 +858,7 @@ def _probe_wp_cli(
             runner.evidence.append(
                 {
                     "claim": "wp_cli.version",
-                    "argv": [*prefix, "--info"],
+                    "argv": _redact_argv([*prefix, "--info"]),
                     "exit_code": info["exit_code"],
                     "stdout_excerpt": _excerpt(info["stdout"]),
                     "stderr_excerpt": "",
@@ -1085,7 +1138,7 @@ def _probe_verification_tools(
             "AVAILABLE",
             version=_version_string(phpcs["stdout"]),
             standards=standards or None,
-            invocation=phpcs_argv,
+            invocation=_redact_argv(phpcs_argv),
         )
         wpcs_present = any(standard.startswith("WordPress") for standard in standards)
         runner.evidence.append(
@@ -1126,7 +1179,7 @@ def _probe_verification_tools(
             "AVAILABLE",
             version=_version_string(phpstan["stdout"]),
             wp_stubs_version=stubs,
-            invocation=phpstan_argv,
+            invocation=_redact_argv(phpstan_argv),
             notes=notes,
         )
     else:
@@ -1139,7 +1192,9 @@ def _probe_verification_tools(
             timeout=PLUGIN_CHECK_TIMEOUT_SEC,
         )
         if plugin_check["ok"]:
-            tools["plugin_check"] = _tool("AVAILABLE", invocation=[*prefix, "plugin", "check"])
+            tools["plugin_check"] = _tool(
+                "AVAILABLE", invocation=_redact_argv([*prefix, "plugin", "check"])
+            )
         else:
             tools["plugin_check"] = _tool(
                 "UNAVAILABLE", reason=plugin_check["error"] or "plugin_check_command_absent"
@@ -1330,7 +1385,7 @@ def probe(
         if manifest["wp_cli"]["status"] == "AVAILABLE":
             environment["status"] = "AVAILABLE"
             environment["kind"] = kind
-            environment["invocation_prefix"] = prefix
+            environment["invocation_prefix"] = _redact_argv(prefix) if prefix else prefix
         else:
             # Ground truth is `<prefix> --info`. If it fails, detection is
             # UNKNOWN regardless of which marker matched.
