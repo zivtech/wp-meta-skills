@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -38,6 +40,10 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "capability-manifest
 DEFAULT_OUT = "capability-manifest.json"
 DEFAULT_TIMEOUT_SEC = 20
 PLUGIN_CHECK_TIMEOUT_SEC = 60
+# Nine 20s help probes plus a 60s plugin check is a ~6 minute worst case per
+# environment; the budget bounds the whole run so a wall of hanging commands
+# cannot stall the caller indefinitely.
+DEFAULT_BUDGET_SEC = 300
 EXCERPT_LIMIT = 2000
 
 # --- Version truth, verified August 2026 -------------------------------------
@@ -205,13 +211,41 @@ def _denylist_hit(argv: list[str]) -> str | None:
     return None
 
 
+def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
+    """Kill a timed-out child and, on POSIX, its whole process group.
+
+    For ddev/lando/wp-env/npx the real work is a grandchild (often a `docker
+    exec`) holding the pipes; killing only the direct child leaves it running
+    and the pipes open.
+    """
+    if os.name == "posix":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.communicate(timeout=5)
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+
+
 class ProbeRunner:
     """Single choke point for every command the probe runs."""
 
-    def __init__(self, cwd: Path, allow_eval: bool) -> None:
+    def __init__(
+        self,
+        cwd: Path,
+        allow_eval: bool,
+        budget_seconds: float | None = DEFAULT_BUDGET_SEC,
+    ) -> None:
         self.cwd = cwd
         self.allow_eval = allow_eval
         self.evidence: list[dict[str, Any]] = []
+        self._deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
 
     def run(
         self,
@@ -237,27 +271,11 @@ class ProbeRunner:
             "ok": False,
             "error": None,
         }
-        try:
-            completed = subprocess.run(
-                argv,
-                cwd=str(self.cwd),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-            outcome["exit_code"] = completed.returncode
-            outcome["stdout"] = completed.stdout or ""
-            outcome["stderr"] = completed.stderr or ""
-            outcome["ok"] = completed.returncode == 0
-        except FileNotFoundError:
-            outcome["error"] = "executable_not_found"
-        except PermissionError:
-            outcome["error"] = "permission_denied"
-        except subprocess.TimeoutExpired:
-            outcome["error"] = "timeout"
-        except OSError as exc:  # pragma: no cover - platform dependent
-            outcome["error"] = f"os_error:{exc.__class__.__name__}"
+        remaining = None if self._deadline is None else self._deadline - started
+        if remaining is not None and remaining <= 0:
+            outcome["error"] = "global_budget_exhausted"
+        else:
+            outcome.update(self._execute(argv, timeout if remaining is None else min(timeout, remaining)))
 
         duration_ms = int((time.monotonic() - started) * 1000)
         self.evidence.append(
@@ -271,6 +289,42 @@ class ProbeRunner:
             }
         )
         return outcome
+
+    def _execute(self, argv: list[str], timeout: float) -> dict[str, Any]:
+        """One subprocess, defused: stdin is closed so a prompting command (an
+        ssh host-key check, `wp db cli`) cannot read the probe's own stdin;
+        ``errors="replace"`` keeps non-UTF-8 output from raising a
+        UnicodeDecodeError no handler here catches; a new POSIX session lets a
+        timeout kill the whole process group, not just the direct child.
+        """
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=str(self.cwd),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                errors="replace",
+                start_new_session=os.name == "posix",
+            )
+        except FileNotFoundError:
+            return {"error": "executable_not_found"}
+        except PermissionError:
+            return {"error": "permission_denied"}
+        except OSError as exc:  # pragma: no cover - platform dependent
+            return {"error": f"os_error:{exc.__class__.__name__}"}
+        try:
+            stdout, stderr = proc.communicate(timeout=max(1.0, timeout))
+        except subprocess.TimeoutExpired:
+            _kill_process_tree(proc)
+            return {"error": "timeout"}
+        return {
+            "exit_code": proc.returncode,
+            "stdout": stdout or "",
+            "stderr": stderr or "",
+            "ok": proc.returncode == 0,
+        }
 
     def note_filesystem(self, claim: str, kind: str, target: str, present: bool) -> None:
         self.evidence.append(
@@ -1201,10 +1255,11 @@ def probe(
     *,
     allow_eval: bool = False,
     argv: list[str] | None = None,
+    budget_seconds: float | None = DEFAULT_BUDGET_SEC,
 ) -> dict[str, Any]:
     """Run the full probe and return a manifest. Never raises on a bare host."""
     manifest = _blank_manifest(argv or [], allow_eval, root)
-    runner = ProbeRunner(root, allow_eval)
+    runner = ProbeRunner(root, allow_eval, budget_seconds=budget_seconds)
 
     candidates = detect_candidates(runner, root)
     environment = manifest["environment"]
@@ -1360,6 +1415,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Off by default: it is the strongest safety boundary in the WP-CLI surface."
         ),
     )
+    parser.add_argument(
+        "--budget-seconds",
+        type=float,
+        default=DEFAULT_BUDGET_SEC,
+        help=(
+            "Wall-clock budget for all probe commands combined. Once exhausted, "
+            "remaining probes are recorded as global_budget_exhausted instead of run."
+        ),
+    )
     return parser
 
 
@@ -1369,7 +1433,12 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.path).resolve()
     recorded_argv = [Path(sys.argv[0]).name if sys.argv else "probe_wordpress_environment.py", *raw]
 
-    manifest = probe(root, allow_eval=args.allow_eval, argv=recorded_argv)
+    manifest = probe(
+        root,
+        allow_eval=args.allow_eval,
+        argv=recorded_argv,
+        budget_seconds=args.budget_seconds,
+    )
 
     try:
         errors = validate_against_schema(manifest, load_schema())

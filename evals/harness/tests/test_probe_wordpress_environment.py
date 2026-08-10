@@ -416,6 +416,73 @@ def test_planted_credentials_never_reach_the_manifest(tmp_path: Path) -> None:
     assert probe.REDACTED in serialized
 
 
+# --- Safety: subprocess hardening ---------------------------------------------
+
+
+def _install_fake_php(tmp_path: Path, payload: bytes) -> Path:
+    """Write a fake `php` that emits raw bytes and return its PATH directory."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    script = bin_dir / "php"
+    script.write_text(
+        f"#!{sys.executable}\nimport sys\nsys.stdout.buffer.write({payload!r})\n",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return bin_dir
+
+
+def test_non_utf8_tool_output_does_not_crash_the_probe(tmp_path: Path) -> None:
+    """A localized PHP notice in Latin-1 must degrade to U+FFFD, not kill the run.
+
+    UnicodeDecodeError subclasses ValueError, which none of the runner's
+    handlers catch; before errors="replace" this violated the never-crash
+    contract and left no manifest at all.
+    """
+    bin_dir = _install_fake_php(tmp_path, b"PHP 8.3.0 caf\xe9\n")
+    root = tmp_path / "site"
+    root.mkdir()
+
+    manifest = _run_probe(root, [str(bin_dir)])
+
+    assert _schema_errors(manifest) == []
+    assert manifest["environment"]["host"]["php"] == "8.3.0"
+    excerpts = [entry["stdout_excerpt"] for entry in manifest["evidence"] if entry["claim"] == "environment.host.php"]
+    assert any("caf�" in (excerpt or "") for excerpt in excerpts)
+
+
+def test_subprocess_call_site_is_defused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """stdin closed, decoding never raises, and a POSIX timeout can kill the group."""
+    captured: dict = {}
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args, **kwargs):  # noqa: ANN002, ANN003
+        captured.update(kwargs)
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(probe.subprocess, "Popen", recording_popen)
+    bin_dir = _install_fake_php(tmp_path, b"PHP 8.3.0\n")
+    monkeypatch.setenv("PATH", str(bin_dir))
+    runner = probe.ProbeRunner(tmp_path, allow_eval=False)
+
+    outcome = runner.run("test", ["php", "--version"])
+
+    assert outcome["ok"] is True
+    assert captured["stdin"] is subprocess.DEVNULL
+    assert captured["errors"] == "replace"
+    assert captured["start_new_session"] is (os.name == "posix")
+
+
+def test_global_budget_exhaustion_is_recorded_instead_of_run(tmp_path: Path) -> None:
+    runner = probe.ProbeRunner(tmp_path, allow_eval=False, budget_seconds=0)
+
+    outcome = runner.run("test", ["php", "--version"])
+
+    assert outcome["error"] == "global_budget_exhausted"
+    assert outcome["exit_code"] is None
+    assert runner.evidence[-1]["stderr_excerpt"] == "global_budget_exhausted"
+
+
 # --- Detection ---------------------------------------------------------------
 
 
