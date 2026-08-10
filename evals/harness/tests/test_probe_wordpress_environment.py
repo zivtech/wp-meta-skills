@@ -301,24 +301,75 @@ REQUIRE_TOOL_ENV = "WP_META_SKILLS_REQUIRE_TOOL"
 WP_ENV_PATH_ENV = "WP_META_SKILLS_WP_ENV_PATH"
 
 
-@pytest.mark.real_wp_env
-def test_scenario_c_live_wp_env_matches_the_golden_manifest() -> None:
-    """Opt in with WP_META_SKILLS_REQUIRE_TOOL=wp-env.
+def _live_wp_env_root(opt_in: str) -> Path:
+    """Fail-closed opt-in shared by the live wp-env tests.
 
-    Point WP_META_SKILLS_WP_ENV_PATH at the wp-env project root. It defaults to
-    the current working directory, which under pytest is the repo root - not a
-    wp-env project - so the default is only useful when the suite is invoked
-    from a project directory. Once opted in the test fails closed: a missing
-    tool is a failure, not a silent skip. Without the opt-in it reports exactly
-    how to request it.
+    WP_META_SKILLS_WP_ENV_PATH points at the wp-env project root. It defaults
+    to the current working directory, which under pytest is the repo root -
+    not a wp-env project - so the default is only useful when the suite is
+    invoked from a project directory. Once opted in the tests fail closed: a
+    missing tool is a failure, not a silent skip. Without the opt-in they
+    report exactly how to request it.
     """
     required = os.environ.get(REQUIRE_TOOL_ENV, "")
-    if "wp-env" not in required.split(","):
-        pytest.skip(f"set {REQUIRE_TOOL_ENV}=wp-env to run the live wp-env probe")
+    if opt_in not in required.split(","):
+        pytest.skip(f"set {REQUIRE_TOOL_ENV}={opt_in} to run the live wp-env probe")
     assert shutil.which("wp-env") or shutil.which("npx"), (
-        f"{REQUIRE_TOOL_ENV}=wp-env was requested but neither wp-env nor npx is on PATH"
+        f"{REQUIRE_TOOL_ENV}={opt_in} was requested but neither wp-env nor npx is on PATH"
     )
-    root = Path(os.environ.get(WP_ENV_PATH_ENV) or Path.cwd()).resolve()
+    return Path(os.environ.get(WP_ENV_PATH_ENV) or Path.cwd()).resolve()
+
+
+@pytest.mark.real_wp_env
+def test_scenario_c_live_wp_env_probe_invariants() -> None:
+    """Opt in with WP_META_SKILLS_REQUIRE_TOOL=wp-env.
+
+    CI's live-wp-env-probe job provisions a scratch wp-env project and runs
+    this against it, so the golden fixture stops being decoration. Only
+    environment-independent invariants belong here: exact golden equality
+    bakes in the recording machine's host toolchain and is the separate
+    opt-in below.
+    """
+    root = _live_wp_env_root("wp-env")
+
+    manifest = probe.probe(root, allow_eval=False, argv=["probe", "--path", "."])
+
+    assert _schema_errors(manifest) == []
+    assert probe.evidence_gaps(manifest) == []
+    assert manifest["environment"]["kind"] == "wp-env"
+    assert manifest["environment"]["wp_env_runtime"] == "docker"
+    assert manifest["wp_cli"]["status"] == "AVAILABLE"
+    assert manifest["capabilities"]["can_run_wp_cli"] is True
+    assert manifest["capabilities"]["can_run_plugin_check"] is True
+    assert manifest["wordpress"]["is_installed"] is True
+    assert manifest["wordpress"]["is_multisite"] is False
+    php_rows = [
+        entry for entry in manifest["evidence"] if entry["claim"] == "wordpress.php_version"
+    ]
+    assert php_rows, "php_version must be evidence-backed"
+    assert manifest["wordpress"]["php_version"] in php_rows[0]["stdout_excerpt"], (
+        "the reported PHP is the container's labeled wp --info answer"
+    )
+    assert any(entry["claim"] == "wp_cli.is_stable_release" for entry in manifest["evidence"])
+    info_row = next(entry for entry in manifest["evidence"] if entry["claim"] == "wp_cli")
+    assert "OS:\tLinux [REDACTED]" in info_row["stdout_excerpt"], (
+        "kernel build strings are host-identifying and must not reach excerpts"
+    )
+    codes = {entry["code"] for entry in manifest["blockers"]}
+    assert "manifest_self_check_failed" not in codes
+    assert "manifest_schema_invalid" not in codes
+
+
+@pytest.mark.real_wp_env
+def test_scenario_c_live_wp_env_matches_the_golden_manifest() -> None:
+    """Opt in with WP_META_SKILLS_REQUIRE_TOOL=wp-env-golden.
+
+    Byte-equality with the committed golden bakes in the recording machine's
+    host toolchain (host php/node/composer, the project's vendored
+    phpcs/phpstan), so this stronger check is for the recording machine;
+    CI runs the invariants test above instead.
+    """
+    root = _live_wp_env_root("wp-env-golden")
     # argv mirrors the golden's recorded invocation exactly, so the two
     # normalise to the same probe_argv. Passing str(root) here would instead
     # normalise to "<normalized>" and never match the recorded "." token.

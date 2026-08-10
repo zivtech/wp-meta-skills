@@ -35,6 +35,17 @@ python3 evals/harness/validate_wordpress_skill_output.py --skill wordpress-plann
 
 A probe is a snapshot, not a subscription. `generated_at` is stamped in UTC; treat a manifest older than the current session as stale and re-probe. The manifest establishes what can be run. It does not establish that anyone read the output, and it is not evidence of correctness.
 
+Additional flags: `--allow-remote` opts into validating a `.wp-cli.yml` ssh alias over SSH (off by default so a checked-in alias cannot make a fresh clone dial out to a third-party host — the manifest reports `remote_probing_requires_allow_remote` instead); `--budget-seconds` bounds the whole run's wall clock (default 300; exhausted probes record `global_budget_exhausted` rather than running); `--print` and `--out` compose, and `--print` without `--out` suppresses the default file.
+
+### Live Scenario C and golden re-recording
+
+Two fail-closed opt-ins drive the live wp-env tests in `evals/harness/tests/test_probe_wordpress_environment.py`:
+
+- `WP_META_SKILLS_REQUIRE_TOOL=wp-env` runs the environment-independent invariants against a live wp-env; CI's `live-wp-env-probe` job provisions a scratch project (`{"core": null, "plugins": ["https://downloads.wordpress.org/plugin/plugin-check.zip"], "testsEnvironment": false}`) with pinned `@wordpress/env@11.12.0` and runs exactly this.
+- `WP_META_SKILLS_REQUIRE_TOOL=wp-env-golden` additionally checks byte-equality with `evals/harness/tests/fixtures/capability_manifest/golden-wp-env-docker.json`. The golden bakes in the recording machine's host toolchain (host `php`/`node`/`composer` versions and the project's vendored `phpcs`/`phpstan`), so this check belongs on the recording machine, not in CI.
+
+Both take `WP_META_SKILLS_WP_ENV_PATH=<wp-env-project-root>`. To re-record the golden after an intentional manifest change: start the recording project's wp-env, run `probe(root, allow_eval=False, argv=["probe_wordpress_environment.py", "--path", "."])`, pass the result through `normalize_manifest`, and write it with `json.dumps(..., indent=2, sort_keys=True)` plus a trailing newline; then run the `wp-env-golden` opt-in to confirm equality before committing.
+
 ## Packet Gate
 
 Use this before spending critic or judge time on a saved executor response:

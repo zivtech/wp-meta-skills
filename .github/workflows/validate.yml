@@ -349,6 +349,68 @@ jobs:
           echo "isolated_runtime_seconds=${ISOLATED_RUNTIME_SECONDS:-unavailable}"
           docker system df || cleanup_status=1
           exit "$cleanup_status"
+  live-wp-env-probe:
+    name: Live wp-env capability probe (Scenario C)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions: {}
+    env:
+      CANARY_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      WP_ENV_VERSION: "11.12.0"
+    steps:
+      - name: Check out exact public commit without credentials
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$CANARY_COMMIT_SHA"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$CANARY_COMMIT_SHA"
+      - name: Set up exact Python without repository credentials
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version-file: ".python-version"
+          token: ""
+      - name: Set up exact uv without repository credentials or cache
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.9.27"
+          github-token: ""
+          enable-cache: false
+      - name: Sync locked validation dependencies
+        run: |
+          uv lock --check
+          uv sync --locked --extra test
+      - name: Provision and start a scratch wp-env project
+        run: |
+          node --version
+          scratch="$RUNNER_TEMP/wp-env-live-probe"
+          mkdir -p "$scratch"
+          printf '%s\n' '{"core": null, "plugins": ["https://downloads.wordpress.org/plugin/plugin-check.zip"], "testsEnvironment": false}' > "$scratch/.wp-env.json"
+          echo "WP_ENV_SCRATCH=$scratch" >> "$GITHUB_ENV"
+          cd "$scratch"
+          npx --yes "@wordpress/env@${WP_ENV_VERSION}" start
+      - name: Run the live Scenario C probe invariants
+        run: |
+          WP_META_SKILLS_REQUIRE_TOOL=wp-env \
+          WP_META_SKILLS_WP_ENV_PATH="$WP_ENV_SCRATCH" \
+            uv run --locked --extra test python -m pytest \
+              evals/harness/tests/test_probe_wordpress_environment.py \
+              -m real_wp_env -q
+      - name: Stop and remove the scratch wp-env
+        if: always()
+        run: |
+          set +e
+          cleanup_status=0
+          if test -n "${WP_ENV_SCRATCH:-}" && test -d "$WP_ENV_SCRATCH"; then
+            cd "$WP_ENV_SCRATCH"
+            printf 'y\n' | npx --yes "@wordpress/env@${WP_ENV_VERSION}" destroy || cleanup_status=1
+          fi
+          docker ps -aq --filter 'name=wp-env-live-probe' | xargs -r docker rm -f || cleanup_status=1
+          remaining=$(docker ps -aq --filter 'name=wp-env-live-probe') || cleanup_status=1
+          test -z "$remaining" || cleanup_status=1
+          docker system df || cleanup_status=1
+          exit "$cleanup_status"
+
   validate:
     runs-on: ubuntu-latest
     permissions:
