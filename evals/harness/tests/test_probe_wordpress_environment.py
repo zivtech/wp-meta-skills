@@ -625,6 +625,61 @@ def test_manifest_argv_fields_are_redacted(tmp_path: Path) -> None:
     ]
 
 
+# --- The prober's own output contract ------------------------------------------
+
+PROBER_SAMPLE_REPORT = """## Detected Environment
+
+wp-env with the docker runtime, marker `.wp-env.json`, validated by
+`wp-env run cli wp --info`. The probe oracle is
+`evals/harness/probe_wordpress_environment.py`.
+
+## Capability Summary
+
+can_run_wp_cli true (`wp cli version` answered WP-CLI 2.12.0);
+can_run_plugin_check true via `wp plugin check`; can_run_static_analysis true
+(phpcs and phpstan both answered `--version`).
+
+## Blockers
+
+mcp_adapter_absent (MAJOR): no MCP adapter plugin observed, so MCP
+reachability is outside scope of this run and stays unknown.
+
+## Evidence
+
+`wp plugin list --format=json` inventoried plugins; `wp core is-installed`
+exited 0. Every fact traces to an evidence entry by claim path.
+
+## Downstream Handoff
+
+Pass `--capability-manifest capability-manifest.json` to
+`validate_wordpress_skill_output.py` when validating wordpress-planner output.
+"""
+
+
+def test_prober_contract_is_registered() -> None:
+    """The one skill without a contract oracle is where the last defect
+    reached review; the prober's own output now has one."""
+    assert "wordpress-environment-probe" in output_oracle.CONTRACT_CHOICES
+    assert output_oracle.CONTRACTS["wordpress-environment-probe"]["role"] == "prober"
+
+
+def test_prober_output_contract_passes_a_conforming_report() -> None:
+    result = output_oracle.validate_output("wordpress-environment-probe", PROBER_SAMPLE_REPORT)
+
+    assert result["role"] == "prober"
+    assert result["pass"] is True, result["checks"]
+
+
+def test_prober_output_contract_fails_a_missing_heading() -> None:
+    truncated = PROBER_SAMPLE_REPORT.replace("## Downstream Handoff", "## Handoff")
+
+    result = output_oracle.validate_output("wordpress-environment-probe", truncated)
+
+    assert result["pass"] is False
+    failed = {check["id"] for check in result["checks"] if not check["passed"]}
+    assert "required_output_headings" in failed
+
+
 # --- Version truth: probed, never asserted from constants ---------------------
 
 

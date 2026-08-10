@@ -236,6 +236,20 @@ CRITIC_HEADINGS = {
     ],
 }
 
+# A prober measures the environment and writes no artifact but its own
+# capability manifest; its report restates the manifest rather than planning
+# work. Registered here so the prober's own output has a contract oracle —
+# the one skill without one is where the last defect reached review.
+PROBER_HEADINGS = {
+    "wordpress-environment-probe": [
+        "Detected Environment",
+        "Capability Summary",
+        "Blockers",
+        "Evidence",
+        "Downstream Handoff",
+    ],
+}
+
 CONTRACTS: dict[str, dict[str, Any]] = {}
 for skill_name, headings in PLANNER_HEADINGS.items():
     CONTRACTS[skill_name] = {"role": "planner", "headings": headings, "min_surfaces": 2, "needs_verdict": False}
@@ -243,6 +257,8 @@ for skill_name, headings in EXECUTOR_HEADINGS.items():
     CONTRACTS[skill_name] = {"role": "executor", "headings": headings, "min_surfaces": 3, "needs_verdict": False}
 for skill_name, headings in CRITIC_HEADINGS.items():
     CONTRACTS[skill_name] = {"role": "critic", "headings": headings, "min_surfaces": 2, "needs_verdict": True}
+for skill_name, headings in PROBER_HEADINGS.items():
+    CONTRACTS[skill_name] = {"role": "prober", "headings": headings, "min_surfaces": 2, "needs_verdict": False}
 
 ALIASES = {
     "wordpress-planner.block": "wordpress-block-planner",
