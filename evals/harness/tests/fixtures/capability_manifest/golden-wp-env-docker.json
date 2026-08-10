@@ -791,7 +791,6 @@
     "status": "AVAILABLE"
   },
   "wp_cli": {
-    "assumed_3x": false,
     "commands": {
       "ability": {
         "reason": "command_documented_but_not_in_stable_phar",

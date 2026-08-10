@@ -52,6 +52,9 @@ elif path == "core version":
     sys.stdout.write("7.0.3\\n")
 elif path.startswith("core is-installed"):
     raise SystemExit(0)
+elif path == "config get MULTISITE":
+    sys.stderr.write("Error: The constant or variable 'MULTISITE' is not defined.\\n")
+    raise SystemExit(1)
 elif path.startswith("option get"):
     sys.stdout.write("http://localhost:8888\\n")
 elif path.startswith("plugin list"):
@@ -65,7 +68,7 @@ elif path.startswith("eval"):
 raise SystemExit(0)
 """
 
-DEFAULT_BANNER = "OS:\tDarwin\nWP-CLI version:\t2.12.0\n"
+DEFAULT_BANNER = "OS:\tDarwin\nPHP version:\t8.3.7\nWP-CLI version:\t2.12.0\n"
 
 
 def _install_fake_wp(
@@ -179,6 +182,7 @@ def test_scenario_b_documented_command_absent_from_stable_phar(tmp_path: Path) -
     assert manifest["wp_cli"]["status"] == "AVAILABLE"
     assert manifest["wp_cli"]["version"] == "2.12.0"
     assert manifest["wp_cli"]["is_stable_release"] is True
+    assert "assumed_3x" not in manifest["wp_cli"], "dead field: written false, never set true"
     ability = manifest["wp_cli"]["commands"]["ability"]
     assert ability["status"] == "UNAVAILABLE"
     assert ability["reason"] == "command_documented_but_not_in_stable_phar"
@@ -442,11 +446,18 @@ def test_manifest_records_which_fact_path_was_taken(tmp_path: Path) -> None:
     with_eval = _run_probe(root, [str(bin_dir)], allow_eval=True)
 
     assert without["allow_eval"] is False
-    assert "facts_from_core_version_fallback" in without["wordpress"]["notes"]
+    assert "facts_from_wp_cli_read_probes" in without["wordpress"]["notes"]
     assert "facts_from_wp_eval" not in without["wordpress"]["notes"]
     assert not any(
         "eval" in entry["argv"] for entry in without["evidence"]
     ), "eval must not run when --allow-eval is off"
+    assert without["wordpress"]["php_version"] == "8.3.7", (
+        "without eval, PHP comes from the wp --info label — the container's "
+        "interpreter — never from host php --version"
+    )
+    assert without["wordpress"]["is_multisite"] is False, (
+        "`wp config get MULTISITE` exiting 1 with 'not defined' is a probed single-site answer"
+    )
 
     assert with_eval["allow_eval"] is True
     assert "facts_from_wp_eval" in with_eval["wordpress"]["notes"]
@@ -605,6 +616,64 @@ def test_manifest_argv_fields_are_redacted(tmp_path: Path) -> None:
         "~/site/vendor/bin/phpcs",
         "--version",
     ]
+
+
+# --- Version truth: probed, never asserted from constants ---------------------
+
+
+def test_is_stable_release_is_probed_from_the_version_string(tmp_path: Path) -> None:
+    """WP-CLI 2.13.0 is not unstable just because a frozen constant said 2.12.0."""
+    root = _project(tmp_path)
+    bin_dir = _install_fake_wp(
+        tmp_path, cli_version="2.13.0", banner="OS:\tDarwin\nWP-CLI version:\t2.13.0\n"
+    )
+
+    manifest = _run_probe(root, [str(bin_dir)])
+
+    assert manifest["wp_cli"]["version"] == "2.13.0"
+    assert manifest["wp_cli"]["is_stable_release"] is True
+
+
+def test_a_prerelease_suffix_reports_not_stable(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    bin_dir = _install_fake_wp(
+        tmp_path,
+        cli_version="2.13.0-alpha-6d4736d",
+        banner="OS:\tDarwin\nWP-CLI version:\t2.13.0-alpha-6d4736d\n",
+    )
+
+    manifest = _run_probe(root, [str(bin_dir)])
+
+    assert manifest["wp_cli"]["version"] == "2.13.0"
+    assert manifest["wp_cli"]["is_stable_release"] is False
+
+
+@pytest.mark.parametrize(
+    "version,expected",
+    [
+        ("1.0.0-beta.2", True),
+        ("0.5.0", True),
+        ("1.2.0", False),
+        (None, None),
+    ],
+)
+def test_mcp_adapter_prerelease_comes_from_the_version_string(
+    tmp_path: Path, version: str | None, expected: bool | None
+) -> None:
+    """parse_version discards suffixes, so 1.0.0-beta.2 must not report stable;
+    and a missing version is no data, never prerelease=false."""
+    manifest = probe._blank_manifest([], False, tmp_path)
+    manifest["wp_cli"]["status"] = "AVAILABLE"
+    manifest["wordpress"]["status"] = "AVAILABLE"
+    manifest["wordpress"]["active_plugins"] = [
+        {"name": "mcp-adapter", "version": version, "status": "active"}
+    ]
+    runner = probe.ProbeRunner(tmp_path, allow_eval=False)
+
+    probe._probe_mcp(runner, manifest)
+
+    assert manifest["mcp"]["adapter"]["present"] is True
+    assert manifest["mcp"]["adapter"]["prerelease"] is expected
 
 
 # --- Safety: subprocess hardening ---------------------------------------------

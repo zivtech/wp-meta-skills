@@ -143,10 +143,9 @@
         "status": {"$ref": "#/$defs/status"},
         "version": {"type": ["string", "null"]},
         "reason": {"$ref": "#/$defs/reason"},
-        "is_stable_release": {"type": ["boolean", "null"]},
-        "assumed_3x": {
-          "type": "boolean",
-          "description": "Always false. The probe reports the version it finds and never assumes a 3.x release exists."
+        "is_stable_release": {
+          "type": ["boolean", "null"],
+          "description": "Probed from the reported version string: true when it carries no prerelease suffix, false when it does, null when no version was found. Never derived from equality with a frozen known-stable constant."
         },
         "commands": {
           "type": "object",

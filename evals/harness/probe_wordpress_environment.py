@@ -51,11 +51,6 @@ EXCERPT_LIMIT = 2000
 # expire becomes stale guidance, which is the exact failure this probe exists
 # to prevent.
 
-# Delete this constant once a stable WP-CLI release later than 2.12.0 is
-# announced on make.wordpress.org/cli, and re-derive the stable floor from that
-# announcement.
-KNOWN_STABLE_WP_CLI = "2.12.0"
-
 # Delete this set once `ability` and `block` ship in a stable WP-CLI phar.
 # developer.wordpress.org/cli/commands/ is generated from trunk and documents
 # both; neither is in the 2.12.0 phar.
@@ -76,11 +71,13 @@ WPCS_REQUIRED_PHPCS = "3.13.5"
 
 # Delete entries as each is revived upstream. All three still rank well in
 # search results, which is why they are worth flagging on sight.
-DEPRECATED_TOOLING = {
-    "wordpress-mcp": "deprecated_tooling_detected",  # Automattic/wordpress-mcp archived 2026-01-19
-    "wp-feature-api": "deprecated_tooling_detected",  # superseded by the Abilities API
-    "wp-now": "deprecated_tooling_detected",  # deprecated 2026-06-08 for @wp-playground/cli
-}
+DEPRECATED_TOOLING = frozenset(
+    {
+        "wordpress-mcp",  # Automattic/wordpress-mcp archived 2026-01-19
+        "wp-feature-api",  # superseded by the Abilities API
+        "wp-now",  # deprecated 2026-06-08 for @wp-playground/cli
+    }
+)
 
 # Delete this once wordpress/mcp-adapter tags 1.0.0.
 MCP_ADAPTER_PRERELEASE_CEILING = 1
@@ -100,6 +97,7 @@ READ_ONLY_WP_SUBCOMMANDS = frozenset(
         "cli version",
         "core version",
         "core is-installed",
+        "config get MULTISITE",
         "option get siteurl",
         "option get home",
         "plugin list",
@@ -189,7 +187,6 @@ NON_FACT_KEYS = frozenset(
         "detail",
         "remediation_hint",
         "affects",
-        "assumed_3x",  # a self-declaration the probe makes, not a probed fact
     }
 )
 TRACEABLE_SECTIONS = ("wp_cli", "wordpress", "abilities", "mcp", "verification_tools")
@@ -406,6 +403,20 @@ class ProbeRunner:
             "stderr": stderr or "",
             "ok": proc.returncode == 0,
         }
+
+    def note_derived(self, claim: str, argv: list[str], value: Any) -> None:
+        """Record a fact derived from an already-captured command's output, so
+        every fact leaf traces to a claim of its own."""
+        self.evidence.append(
+            {
+                "claim": claim,
+                "argv": _redact_argv(argv),
+                "exit_code": 0,
+                "stdout_excerpt": _excerpt(str(value)),
+                "stderr_excerpt": "",
+                "duration_ms": 0,
+            }
+        )
 
     def note_filesystem(self, claim: str, kind: str, target: str, present: bool) -> None:
         self.evidence.append(
@@ -693,6 +704,12 @@ def evidence_gaps(manifest: dict[str, Any]) -> list[str]:
 # --- Parsing helpers ---------------------------------------------------------
 
 VERSION_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
+# Group 4 is the prerelease suffix: `2.13.0-alpha-6d4736d`, `1.0.0-beta.2`.
+VERSION_TOKEN_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?(-[0-9A-Za-z][0-9A-Za-z.\-]*)?")
+# Labeled `wp --info` lines. The container's answers live here; the host's
+# interpreter is a different runtime entirely for ddev/lando/wp-env.
+WP_INFO_PHP_VERSION_RE = re.compile(r"(?im)^PHP version:[ \t]*(\S+)[ \t]*$")
+WP_INFO_WP_CLI_VERSION_RE = re.compile(r"(?im)^WP-CLI version:[ \t]*(\S+)[ \t]*$")
 
 
 def parse_version(text: str | None) -> tuple[int, ...] | None:
@@ -709,6 +726,23 @@ def _version_string(text: str | None) -> str | None:
         return None
     match = VERSION_RE.search(text)
     return match.group(0) if match else None
+
+
+def _version_token(text: str | None) -> str | None:
+    """Return the first version token including any prerelease suffix."""
+    if not text:
+        return None
+    match = VERSION_TOKEN_RE.search(text)
+    return match.group(0) if match else None
+
+
+def _is_prerelease_token(token: str) -> bool:
+    """A version string is a prerelease iff it carries a suffix. This is a
+    probe of the string itself, not a comparison against a frozen constant:
+    exact equality with a known-stable version misreports every release that
+    ships after the constant was written."""
+    match = VERSION_TOKEN_RE.fullmatch(token)
+    return bool(match and match.group(4))
 
 
 def _json_payload(stdout: str) -> Any:
@@ -750,7 +784,6 @@ def _blank_manifest(argv: list[str], allow_eval: bool, cwd: Path) -> dict[str, A
             "version": None,
             "reason": None,
             "is_stable_release": None,
-            "assumed_3x": False,
             "commands": {},
             "notes": [],
         },
@@ -837,38 +870,55 @@ def _probe_wp_cli(
     runner: ProbeRunner,
     manifest: dict[str, Any],
     prefix: list[str] | None,
-) -> None:
+) -> dict[str, Any] | None:
+    """Probe WP-CLI itself; returns the `--info` outcome for reuse downstream
+    (its labeled lines carry the container's PHP version)."""
     wp_cli = manifest["wp_cli"]
     if prefix is None:
         wp_cli["status"] = "UNAVAILABLE"
         wp_cli["reason"] = "no_invocation_prefix_detected"
-        return
+        return None
 
     info = runner.run("wp_cli", [*prefix, "--info"])
     if not info["ok"]:
         wp_cli["status"] = "UNAVAILABLE"
         wp_cli["reason"] = "wp_info_failed" if info["error"] is None else info["error"]
-        return
+        return None
 
     version_result = runner.run("wp_cli.version", [*prefix, "cli", "version"])
-    version = _version_string(version_result["stdout"]) if version_result["ok"] else None
-    if version is None:
-        version = _version_string(info["stdout"])
-        if version is not None:
+    version_token: str | None = None
+    version_argv = [*prefix, "cli", "version"]
+    if version_result["ok"]:
+        version_token = _version_token(version_result["stdout"])
+    if version_token is None:
+        # Parse the labeled line, not the whole banner: the first bare version
+        # string in `--info` output is usually the kernel's.
+        labeled = WP_INFO_WP_CLI_VERSION_RE.search(info["stdout"])
+        version_token = _version_token(labeled.group(1)) if labeled else None
+        if version_token is not None:
+            version_argv = [*prefix, "--info"]
             runner.evidence.append(
                 {
                     "claim": "wp_cli.version",
-                    "argv": _redact_argv([*prefix, "--info"]),
+                    "argv": _redact_argv(version_argv),
                     "exit_code": info["exit_code"],
                     "stdout_excerpt": _excerpt(info["stdout"]),
                     "stderr_excerpt": "",
                     "duration_ms": 0,
                 }
             )
+    version = _version_string(version_token)
     wp_cli["status"] = "AVAILABLE"
     wp_cli["version"] = version
-    wp_cli["is_stable_release"] = version == KNOWN_STABLE_WP_CLI if version else None
-    wp_cli["assumed_3x"] = False
+    # Probed from the version string itself: a prerelease suffix means a
+    # nightly/alpha build; no suffix means a release. Never an equality check
+    # against a frozen "known stable" constant, which misreports every release
+    # that ships after the constant was written.
+    wp_cli["is_stable_release"] = (
+        None if version_token is None else not _is_prerelease_token(version_token)
+    )
+    if version_token is not None:
+        runner.note_derived("wp_cli.is_stable_release", version_argv, version_token)
 
     parsed = parse_version(version)
     if parsed and parsed[0] >= 3 and WP_CLI_3X_IS_UNVERIFIED:
@@ -886,6 +936,7 @@ def _probe_wp_cli(
         else:
             reason = "package_not_installed"
         wp_cli["commands"][command] = {"status": "UNAVAILABLE", "reason": reason}
+    return info
 
 
 def _probe_wordpress(
@@ -893,6 +944,7 @@ def _probe_wordpress(
     manifest: dict[str, Any],
     prefix: list[str] | None,
     allow_eval: bool,
+    wp_info: dict[str, Any] | None = None,
 ) -> None:
     wordpress = manifest["wordpress"]
     if manifest["wp_cli"]["status"] != "AVAILABLE" or prefix is None:
@@ -910,31 +962,37 @@ def _probe_wordpress(
             'echo json_encode(["php"=>PHP_VERSION,"wp"=>get_bloginfo("version"),'
             '"multisite"=>is_multisite()]);'
         )
-        facts = runner.run(
-            "wordpress.php_version",
-            [*prefix, "eval", payload_script],
-            eval_exception=True,
-        )
+        facts_argv = [*prefix, "eval", payload_script]
+        facts = runner.run("wordpress.php_version", facts_argv, eval_exception=True)
         payload = _json_payload(facts["stdout"]) if facts["ok"] else None
         if isinstance(payload, dict):
             wordpress["php_version"] = payload.get("php")
             wordpress["core_version"] = payload.get("wp") or wordpress["core_version"]
             wordpress["is_multisite"] = bool(payload.get("multisite"))
+            runner.note_derived(
+                "wordpress.is_multisite", facts_argv, payload.get("multisite")
+            )
             wordpress["notes"].append("facts_from_wp_eval")
     else:
-        wordpress["php_version"] = manifest["environment"]["host"].get("php")
-        if wordpress["php_version"] is not None:
-            runner.evidence.append(
-                {
-                    "claim": "wordpress.php_version",
-                    "argv": ["php", "--version"],
-                    "exit_code": 0,
-                    "stdout_excerpt": "host php version used as lower-fidelity fallback",
-                    "stderr_excerpt": "",
-                    "duration_ms": 0,
-                }
+        # The environment's own answer, not the host interpreter's: for
+        # ddev/lando/wp-env those are different runtimes, and reporting the
+        # host's PHP as WordPress's PHP is a confidently wrong fact.
+        labeled = WP_INFO_PHP_VERSION_RE.search((wp_info or {}).get("stdout") or "")
+        if labeled:
+            wordpress["php_version"] = _version_string(labeled.group(1))
+            runner.note_derived(
+                "wordpress.php_version", [*prefix, "--info"], labeled.group(0)
             )
-        wordpress["notes"].append("facts_from_core_version_fallback")
+        multisite = runner.run(
+            "wordpress.is_multisite", [*prefix, "config", "get", "MULTISITE"]
+        )
+        if multisite["ok"]:
+            wordpress["is_multisite"] = multisite["stdout"].strip().lower() in {"1", "true"}
+        elif multisite["error"] is None and "not defined" in (multisite["stderr"] or "").lower():
+            # `wp config get` exits 1 with "'MULTISITE' is not defined" on a
+            # single site; any other failure stays None rather than guessing.
+            wordpress["is_multisite"] = False
+        wordpress["notes"].append("facts_from_wp_cli_read_probes")
 
     for field, option in (("siteurl", "siteurl"), ("home", "home")):
         result = runner.run(f"wordpress.{field}", [*prefix, "option", "get", option])
@@ -1079,11 +1137,19 @@ def _probe_mcp(runner: ProbeRunner, manifest: dict[str, Any]) -> None:
         return
 
     version = adapter.get("version")
-    parsed = parse_version(version)
+    token = _version_token(str(version)) if version else None
+    parsed = parse_version(token)
+    # None means "no version to judge", never "not a prerelease": asserting
+    # prerelease=false from no data is the constants-over-probes failure mode.
+    prerelease: bool | None = None
+    if token is not None:
+        prerelease = _is_prerelease_token(token) or bool(
+            parsed and parsed[0] < MCP_ADAPTER_PRERELEASE_CEILING
+        )
     mcp["adapter"] = {
         "present": True,
         "version": version,
-        "prerelease": bool(parsed and parsed[0] < MCP_ADAPTER_PRERELEASE_CEILING),
+        "prerelease": prerelease,
     }
     if mcp["adapter"]["prerelease"]:
         mcp["notes"].append("mcp_adapter_prerelease")
@@ -1380,8 +1446,9 @@ def probe(
         environment["kind"] = "UNKNOWN"
         environment["invocation_prefix"] = None
         prefix = None
+        wp_info = None
     else:
-        _probe_wp_cli(runner, manifest, prefix)
+        wp_info = _probe_wp_cli(runner, manifest, prefix)
         if manifest["wp_cli"]["status"] == "AVAILABLE":
             environment["status"] = "AVAILABLE"
             environment["kind"] = kind
@@ -1403,7 +1470,7 @@ def probe(
                     None,
                 )
 
-    _probe_wordpress(runner, manifest, prefix, allow_eval)
+    _probe_wordpress(runner, manifest, prefix, allow_eval, wp_info=wp_info)
     _probe_abilities(runner, manifest, prefix, allow_eval)
     _probe_mcp(runner, manifest)
     _probe_verification_tools(runner, manifest, root, prefix)
