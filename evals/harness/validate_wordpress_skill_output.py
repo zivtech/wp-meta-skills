@@ -743,87 +743,246 @@ def load_capability_manifest(path: Path) -> dict[str, Any]:
     return payload
 
 
-CODE_REGION_RE = re.compile(r"```[^\n]*\n(.*?)```|`([^`\n]+)`", re.DOTALL)
+# Command instructions live in code markup, but code markup is also how a report
+# *names* something it cannot run. Both directions matter: missing a real
+# instruction ships a broken plan, and flagging a correct "this is unavailable"
+# note punishes the negative-space reporting that check_negative_space rewards.
+# So extraction is deliberately wide and polarity is judged per occurrence.
+
+_FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)")
+_FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*$")
+_INDENTED_CODE_RE = re.compile(r"^(?: {4,}|\t)(\S.*)$")
+_INLINE_CODE_RE = re.compile(r"`+([^`]+)`+", re.DOTALL)
+_HEADING_RE = re.compile(r"^ {0,3}#{1,6}\s+(.*?)\s*$")
+
+SHELL_FENCE_LANGUAGES = frozenset(
+    {"sh", "bash", "shell", "zsh", "console", "shell-session", "terminal", "cmd", "wp-cli"}
+)
+
+# A section that exists to report what cannot be run. Naming a command here is
+# documentation, not instruction. Shell-tagged fences are still treated as
+# instructions even inside these sections -- a tagged fence is unambiguous.
+NON_INSTRUCTIONAL_SECTIONS = (
+    "blocker", "negative space", "unavailable", "capability summary",
+    "capability manifest", "evidence", "not available", "out of scope",
+    "limitation", "unresolved", "unsupported",
+)
+
+# Same-line cues that invert an occurrence from instruction to description.
+NEGATION_CUES = (
+    "do not", "don't", "never ", "cannot", "can't", "unavailable", "not available",
+    "is absent", "absent on", "not in stable", "unsupported", "would fail",
+    "avoid ", "instead of", "not probed", "blocked", "unknown", "n/a",
+    "does not exist", "not registered", "no such", "requires wp-cli",
+)
+
+
+@dataclass(frozen=True)
+class _Occurrence:
+    """One command mention plus the context needed to judge whether it is an order."""
+
+    line: str
+    section: str
+    fence_language: str | None
+
+    @property
+    def in_shell_fence(self) -> bool:
+        return self.fence_language in SHELL_FENCE_LANGUAGES
+
+    @property
+    def is_instruction(self) -> bool:
+        lowered = self.line.lower()
+        if any(cue in lowered for cue in NEGATION_CUES):
+            return False
+        if self.in_shell_fence:
+            return True
+        return not any(marker in self.section for marker in NON_INSTRUCTIONAL_SECTIONS)
+
+
+def _code_occurrences(text: str) -> list[tuple[str, str, str, str | None]]:
+    """(code_text, containing_line, section_heading, fence_language) per span."""
+    occurrences: list[tuple[str, str, str, str | None]] = []
+    fence_char: str | None = None
+    fence_len = 0
+    fence_lang: str | None = None
+    section = ""
+
+    for line in text.splitlines():
+        if fence_char is not None:
+            closing = _FENCE_CLOSE_RE.match(line)
+            if closing and closing.group(1)[0] == fence_char and len(closing.group(1)) >= fence_len:
+                fence_char, fence_len, fence_lang = None, 0, None
+                continue
+            occurrences.append((line, line, section, fence_lang))
+            continue
+
+        opening = _FENCE_OPEN_RE.match(line)
+        if opening:
+            fence_char = opening.group(1)[0]
+            fence_len = len(opening.group(1))
+            fence_lang = (opening.group(2) or "").lower() or None
+            continue
+
+        heading = _HEADING_RE.match(line)
+        if heading:
+            section = heading.group(1).lower()
+            continue
+
+        indented = _INDENTED_CODE_RE.match(line)
+        if indented:
+            occurrences.append((indented.group(1), line, section, None))
+            continue
+
+        for match in _INLINE_CODE_RE.finditer(line):
+            occurrences.append((match.group(1), line, section, None))
+
+    return occurrences
+
+
+# ``wp`` may be an absolute path, may be preceded by an environment prefix, and
+# may be capitalised in prose. The old lookbehind rejected ``/`` outright, so
+# ``/usr/local/bin/wp ability list`` was invisible.
 WP_CLI_INVOCATION_RE = re.compile(
-    r"(?<![\w./-])wp\b(?:\s+@[\w.-]+)?(?:\s+--[\w-]+(?:=\S+)?)*\s+([a-z][a-z0-9-]*)"
+    r"(?:(?<=^)|(?<=[\s;&|(]))(?:[\w./-]*/)?wp(?:\.phar)?\b"
+    r"(?:\s+@[\w.-]+)?(?:\s+--[\w-]+(?:=\S+)?)*"
+    r"\s+([a-z][a-z0-9-]*)",
+    re.IGNORECASE,
 )
 VERIFICATION_TOOL_INVOCATIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("plugin_check", re.compile(r"(?<![\w./-])wp\b[^\n`]*?\bplugin\s+check\b")),
-    ("phpcs", re.compile(r"(?<![\w./-])(?:vendor/bin/)?phpcs\b")),
-    ("phpstan", re.compile(r"(?<![\w./-])(?:vendor/bin/)?phpstan\b")),
-    ("phpunit", re.compile(r"(?<![\w./-])(?:vendor/bin/)?phpunit\b")),
-    ("wp_env", re.compile(r"(?<![\w./-])(?:npx\s+)?(?:@wordpress/env|wp-env)\b")),
-    ("playground_cli", re.compile(r"@wp-playground/cli")),
+    ("plugin_check", re.compile(r"(?<![\w./-])wp\b[^\n`]*?\bplugin\s+check\b", re.I)),
+    ("wpcs", re.compile(r"--standard=(?:WordPress|WordPress-Core|WordPress-Docs|WordPress-Extra)\b", re.I)),
+    ("phpcs", re.compile(r"(?<![\w./-])(?:[\w./-]*/)?phpcs\b", re.I)),
+    ("phpstan", re.compile(r"(?<![\w./-])(?:[\w./-]*/)?phpstan\b", re.I)),
+    ("phpunit", re.compile(r"(?<![\w./-])(?:[\w./-]*/)?phpunit\b", re.I)),
+    ("wp_env", re.compile(r"(?<![\w./-])(?:npx\s+)?(?:@wordpress/env|wp-env)\b", re.I)),
+    ("playground_cli", re.compile(r"@wp-playground/cli", re.I)),
 )
 UNRESOLVED_STATUSES = frozenset({"BLOCKED", "UNKNOWN"})
 
+# Bundled with the WP-CLI phar, so "not probed" carries no risk when the CLI
+# itself is AVAILABLE. Anything outside this set needs its own package and must
+# be probed before it is instructed.
+BUNDLED_WP_CLI_ROOTS = frozenset(
+    {
+        "cache", "checksum", "cli", "comment", "config", "core", "cron", "db", "embed",
+        "eval", "eval-file", "export", "help", "i18n", "import", "language",
+        "maintenance-mode", "media", "menu", "network", "option", "package", "plugin",
+        "post", "post-type", "rewrite", "role", "scaffold", "search-replace", "server",
+        "shell", "site", "super-admin", "taxonomy", "term", "theme", "transient", "user",
+        "widget",
+    }
+)
 
-def _code_regions(text: str) -> list[str]:
-    """Return fenced-block and inline-code spans, where commands actually live."""
-    return [
-        (match.group(1) or match.group(2) or "")
-        for match in CODE_REGION_RE.finditer(text)
-    ]
+# Tokens that show an instruction routes through the detected environment rather
+# than assuming a bare ``wp`` on PATH.
+_PREFIX_ESCAPE_TOKENS = ("--path=", "--ssh=", "@")
 
 
-def _instructed_wp_subcommands(regions: list[str]) -> list[str]:
-    found: list[str] = []
-    for region in regions:
-        for match in WP_CLI_INVOCATION_RE.finditer(region):
-            root = match.group(1)
-            if root and root not in found:
-                found.append(root)
+def _instructed_wp_subcommands(
+    occurrences: list[tuple[str, str, str, str | None]],
+) -> list[tuple[str, str]]:
+    """Return (subcommand_root, containing_line) for genuine instructions only."""
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for code, line, section, lang in occurrences:
+        occurrence = _Occurrence(line, section, lang)
+        if not occurrence.is_instruction:
+            continue
+        for match in WP_CLI_INVOCATION_RE.finditer(code):
+            root = (match.group(1) or "").lower()
+            if root and root not in seen:
+                seen.add(root)
+                found.append((root, line))
     return found
 
 
-def _instructed_verification_tools(regions: list[str]) -> list[str]:
+def _instructed_verification_tools(
+    occurrences: list[tuple[str, str, str, str | None]],
+) -> list[str]:
     found: list[str] = []
     for tool, pattern in VERIFICATION_TOOL_INVOCATIONS:
         if tool in found:
             continue
-        if any(pattern.search(region) for region in regions):
-            found.append(tool)
+        for code, line, section, lang in occurrences:
+            if not _Occurrence(line, section, lang).is_instruction:
+                continue
+            if pattern.search(code):
+                found.append(tool)
+                break
     return found
+
+
+def _prefix_is_bare_wp(manifest: dict[str, Any]) -> tuple[bool, str]:
+    environment = (
+        manifest.get("environment") if isinstance(manifest.get("environment"), dict) else {}
+    )
+    prefix = environment.get("invocation_prefix")
+    if not isinstance(prefix, list) or not prefix:
+        return True, ""
+    tokens = [str(token) for token in prefix]
+    if len(tokens) == 1 and tokens[0].endswith("wp"):
+        return True, ""
+    return False, tokens[0]
 
 
 def check_capability_grounding(text: str, manifest: dict[str, Any]) -> Check:
     """Fail any output that instructs a command the manifest marks unavailable.
 
     BLOCKED and UNKNOWN never satisfy a requirement, so they are surfaced as
-    named unresolved states rather than passing silently.
+    named unresolved states rather than passing silently. Naming an unavailable
+    command in order to report it as unavailable is not an instruction and does
+    not fail -- see ``_Occurrence.is_instruction``.
     """
-    regions = _code_regions(text)
+    occurrences = _code_occurrences(text)
     failures: list[str] = []
     unresolved: list[str] = []
 
     wp_cli = manifest.get("wp_cli") if isinstance(manifest.get("wp_cli"), dict) else {}
     commands = wp_cli.get("commands") if isinstance(wp_cli.get("commands"), dict) else {}
-    subcommands = _instructed_wp_subcommands(regions)
+    instructed = _instructed_wp_subcommands(occurrences)
+    subcommands = [root for root, _ in instructed]
     cli_status = wp_cli.get("status")
+    bare_ok, prefix_token = _prefix_is_bare_wp(manifest)
 
     if subcommands and cli_status == "UNAVAILABLE":
         reason = wp_cli.get("reason") or "wp_cli_unavailable"
-        failures.append(f"wp-cli unavailable ({reason}) but output instructs: {', '.join(subcommands)}")
+        failures.append(
+            f"wp-cli unavailable ({reason}) but output instructs: {', '.join(sorted(set(subcommands)))}"
+        )
     else:
         if subcommands and cli_status in UNRESOLVED_STATUSES:
             unresolved.append(f"wp_cli.status={cli_status}")
-        for subcommand in subcommands:
-            state = commands.get(subcommand)
+        for root, line in instructed:
+            state = commands.get(root)
             if not isinstance(state, dict):
-                unresolved.append(f"wp {subcommand}: not probed")
+                if cli_status == "AVAILABLE" and root in BUNDLED_WP_CLI_ROOTS:
+                    continue
+                unresolved.append(f"wp {root}: not probed")
                 continue
             status = state.get("status")
             if status == "UNAVAILABLE":
-                failures.append(f"wp {subcommand}: {state.get('reason') or 'UNAVAILABLE'}")
+                failures.append(f"wp {root}: {state.get('reason') or 'UNAVAILABLE'}")
             elif status in UNRESOLVED_STATUSES:
-                unresolved.append(f"wp {subcommand}: {status}")
+                unresolved.append(f"wp {root}: {status}")
+
+        if not bare_ok:
+            for root, line in instructed:
+                lowered = line.lower()
+                if prefix_token.lower() in lowered:
+                    continue
+                if any(token in lowered for token in _PREFIX_ESCAPE_TOKENS):
+                    continue
+                failures.append(
+                    f"wp {root}: bare_wp_does_not_reach_wp_cli "
+                    f"(invocation_prefix starts with {prefix_token!r})"
+                )
 
     tools = (
         manifest.get("verification_tools")
         if isinstance(manifest.get("verification_tools"), dict)
         else {}
     )
-    for tool in _instructed_verification_tools(regions):
+    for tool in _instructed_verification_tools(occurrences):
         state = tools.get(tool)
         if not isinstance(state, dict):
             unresolved.append(f"{tool}: not probed")

@@ -493,3 +493,157 @@ def test_schema_declares_the_load_bearing_rule() -> None:
 
     assert "never satisfy" in schema["description"]
     assert schema["$defs"]["status"]["enum"] == ["AVAILABLE", "UNAVAILABLE", "BLOCKED", "UNKNOWN"]
+
+
+# ---------------------------------------------------------------------------
+# Capability grounding: polarity, extraction surface, and invocation prefix.
+#
+# The gate has to be wrong in neither direction. Missing a real instruction
+# ships a broken plan; failing a correct "this is unavailable" note punishes the
+# negative-space reporting that check_negative_space rewards, and the prober's
+# own SKILL.md requires naming every blocked reason the manifest carries.
+# ---------------------------------------------------------------------------
+
+_ABILITY_UNAVAILABLE = {
+    "environment": {"invocation_prefix": ["wp"]},
+    "wp_cli": {
+        "status": "AVAILABLE",
+        "commands": {
+            "ability": {
+                "status": "UNAVAILABLE",
+                "reason": "command_documented_but_not_in_stable_phar",
+            },
+            "plugin": {"status": "AVAILABLE"},
+        },
+    },
+    "verification_tools": {},
+}
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        pytest.param(
+            "`wp ability list` is UNAVAILABLE with reason "
+            "`command_documented_but_not_in_stable_phar`.",
+            id="inline-report-of-unavailability",
+        ),
+        pytest.param("Do not run `wp ability list`.", id="explicit-prohibition"),
+        pytest.param(
+            "## Blockers\n\n| command | status |\n| --- | --- |\n"
+            "| `wp ability list` | UNAVAILABLE |\n",
+            id="blockers-table",
+        ),
+        pytest.param(
+            "## Negative Space\n\nThe `wp ability list` surface is absent on 2.12.0.\n",
+            id="negative-space-section",
+        ),
+        pytest.param(
+            "## Capability Summary\n\n`wp ability` is not probed on this host.\n",
+            id="capability-summary-section",
+        ),
+    ],
+)
+def test_naming_an_unavailable_command_to_report_it_is_not_an_instruction(candidate: str) -> None:
+    check = output_oracle.check_capability_grounding(candidate, _ABILITY_UNAVAILABLE)
+
+    assert check.passed is True, check.detail
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        pytest.param("```sh\nwp ability list\n```", id="backtick-fence"),
+        pytest.param("~~~sh\nwp ability list\n~~~", id="tilde-fence"),
+        pytest.param("Run this:\n\n    wp ability list\n", id="indented-block"),
+        pytest.param("```sh\n/usr/local/bin/wp ability list\n```", id="absolute-path"),
+        pytest.param("```sh\nWP ability list\n```", id="uppercase"),
+        pytest.param("Run `wp ability list` to enumerate abilities.", id="inline-imperative"),
+        pytest.param("```sh\n$ wp ability list\n```", id="shell-prompt"),
+        pytest.param("```\nwp  ability  list\n```", id="untagged-fence-double-space"),
+    ],
+)
+def test_instructing_an_unavailable_command_fails_on_every_markup_form(candidate: str) -> None:
+    check = output_oracle.check_capability_grounding(candidate, _ABILITY_UNAVAILABLE)
+
+    assert check.passed is False, candidate
+    assert "command_documented_but_not_in_stable_phar" in check.detail
+
+
+def test_a_shell_tagged_fence_is_an_instruction_even_inside_a_blockers_section() -> None:
+    """A tagged fence is unambiguous, so section exemption must not cover it."""
+    candidate = "## Blockers\n\n```sh\nwp ability list\n```\n"
+
+    check = output_oracle.check_capability_grounding(candidate, _ABILITY_UNAVAILABLE)
+
+    assert check.passed is False
+    assert "command_documented_but_not_in_stable_phar" in check.detail
+
+
+def test_bundled_commands_do_not_warn_when_the_cli_is_available() -> None:
+    """`wp option get` needs no package, so "not probed" carries no risk."""
+    check = output_oracle.check_capability_grounding(
+        "```sh\nwp option get siteurl\n```", _ABILITY_UNAVAILABLE
+    )
+
+    assert check.passed is True
+    assert "not probed" not in check.detail
+
+
+def test_commands_needing_their_own_package_are_named_as_unprobed() -> None:
+    check = output_oracle.check_capability_grounding(
+        "```sh\nwp dist-archive .\n```", _ABILITY_UNAVAILABLE
+    )
+
+    assert check.passed is True
+    assert "wp dist-archive: not probed" in check.detail
+
+
+_WP_ENV_PREFIX = {
+    "environment": {"invocation_prefix": ["wp-env", "run", "cli", "wp"]},
+    "wp_cli": {"status": "AVAILABLE", "commands": {"plugin": {"status": "AVAILABLE"}}},
+    "verification_tools": {},
+}
+
+
+def test_bare_wp_fails_when_the_environment_needs_a_prefix() -> None:
+    """The manifest knows bare `wp` does not reach WP-CLI; the gate must use it."""
+    check = output_oracle.check_capability_grounding(
+        "```sh\nwp plugin list\n```", _WP_ENV_PREFIX
+    )
+
+    assert check.passed is False
+    assert "bare_wp_does_not_reach_wp_cli" in check.detail
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        pytest.param("```sh\nwp-env run cli wp plugin list\n```", id="full-prefix"),
+        pytest.param("```sh\nwp --path=/srv/www plugin list\n```", id="path-escape"),
+        pytest.param("```sh\nwp @staging plugin list\n```", id="alias-escape"),
+    ],
+)
+def test_a_routed_invocation_satisfies_the_prefix_rule(candidate: str) -> None:
+    check = output_oracle.check_capability_grounding(candidate, _WP_ENV_PREFIX)
+
+    assert check.passed is True, check.detail
+
+
+def test_the_wordpress_standard_is_attributed_to_wpcs_not_phpcs() -> None:
+    """PHPCS present with WPCS missing is the ordinary partial-install case."""
+    manifest = {
+        "environment": {"invocation_prefix": ["wp"]},
+        "wp_cli": {"status": "AVAILABLE", "commands": {}},
+        "verification_tools": {
+            "phpcs": {"status": "AVAILABLE"},
+            "wpcs": {"status": "UNAVAILABLE", "reason": "wordpress_standard_not_installed"},
+        },
+    }
+
+    check = output_oracle.check_capability_grounding(
+        "```sh\nvendor/bin/phpcs --standard=WordPress .\n```", manifest
+    )
+
+    assert check.passed is False
+    assert "wordpress_standard_not_installed" in check.detail
