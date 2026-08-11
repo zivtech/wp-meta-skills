@@ -73,8 +73,8 @@ def baseline(post=False):
         "WorkingDir":"","AttachStdin":False,"AttachStdout":True,"AttachStderr":True,
         "Tty":False,"OpenStdin":False,"StdinOnce":False,"Env":[
             "PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305","PYTHON_VERSION=3.13.14",
-            "PYTHON_SHA256=639e43243c620a308f968213df9e00f2f8f62332f7adbaa7a7eeb9783057c690",
+            "GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305","PYTHON_VERSION=3.13.15",
+            "PYTHON_SHA256=1e66a7945a48390ee4c2a4268a0e4185884059a13c4aab6d148aa208deea4a76",
         ],
     }
     state={"Status":"exited" if post else "created","Running":False,"ExitCode":0,"OOMKilled":False,"Error":""}
