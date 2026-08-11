@@ -1,0 +1,22 @@
+fixture: block-viewscript-clean-v1
+skill_under_test: wordpress-critic
+max_score: 4
+criteria:
+  - id: no_false_positive_on_view_script_module_field
+    weight: 2
+    type: false_positive_trap
+    description: "Does not flag viewScriptModule as an invalid, unsupported, or misspelled block.json field; it is the correct field for a front-end script using ES module import syntax."
+  - id: no_false_positive_on_render_or_directives
+    weight: 1
+    type: false_positive_trap
+    description: "Does not flag render.php's escaping/sanitization or the data-wp-* directive markup as incorrect."
+  - id: correctly_accepts_or_verifies
+    weight: 1
+    description: "Either accepts the registration as sound or asks only for a runtime verification (e.g. confirming the script tag's module type in page source) rather than asserting an unproven defect."
+domain_signals:
+  must_not_penalize_or_do:
+    - "flags viewScriptModule as an invalid, unsupported, or misspelled block.json field"
+    - "recommends switching the registration from viewScriptModule back to viewScript"
+  expected_wordpress_apis:
+    - "viewScriptModule"
+    - "register_block_type"

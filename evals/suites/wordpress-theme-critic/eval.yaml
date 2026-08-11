@@ -5,7 +5,7 @@ skill:
 
 fixtures:
   directory: ./fixtures
-  count: 1
+  count: 3
   pattern: "*.md"
   metadata_suffix: ".metadata.yaml"
 
@@ -20,8 +20,8 @@ baselines:
     - baseline-few-shot
 
 evaluation:
-  status: smoke_scaffold_only
-  full_run_status: blocked_until_candidate_eval_and_test_critic_review
+  status: answer_key_corpus_present
+  full_run_status: judged_run_pending_compute_budget
 
 invocation:
   model: sonnet

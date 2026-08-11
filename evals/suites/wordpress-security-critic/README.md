@@ -76,6 +76,28 @@ python3 scripts/validate-eval-suite-integrity.py \
   --allow-known-gaps
 ```
 
+## Recommendation-09 answer-key corpus (tranches T / J / C)
+
+Beyond the focused fixtures above, this suite now carries a provenance-labeled
+answer-key corpus scored by `evals/harness/answer_key_score.py --suite
+wordpress-security-critic`. Each corpus fixture adds a `fixtures/<id>.provenance.yaml`
+sidecar (tranche, provenance, license, tool-invisibility proof, and per-signal
+grounding). Design and limitations: `../wordpress-critic/corpus-prereg.md` and
+`../wordpress-critic/provenance-manifest.md`.
+
+- **Tranche T** (`t-*`): sniff-catchable defects (EscapeOutput, NonceVerification,
+  ValidatedSanitizedInput, PreparedSQL) — tests faithful tool consumption.
+- **Tranche J** (`sec-*`): defects that pass WPCS *and* PHPStan clean by construction
+  (IDOR, wrong-object capability, nonce-result-discarded, decorative-capability-branch,
+  wrong-sanitizer-for-LIKE) — the discriminating set. Tool-invisibility is verified by
+  `python3 evals/harness/verify_critic_tool_invisibility.py --suite wordpress-security-critic`.
+- **Tranche C** (`*-clean-*`): correct code that looks suspicious (the mandatory
+  `permission_callback => __return_true` public-read endpoint, a custom capability
+  wrapper, central escaping) — a finding raised here is a false positive.
+
+The corpus measures the critic by tranche; it is not a benchmark and not a superiority
+claim. The tranche-C false-positive rate and tranche-J recall are reported separately.
+
 Negative space:
 
 - This suite does not prove supply-chain review, CVE monitoring, malware

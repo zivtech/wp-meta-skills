@@ -1,0 +1,22 @@
+fixture: perf-n1-meta-clean-v1
+skill_under_test: wordpress-performance-critic
+max_score: 4
+criteria:
+  - id: no_false_positive_on_primed_cache
+    weight: 2
+    type: false_positive_trap
+    description: "Does not flag the get_post_meta calls in the loop as an N+1 risk; update_post_meta_cache was never disabled and defaults to true, so the query already primes the cache for every returned post."
+  - id: no_false_positive_on_query_shape
+    weight: 1
+    type: false_positive_trap
+    description: "Does not recommend restructuring the meta_query key/value/compare lookup or removing no_found_rows, which are already appropriate."
+  - id: correctly_accepts_or_verifies
+    weight: 1
+    description: "Either accepts the code as sound or asks only for a runtime verification (e.g. Query Monitor) rather than asserting an unproven defect."
+domain_signals:
+  must_not_penalize_or_do:
+    - "flags the get_post_meta calls in the loop as an N+1 query risk even though update_post_meta_cache was never disabled and defaults to true for this query"
+    - "recommends adding an explicit update_post_meta_cache => true argument or a manual cache-priming call that the default already provides"
+  expected_wordpress_apis:
+    - "get_post_meta"
+    - "update_post_meta_cache"

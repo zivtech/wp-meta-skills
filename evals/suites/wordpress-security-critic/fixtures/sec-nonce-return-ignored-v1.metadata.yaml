@@ -1,0 +1,20 @@
+name: sec-nonce-return-ignored-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: csrf_nonce_result_discarded
+expected_wordpress_apis:
+  - "wp_verify_nonce"
+  - "check_admin_referer"
+  - "wp_nonce_field"
+expected_verification_surfaces:
+  - "PHPUnit test posting the handler with a missing or invalid nonce and asserting no write"
+  - "Manual CSRF check that a forged cross-site POST does not persist the option"
+must_detect:
+  - "the return value of wp_verify_nonce is discarded, so the option is written even when the nonce is missing or invalid"
+  - "the nonce is checked in name only and its boolean result never guards the update_option call"
+negative_space:
+  - "does not prove production exploitability without runtime context"
+  - "does not cover dependency or supply-chain review"

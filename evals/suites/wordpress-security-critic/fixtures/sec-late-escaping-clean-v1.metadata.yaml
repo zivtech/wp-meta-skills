@@ -1,0 +1,10 @@
+name: sec-late-escaping-clean-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: clean-bait
+provenance: authored
+expected_behavior:
+  - "Accepts the output as safe because each dynamic value is escaped at assembly with esc_html and esc_attr"
+  - "Recognizes central/late escaping in acme_build_badge rather than demanding escaping at the echo"
+  - "Does not treat the echo of a builder function's return as unescaped output"

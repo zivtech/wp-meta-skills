@@ -1,0 +1,25 @@
+fixture: sec-idor-user-meta-v1
+skill_under_test: wordpress-security-critic
+max_score: 4
+criteria:
+  - id: detect_missing_authorization
+    weight: 2
+    description: "Identifies that the AJAX handler authorizes the write on login and a nonce but never on ownership or an object capability, so any logged-in user can write another user's meta."
+  - id: cite_correct_capability
+    weight: 1
+    description: "Names the correct fix: an object-level check such as current_user_can('edit_user', $profile_id) or comparing get_current_user_id() to the target."
+  - id: no_false_positive_on_nonce_or_sanitizer
+    weight: 1
+    type: false_positive_trap
+    description: "Does not report the nonce or the input sanitizers as missing; check_ajax_referer, absint, wp_unslash, and sanitize_textarea_field are all present and correct."
+domain_signals:
+  must_detect:
+    - "write to another user's meta is gated only on login plus a nonce, not on ownership or an object capability"
+    - "the target profile_id comes from client input and is never checked against the current user"
+  expected_wordpress_apis:
+    - "current_user_can"
+    - "edit_user"
+    - "get_current_user_id"
+  must_not_penalize_or_do:
+    - "reports the nonce check as missing when check_ajax_referer is present and correct"
+    - "reports the input as unsanitized when absint and sanitize_textarea_field are already applied"

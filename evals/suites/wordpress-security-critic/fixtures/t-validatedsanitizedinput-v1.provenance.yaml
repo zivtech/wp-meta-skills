@@ -1,0 +1,18 @@
+fixture_id: t-validatedsanitizedinput-v1
+tranche: T
+provenance: tool
+license: GPL-2.0-or-later
+source: "wpcs-sniff:WordPress.Security.ValidatedSanitizedInput"
+expected_verdict: REVISE
+status: active
+grounding:
+  - description: "the support note is read straight from $_POST['support_note'] with no wp_unslash() applied before it is used"
+    sniff: "WordPress.Security.ValidatedSanitizedInput"
+    file: acme-support-widget.php
+    line: 16
+    severity: MAJOR
+  - description: "the support note is stored via update_option with no sanitize_text_field() or other sanitizer applied to the raw value"
+    sniff: "WordPress.Security.ValidatedSanitizedInput"
+    file: acme-support-widget.php
+    line: 16
+    severity: MAJOR

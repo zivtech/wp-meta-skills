@@ -1,0 +1,10 @@
+name: perf-direct-wpdb-cached-clean-v1
+suite: wordpress-performance-critic
+skill_under_test: wordpress-performance-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+expected_behavior:
+  - "Confirms the revenue query needs $wpdb directly because it aggregates SUM and GROUP BY across a custom order-items table joined to wp_posts, which WP_Query/get_posts cannot express"
+  - "Confirms the query is parameterized via $wpdb->prepare() with %s/%d placeholders and is already wrapped in wp_cache_get()/wp_cache_set() with an explicit cache group and TTL"
+  - "Does not recommend replacing the direct query with WP_Query, and does not claim the query is unprepared or missing a cache layer"

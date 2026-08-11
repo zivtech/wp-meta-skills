@@ -1,0 +1,10 @@
+name: perf-n1-meta-clean-v1
+suite: wordpress-performance-critic
+skill_under_test: wordpress-performance-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+expected_behavior:
+  - "Recognizes that update_post_meta_cache is left at its default (true), so WP_Query primes the post meta cache for every returned post as part of the same query batch"
+  - "Confirms the foreach loop's get_post_meta calls are cache hits against that primed cache, not a fresh query per post"
+  - "Does not recommend removing no_found_rows or restructuring the meta_query key/value/compare lookup, which are already appropriate here"

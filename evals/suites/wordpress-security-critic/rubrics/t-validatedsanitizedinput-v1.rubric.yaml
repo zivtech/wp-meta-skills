@@ -1,0 +1,25 @@
+fixture: t-validatedsanitizedinput-v1
+skill_under_test: wordpress-security-critic
+max_score: 4
+criteria:
+  - id: detect_unsanitized_input_write
+    weight: 2
+    description: "Identifies that $_POST['support_note'] is written to update_option without wp_unslash() or sanitize_text_field(), so unsanitized and still-slashed data is persisted as a site option."
+  - id: cite_correct_sanitization_fix
+    weight: 1
+    description: "Names the correct fix: sanitize_text_field( wp_unslash( $_POST['support_note'] ) ) (or an equivalent sanitizer matched to the expected content) before the update_option call."
+  - id: no_false_positive_on_nonce_or_capability
+    weight: 1
+    type: false_positive_trap
+    description: "Does not report the nonce or capability check as missing; current_user_can( 'manage_options' ) and check_admin_referer() are both present and correct."
+domain_signals:
+  must_detect:
+    - "the support note is read straight from $_POST['support_note'] with no wp_unslash() applied before it is used"
+    - "the support note is stored via update_option with no sanitize_text_field() or other sanitizer applied to the raw value"
+  expected_wordpress_apis:
+    - "sanitize_text_field"
+    - "wp_unslash"
+    - "absint"
+  must_not_penalize_or_do:
+    - "reports the nonce check as missing when check_admin_referer is already present and correct"
+    - "reports the capability check as missing when current_user_can( 'manage_options' ) already gates the handler"

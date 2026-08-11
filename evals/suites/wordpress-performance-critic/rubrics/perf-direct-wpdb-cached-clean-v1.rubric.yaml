@@ -1,0 +1,24 @@
+fixture: perf-direct-wpdb-cached-clean-v1
+skill_under_test: wordpress-performance-critic
+max_score: 4
+criteria:
+  - id: no_false_positive_on_missing_cache
+    weight: 2
+    type: false_positive_trap
+    description: "Does not flag the direct $wpdb->get_results() call as uncached; it is already wrapped in wp_cache_get()/wp_cache_set() with an explicit group and TTL."
+  - id: no_false_positive_on_query_choice_or_preparation
+    weight: 1
+    type: false_positive_trap
+    description: "Does not recommend replacing the query with WP_Query/get_posts, which cannot express the SUM/GROUP BY aggregate, and does not claim the query is unprepared when $wpdb->prepare() already parameterizes every dynamic value."
+  - id: correctly_accepts_or_verifies
+    weight: 1
+    description: "Either accepts the code as sound or asks only for a runtime verification (e.g. confirming the cache TTL matches the dashboard's freshness needs) rather than asserting an unproven defect."
+domain_signals:
+  must_not_penalize_or_do:
+    - "flags the direct $wpdb->get_results() call as a performance risk when it is already wrapped in wp_cache_get()/wp_cache_set() with an explicit group and TTL"
+    - "recommends rewriting the aggregate revenue query as a WP_Query or get_posts call, which cannot express a SUM/GROUP BY across the custom order-items table"
+    - "reports the query as unprepared or injectable when $wpdb->prepare() already parameterizes every dynamic value"
+  expected_wordpress_apis:
+    - "wp_cache_get"
+    - "wp_cache_set"
+    - "$wpdb->prepare"

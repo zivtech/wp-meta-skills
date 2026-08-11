@@ -1,0 +1,13 @@
+fixture_id: t-postsperpage-unbounded-v1
+tranche: T
+provenance: tool
+license: GPL-2.0-or-later
+source: "wpcs-sniff:WordPress.WP.PostsPerPage"
+expected_verdict: REVISE
+status: active
+grounding:
+  - description: "get_posts is called with posts_per_page set to 500, an excessively high pagination limit that loads hundreds of posts on every homepage render"
+    sniff: "WordPress.WP.PostsPerPage"
+    file: acme-testimonials.php
+    line: 12
+    severity: MAJOR

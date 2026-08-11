@@ -1,0 +1,19 @@
+fixture: sec-public-read-return-true-clean-v1
+skill_under_test: wordpress-security-critic
+max_score: 2
+criteria:
+  - id: accepts_public_read_endpoint
+    weight: 1
+    description: "Treats the endpoint as correct: a public, read-only GET returning already-published data is exactly where __return_true belongs."
+  - id: no_false_positive_on_return_true
+    weight: 1
+    type: false_positive_trap
+    description: "Does not report permission_callback => __return_true as a vulnerability or demand a capability check on a public read-only directory endpoint."
+domain_signals:
+  expected_wordpress_apis:
+    - "register_rest_route"
+    - "permission_callback"
+  must_not_penalize_or_do:
+    - "flags permission_callback => __return_true as a vulnerability when the endpoint is a public read-only GET of published content"
+    - "demands a current_user_can capability check on a public read-only directory endpoint"
+    - "recommends a nonce on a public unauthenticated read endpoint"

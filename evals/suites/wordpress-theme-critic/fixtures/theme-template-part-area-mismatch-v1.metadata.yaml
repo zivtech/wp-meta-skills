@@ -1,0 +1,21 @@
+name: theme-template-part-area-mismatch-v1
+suite: wordpress-theme-critic
+skill_under_test: wordpress-theme-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: template_part_area_declaration_mismatch
+expected_wordpress_apis:
+  - "templateParts"
+  - "theme.json"
+  - "wp_template_part"
+expected_verification_surfaces:
+  - "opening the Site Editor's Template Parts list to see which area the footer is grouped under"
+  - "viewing the rendered front-end page source for the footer region's wrapper tag"
+  - "a REST check of /wp/v2/template-parts confirming the registered area for the footer part"
+must_detect:
+  - "theme.json's templateParts entry for the footer part declares area: header, the same area as the header part, instead of area: footer"
+  - "the footer template-part reference in the templates omits an explicit area or tagName, so it falls back to the theme's declared area for that slug and renders grouped and wrapped as a second header instead of the site's footer"
+negative_space:
+  - "does not assert the exact rendered wrapper tag without loading the Site Editor or front end to confirm"
+  - "does not cover template-part content or accessibility beyond the area/declaration mismatch"

@@ -1,0 +1,20 @@
+name: t-nonceverification-csrf-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: missing_nonce_csrf_state_change
+expected_wordpress_apis:
+  - "wp_verify_nonce"
+  - "check_admin_referer"
+  - "wp_nonce_field"
+expected_verification_surfaces:
+  - "PHPCS/WPCS NonceVerification sniff coverage on the admin-post handler"
+  - "PHPUnit test posting report_id without a nonce and asserting the request is rejected"
+must_detect:
+  - "the report deletion handler reads $_POST['report_id'] with no nonce verification anywhere in the function, so the capability check alone does not stop a forged cross-site request"
+  - "wp_delete_post is called on attacker-influenced input with no CSRF protection, so a forged form submitted by a logged-in editor's browser can delete arbitrary reports"
+negative_space:
+  - "does not prove production exploitability without a live CSRF proof-of-concept"
+  - "does not cover dependency or supply-chain review"

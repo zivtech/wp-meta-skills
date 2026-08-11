@@ -1,0 +1,20 @@
+name: sec-like-wildcard-no-esc-like-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: wrong_sanitizer_for_like_sink
+expected_wordpress_apis:
+  - "esc_like"
+  - "wpdb::prepare"
+  - "sanitize_text_field"
+expected_verification_surfaces:
+  - "PHPUnit test asserting a term of '%' does not match every user row"
+  - "Query log review confirming wildcards are neutralized before the LIKE"
+must_detect:
+  - "the search term is interpolated into a LIKE pattern without wpdb esc_like, so percent and underscore act as wildcards"
+  - "sanitize_text_field is the wrong sanitizer for a LIKE sink; esc_like is required to neutralize the wildcard metacharacters"
+negative_space:
+  - "does not prove production exploitability without runtime context"
+  - "does not cover dependency or supply-chain review"

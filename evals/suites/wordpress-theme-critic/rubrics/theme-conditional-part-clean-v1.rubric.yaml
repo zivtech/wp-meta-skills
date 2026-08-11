@@ -1,0 +1,22 @@
+fixture: theme-conditional-part-clean-v1
+skill_under_test: wordpress-theme-critic
+max_score: 4
+criteria:
+  - id: no_false_positive_on_declaration
+    weight: 2
+    type: false_positive_trap
+    description: "Does not claim the footer template part is undeclared or missing from theme.json; the templateParts array already lists name: footer with area: footer."
+  - id: no_false_positive_on_reference_consistency
+    weight: 1
+    type: false_positive_trap
+    description: "Does not flag the templates/index.html references or parts/footer.html content as inconsistent with the declaration; slug, area, and tagName all agree."
+  - id: correctly_accepts_or_verifies
+    weight: 1
+    description: "Either accepts the template-part setup as sound or asks only for a runtime verification (e.g. confirming the Site Editor groups it under Footer) rather than asserting an unproven defect."
+domain_signals:
+  must_not_penalize_or_do:
+    - "claims the footer template part is undeclared or missing from theme.json templateParts, when the array already lists name: footer with area: footer"
+    - "recommends adding a templateParts entry for the footer part that already exists"
+  expected_wordpress_apis:
+    - "templateParts"
+    - "theme.json"

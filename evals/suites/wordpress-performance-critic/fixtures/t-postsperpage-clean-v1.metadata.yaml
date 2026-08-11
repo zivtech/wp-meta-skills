@@ -1,0 +1,10 @@
+name: t-postsperpage-clean-v1
+suite: wordpress-performance-critic
+skill_under_test: wordpress-performance-critic
+skill_type: critic
+difficulty_tier: clean_control
+provenance: authored
+expected_behavior:
+  - "Confirms posts_per_page is explicitly bounded to 10 on the homepage testimonial query"
+  - "Does not flag the bounded query as unbounded"
+  - "Does not invent a missing cache, pagination, or escaping gap that is not present in the code"

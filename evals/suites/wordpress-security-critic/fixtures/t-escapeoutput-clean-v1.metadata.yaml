@@ -1,0 +1,10 @@
+name: t-escapeoutput-clean-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: clean_control
+provenance: authored
+expected_behavior:
+  - "Confirms the search query is escaped with esc_html before being echoed into the banner markup"
+  - "Does not flag the echo as unescaped output"
+  - "Does not invent a nonce, capability, or sanitization gap that is not present in the code"

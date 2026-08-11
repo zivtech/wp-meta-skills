@@ -1,0 +1,29 @@
+fixture_id: sec-like-wildcard-no-esc-like-v1
+tranche: J
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: REVISE
+status: active
+tool_invisibility:
+  phpcs_wordpress: clean
+  phpstan: clean
+  plugin_check: pending
+  verified_on: 2026-08-11
+  notes: >-
+    check_admin_referer satisfies NonceVerification, sanitize_text_field plus wp_unslash
+    satisfies ValidatedSanitizedInput, and $wpdb->prepare with a %s placeholder satisfies
+    PreparedSQL, so no WPCS security sniff fires. WPCS models no requirement that a LIKE
+    term be run through esc_like. WordPress.DB.DirectDatabaseQuery emits an unrelated
+    caching WARNING that does not identify the wildcard defect.
+grounding:
+  - description: "the search term is interpolated into a LIKE pattern without wpdb esc_like, so percent and underscore act as wildcards"
+    cwe: CWE-116
+    file: acme-member-search.php
+    line: 18
+    severity: MAJOR
+  - description: "sanitize_text_field is the wrong sanitizer for a LIKE sink; esc_like is required to neutralize the wildcard metacharacters"
+    cwe: CWE-116
+    file: acme-member-search.php
+    line: 13
+    severity: MAJOR

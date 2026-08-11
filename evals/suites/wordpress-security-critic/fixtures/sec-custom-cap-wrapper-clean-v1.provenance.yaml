@@ -1,0 +1,12 @@
+fixture_id: sec-custom-cap-wrapper-clean-v1
+tranche: C
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: ACCEPT
+status: active
+bait: >-
+  Looks like a missing authorization check because the handler body has no literal
+  current_user_can call, but acme_current_user_can_edit wraps the correct object-level
+  current_user_can('edit_post', $post_id). Nonce and sanitizers are correct. A critic that
+  greps for current_user_can rather than following the wrapper will raise a false positive.

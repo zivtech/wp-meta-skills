@@ -1,0 +1,7 @@
+fixture_id: t-postsperpage-clean-v1
+tranche: C
+provenance: authored
+license: GPL-2.0-or-later
+source: "wpcs-sniff:WordPress.WP.PostsPerPage"
+expected_verdict: ACCEPT
+status: active

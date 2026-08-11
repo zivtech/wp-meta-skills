@@ -1,0 +1,36 @@
+fixture_id: theme-template-part-area-mismatch-v1
+tranche: J
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: REVISE
+status: active
+tool_invisibility:
+  phpcs_wordpress: clean
+  phpstan: clean
+  plugin_check: pending
+  verified_on: 2026-08-11
+  notes: >-
+    No PHP is present in this fixture (theme.json, templates/index.html, and
+    parts/footer.html are JSON and block-comment HTML), so phpcs and phpstan
+    have nothing to flag by construction -- both report clean vacuously. Each
+    file independently validates against its own schema (theme.json against
+    the theme.json schema; the templates as well-formed block markup), and no
+    available static tool cross-checks a theme.json templateParts area
+    declaration against how the corresponding wp:template-part slug is
+    actually referenced and used across separate template files. That
+    cross-file, declaration-vs-usage consistency check is exactly the
+    judgment call no linter here performs. plugin_check requires a full
+    WordPress runtime and is recorded as pending until run in a provisioned
+    environment.
+grounding:
+  - description: "theme.json's templateParts entry for the footer part declares area: header, the same area as the header part, instead of area: footer"
+    sniff: wordpress.theme.template-part-area-mismatch
+    file: theme.json
+    line: 13
+    severity: MAJOR
+  - description: "the footer template-part reference in the templates omits an explicit area or tagName, so it falls back to the theme's declared area for that slug and renders grouped and wrapped as a second header instead of the site's footer"
+    sniff: wordpress.theme.template-part-area-mismatch
+    file: templates/index.html
+    line: 9
+    severity: MAJOR

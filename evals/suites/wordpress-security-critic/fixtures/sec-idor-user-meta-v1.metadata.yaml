@@ -1,0 +1,20 @@
+name: sec-idor-user-meta-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: broken_access_control_idor
+expected_wordpress_apis:
+  - "current_user_can"
+  - "edit_user"
+  - "get_current_user_id"
+expected_verification_surfaces:
+  - "PHPUnit AJAX test asserting a subscriber cannot write another user's meta"
+  - "WP-CLI or integration smoke exercising a forbidden profile_id"
+must_detect:
+  - "write to another user's meta is gated only on login plus a nonce, not on ownership or an object capability"
+  - "the target profile_id comes from client input and is never checked against the current user"
+negative_space:
+  - "does not prove production exploitability without runtime context"
+  - "does not cover dependency or supply-chain review"

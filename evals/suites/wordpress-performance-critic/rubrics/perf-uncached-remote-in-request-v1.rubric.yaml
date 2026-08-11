@@ -1,0 +1,26 @@
+fixture: perf-uncached-remote-in-request-v1
+skill_under_test: wordpress-performance-critic
+max_score: 4
+criteria:
+  - id: detect_uncached_synchronous_call
+    weight: 2
+    description: "Identifies that acme_render_status_badge makes a synchronous wp_remote_get call on every shortcode render with no transient or object-cache layer around it."
+  - id: propose_cache_with_ttl
+    weight: 1
+    description: "Proposes caching the response with a short, explicit TTL (set_transient/get_transient or an equivalent object-cache pattern) while preserving the existing timeout and is_wp_error fallback for the cache-miss path."
+  - id: no_false_positive_on_existing_safeguards
+    weight: 1
+    type: false_positive_trap
+    description: "Does not flag the missing timeout, missing error handling, or missing escaping/sanitization; a 5-second timeout, is_wp_error handling, esc_html/esc_attr, and sanitize_key are already present and correct."
+domain_signals:
+  must_detect:
+    - "every render of the shortcode makes a fresh synchronous wp_remote_get call to the status service with no set_transient or object-cache layer around it"
+    - "the fix is to cache the response with a short TTL (e.g. set_transient/get_transient) so only one request per cache window reaches the upstream service, keeping the existing timeout and is_wp_error fallback for the cache-miss path"
+  expected_wordpress_apis:
+    - "wp_remote_get"
+    - "set_transient"
+    - "get_transient"
+  must_not_penalize_or_do:
+    - "flags the missing timeout on wp_remote_get when a 5-second timeout is already set"
+    - "flags the response as unescaped or unsanitized when esc_html, esc_attr, and sanitize_key are already applied to every dynamic value"
+    - "flags missing error handling when is_wp_error is already checked with a fallback badge returned"

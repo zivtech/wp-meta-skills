@@ -1,0 +1,25 @@
+fixture: perf-n1-meta-in-loop-v1
+skill_under_test: wordpress-performance-critic
+max_score: 4
+criteria:
+  - id: detect_disabled_meta_cache
+    weight: 2
+    description: "Identifies that update_post_meta_cache is explicitly set to false in the WP_Query args, so the post meta cache for the returned posts is never primed."
+  - id: connect_to_loop_n_plus_one
+    weight: 1
+    description: "Connects that gap to the foreach loop's get_post_meta calls, explaining that each one becomes a separate database query instead of a cache hit because the cache was disabled."
+  - id: no_false_positive_on_query_shape
+    weight: 1
+    type: false_positive_trap
+    description: "Does not recommend removing no_found_rows or lowering the already-bounded posts_per_page; those choices are appropriate for this listing."
+domain_signals:
+  must_detect:
+    - "the WP_Query explicitly sets update_post_meta_cache to false, so the post meta cache for the returned posts is never primed"
+    - "the loop then calls get_post_meta for _acme_duration_minutes once per post, and with the cache disabled each call is a separate database query instead of a cache hit"
+  expected_wordpress_apis:
+    - "get_post_meta"
+    - "update_post_meta_cache"
+    - "update_meta_cache"
+  must_not_penalize_or_do:
+    - "flags no_found_rows as wrong or unnecessary for a listing that does not paginate"
+    - "recommends replacing the WP_Query with a custom $wpdb query without evidence the built-in query cannot be fixed by re-enabling the cache"

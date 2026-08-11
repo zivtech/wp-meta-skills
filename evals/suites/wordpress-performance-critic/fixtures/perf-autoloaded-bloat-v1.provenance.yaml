@@ -1,0 +1,33 @@
+fixture_id: perf-autoloaded-bloat-v1
+tranche: J
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: REVISE
+status: active
+tool_invisibility:
+  phpcs_wordpress: clean
+  phpstan: clean
+  plugin_check: pending
+  verified_on: 2026-08-11
+  notes: >-
+    Verified locally with phpcs (WordPress-Extra, wpcs 3.3.0, zero violations)
+    and phpstan (level 5 with php-stubs/wordpress-stubs, zero errors).
+    add_option() and update_option() are called with entirely valid arguments
+    at every call site, so no sniff fires; no phpcs rule or phpstan check
+    tracks a specific option's value size over time or cross-references the
+    tiny value passed at creation against the much larger value passed on a
+    later update_option call in a different function. plugin_check requires a
+    full WordPress runtime and is recorded as pending until run in a
+    provisioned environment.
+grounding:
+  - description: "add_option creates acme_catalog_snapshot with a tiny empty-array value at activation, so its autoload behavior is decided while the option is still small"
+    sniff: wordpress.performance.autoloaded-option-bloat
+    file: acme-catalog-sync.php
+    line: 11
+    severity: MAJOR
+  - description: "every later sync replaces the value with the full multi-thousand-SKU catalog through update_option without ever revisiting that autoload decision, so the large payload keeps riding along on every request"
+    sniff: wordpress.performance.autoloaded-option-bloat
+    file: acme-catalog-sync.php
+    line: 31
+    severity: MAJOR

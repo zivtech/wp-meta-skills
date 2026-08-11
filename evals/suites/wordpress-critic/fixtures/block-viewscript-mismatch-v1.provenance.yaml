@@ -1,0 +1,41 @@
+fixture_id: block-viewscript-mismatch-v1
+tranche: J
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: REVISE
+status: active
+tool_invisibility:
+  phpcs_wordpress: clean
+  phpstan: clean
+  plugin_check: pending
+  verified_on: 2026-08-11
+  notes: >-
+    render.php was verified locally with phpcs (WordPress-Extra, wpcs 3.3.0,
+    zero violations after two bare phpcs:ignore comments on
+    get_block_wrapper_attributes()/wp_interactivity_data_wp_context(), which
+    return pre-escaped markup that WPCS's default escaping-function allow-list
+    does not yet recognize -- the same accommodation real block themes and
+    plugins use for these APIs) and phpstan (level 5 with
+    php-stubs/wordpress-stubs,
+    zero errors, using @var doc-comments for the $attributes/$content
+    variables WordPress injects when it includes a block's render.php).
+    block.json and view.js are each independently valid: block.json validates
+    against the block.json schema regardless of which of viewScript or
+    viewScriptModule is chosen, and view.js is syntactically valid ES module
+    JavaScript. No JSON-schema validator or phpcs/eslint rule cross-checks the
+    viewScript/viewScriptModule field choice in block.json against the import
+    syntax actually used inside the file it points to. plugin_check requires a
+    full WordPress runtime and is recorded as pending until run in a
+    provisioned environment.
+grounding:
+  - description: "block.json registers view.js under viewScript, but view.js imports store and getContext from @wordpress/interactivity, which only works when the file is loaded as an ES module"
+    sniff: wordpress.block.view-script-module-mismatch
+    file: block.json
+    line: 13
+    severity: MAJOR
+  - description: "as a classic script the import statement fails in the browser, so the click handler and context binding never run; the fix is registering the file under viewScriptModule instead of viewScript"
+    sniff: wordpress.block.view-script-module-mismatch
+    file: view.js
+    line: 1
+    severity: MAJOR

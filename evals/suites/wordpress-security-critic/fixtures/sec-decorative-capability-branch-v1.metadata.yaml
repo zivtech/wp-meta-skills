@@ -1,0 +1,20 @@
+name: sec-decorative-capability-branch-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: broken_access_control_control_flow
+expected_wordpress_apis:
+  - "current_user_can"
+  - "wp_send_json_error"
+  - "wp_die"
+expected_verification_surfaces:
+  - "PHPUnit AJAX test asserting a subscriber cannot delete a post they lack rights to"
+  - "Control-flow review confirming the denial branch terminates before the mutation"
+must_detect:
+  - "the capability result is computed but the denial branch does not return or exit, so wp_delete_post runs even when the user lacks the capability"
+  - "control flow falls through to the deletion regardless of the current_user_can result"
+negative_space:
+  - "does not prove production exploitability without runtime context"
+  - "does not cover dependency or supply-chain review"
