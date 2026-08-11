@@ -372,20 +372,51 @@ def check_item_via_codex(model, prompt, *, timeout_sec=600):  # pragma: no cover
     return text or proc.stdout.strip()
 
 
-def load_answer_key(fixture_id) -> dict[str, Any]:  # pragma: no cover
+def grounding_for_items(sidecar: dict[str, Any], must_detect: list[str]) -> dict[str, dict]:
+    """PURE. Map each must_detect DESCRIPTION to its grounding metadata from a
+    `.provenance.yaml` sidecar's `grounding:` list (cwe/sniff, file, line, severity).
+
+    The description string stays the judged, span-verified recall unit (recall is
+    computed exactly as before); grounding is carried ALONGSIDE for the per-severity
+    and file:line reports. Descriptions with no grounding entry are simply absent.
+    This is the additive §5 extension: no dict items inside domain_signals (which the
+    frozen eval-suite validator and llm_judge both require to be plain string lists) —
+    the structured fields live in the un-policed sidecar instead."""
+    by_desc: dict[str, dict] = {}
+    for entry in (sidecar or {}).get("grounding", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        desc = entry.get("description")
+        if isinstance(desc, str) and desc in must_detect:
+            by_desc[desc] = {k: v for k, v in entry.items() if k != "description"}
+    return by_desc
+
+
+def load_answer_key(fixture_id, suite_dir: Path = SUITE_DIR) -> dict[str, Any]:  # pragma: no cover
     import yaml
-    rub = yaml.safe_load((SUITE_DIR / "rubrics" / f"{fixture_id}.rubric.yaml").read_text("utf-8"))
+    rub = yaml.safe_load((suite_dir / "rubrics" / f"{fixture_id}.rubric.yaml").read_text("utf-8"))
     sig = (rub or {}).get("domain_signals", {}) or {}
+    must_detect = list(sig.get("must_detect", []) or [])
+    sidecar_path = suite_dir / "fixtures" / f"{fixture_id}.provenance.yaml"
+    sidecar = yaml.safe_load(sidecar_path.read_text("utf-8")) if sidecar_path.exists() else {}
     return {
-        "must_detect": list(sig.get("must_detect", []) or []),
+        "must_detect": must_detect,
         "expected_apis": list(sig.get("expected_wordpress_apis", []) or []),
         "anti_patterns": list(sig.get("must_not_penalize_or_do", []) or []),
+        "grounding": grounding_for_items(sidecar or {}, must_detect),
     }
 
 
-def load_tier(fixture_id) -> str:  # pragma: no cover
+def load_tier(fixture_id, suite_dir: Path = SUITE_DIR) -> str:  # pragma: no cover
+    """Tier/tranche label. For the critic corpus this is the sidecar `tranche`
+    (T/J/C); for the candidate eval it stays `difficulty_tier` or the suffix map."""
     import yaml
-    meta_path = SUITE_DIR / "fixtures" / f"{fixture_id}.metadata.yaml"
+    sidecar_path = suite_dir / "fixtures" / f"{fixture_id}.provenance.yaml"
+    if sidecar_path.exists():
+        sidecar = yaml.safe_load(sidecar_path.read_text("utf-8")) or {}
+        if sidecar.get("tranche"):
+            return str(sidecar["tranche"])
+    meta_path = suite_dir / "fixtures" / f"{fixture_id}.metadata.yaml"
     if meta_path.exists():
         meta = yaml.safe_load(meta_path.read_text("utf-8")) or {}
         if meta.get("difficulty_tier"):
@@ -396,23 +427,67 @@ def load_tier(fixture_id) -> str:  # pragma: no cover
     return "UNKNOWN"
 
 
-def fixture_text(fixture_id) -> str:  # pragma: no cover
-    return (SUITE_DIR / "fixtures" / f"{fixture_id}.md").read_text("utf-8")
+def fixture_text(fixture_id, suite_dir: Path = SUITE_DIR) -> str:  # pragma: no cover
+    return (suite_dir / "fixtures" / f"{fixture_id}.md").read_text("utf-8")
 
 
 def _hash(*parts) -> str:  # pragma: no cover
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
+def severity_recall(detect_confirms: dict[tuple, dict], answer_keys, conditions,
+                    tranche_by_fixture=None, only_tranche=None) -> dict[str, Any]:
+    """PURE. Per-condition detection recall bucketed by grounding severity
+    (MINOR/MAJOR/CRITICAL/UNGROUNDED). `detect_confirms[(f,c,r)] = {description: bool}`.
+    Optionally restrict to fixtures whose tranche == `only_tranche` (e.g. 'J')."""
+    out: dict[str, Any] = {}
+    for cond in conditions:
+        buckets: dict[str, list[int]] = {}
+        for (f, c, r), items in detect_confirms.items():
+            if c != cond:
+                continue
+            if only_tranche and (tranche_by_fixture or {}).get(f) != only_tranche:
+                continue
+            grounding = answer_keys[f].get("grounding", {})
+            for desc, confirmed in items.items():
+                sev = str((grounding.get(desc) or {}).get("severity", "UNGROUNDED")).upper()
+                buckets.setdefault(sev, []).append(1 if confirmed else 0)
+        out[cond] = {sev: {"recall": (sum(v) / len(v)) if v else None, "n": len(v)}
+                     for sev, v in sorted(buckets.items())}
+    return out
+
+
+def false_positive_rate(scores: dict[tuple, dict], conditions, tranche_by_fixture,
+                        clean_tranche="C") -> dict[str, Any]:
+    """PURE. False-positive rate on the clean tranche = committed anti-patterns /
+    total anti-pattern checks, per condition. A finding raised on a clean fixture is a
+    false positive; this is `1 - specificity` restricted to tranche C, surfaced plainly."""
+    out: dict[str, Any] = {}
+    for cond in conditions:
+        committed = total = 0
+        for (f, c, r), row in scores.items():
+            if c != cond or tranche_by_fixture.get(f) != clean_tranche:
+                continue
+            committed += row.get("committed_anti", 0)
+            total += row.get("n_anti", 0)
+        out[cond] = {"false_positive_rate": (committed / total) if total else None,
+                     "committed": committed, "n_checks": total}
+    return out
+
+
 def orchestrate(*, fixtures, conditions, runs, answer_keys, fixture_texts, tiers,
-                gens, judges, check_fn, progress_fn=None) -> dict[str, Any]:  # pragma: no cover
+                gens, judges, check_fn, progress_fn=None,
+                strong=KNOWN_STRONG, weak=KNOWN_WEAK) -> dict[str, Any]:  # pragma: no cover
     """Run atomic blind checks for every (fixture, condition, run, item) for the PRIMARY
     judge (judges[0]); if a second judge is given, also collect its confirmations for the
-    agreement cross-check. `gens[(fixture,condition,run)]->text`. `check_fn(judge,prompt)->raw`."""
+    agreement cross-check. `gens[(fixture,condition,run)]->text`. `check_fn(judge,prompt)->raw`.
+    `strong`/`weak` name the discrimination poles (candidate eval: zivtech vs zero-shot;
+    critic corpus: skill vs zero-shot)."""
     progress_fn = progress_fn or (lambda *a: None)
     primary = judges[0]
     per_item: dict[str, dict[tuple, dict]] = {j: {} for j in judges}
     scores: dict[tuple, dict] = {}
+    detect_confirms: dict[tuple, dict] = {}
 
     units = [(f, c, r) for f in fixtures for c in conditions for r in range(1, runs + 1)
              if (f, c, r) in gens]
@@ -433,21 +508,32 @@ def orchestrate(*, fixtures, conditions, runs, answer_keys, fixture_texts, tiers
                     (per_judge_confirm[j][0] if kind == "detect" else per_judge_confirm[j][1])[item] = res
                     per_item[j][(f, c, r, kind, item)] = res
         scores[(f, c, r)] = score_output(ak, resp, *per_judge_confirm[primary])
+        detect_confirms[(f, c, r)] = {item: res.get("confirmed", False)
+                                      for item, res in per_judge_confirm[primary][0].items()}
 
+    tranche_by_fixture = {f: tiers.get(f) for f in fixtures}
     out = {
         "instrument": "answer-key-diagnostic",
-        "judges": judges, "primary_judge": primary,
+        "judges": judges, "primary_judge": primary, "strong": strong, "weak": weak,
         "conditions": list(conditions), "fixtures": list(fixtures), "runs": runs,
-        "discrimination": discrimination_check(scores, fixtures),
+        "discrimination": discrimination_check(scores, fixtures, strong=strong, weak=weak),
         "aggregate": aggregate(scores, conditions, tiers),
-        "deltas_vs_zivtech": {
-            other: cluster_bootstrap_delta(scores, fixtures, KNOWN_STRONG, other)
-            for other in conditions if other != KNOWN_STRONG
+        "deltas_vs_strong": {
+            other: cluster_bootstrap_delta(scores, fixtures, strong, other)
+            for other in conditions if other != strong
         },
+        "severity_recall_tranche_J": severity_recall(
+            detect_confirms, answer_keys, conditions, tranche_by_fixture, only_tranche="J"),
+        "false_positive_rate_tranche_C": false_positive_rate(
+            scores, conditions, tranche_by_fixture, clean_tranche="C"),
+        "per_fixture_grounding": {f: answer_keys[f].get("grounding", {}) for f in fixtures},
         "per_output": {f"{f}|{c}|r{r}": v for (f, c, r), v in scores.items()},
         "firewall": "Diagnostic only. Localizes where V1 helps; NOT a superiority or "
                     "equivalence claim (wordpress-skills/CLAUDE.md:34).",
     }
+    # Back-compat alias for the candidate-eval consumers/run history.
+    if strong == KNOWN_STRONG:
+        out["deltas_vs_zivtech"] = out["deltas_vs_strong"]
     if len(judges) > 1:
         out["judge_agreement"] = judge_agreement(per_item[primary], per_item[judges[1]])
     return out
@@ -498,8 +584,163 @@ def generate_missing(fixtures, conditions, runs, gen_dir, model, upstream_projec
         dest.write_text(out, encoding="utf-8")
 
 
+# --------------------------------------------------------------------------- #
+# Suite-aware critic-corpus path (recommendation 09)
+# --------------------------------------------------------------------------- #
+
+CRITIC_CONDITIONS = ("skill", "baseline-zero-shot", "baseline-few-shot")
+CRITIC_STRONG = "skill"
+CRITIC_WEAK = "baseline-zero-shot"
+
+
+def discover_corpus_fixtures(suite_dir: Path) -> list[str]:  # pragma: no cover
+    """Corpus fixtures = every `<id>.md` that has a `<id>.provenance.yaml` sidecar whose
+    `status` is not `draft`. This cleanly excludes the legacy smoke fixture (no sidecar)
+    and any draft CVE stub the human-verification gate has not promoted."""
+    import yaml
+    out = []
+    for md in sorted((suite_dir / "fixtures").glob("*.md")):
+        sidecar = suite_dir / "fixtures" / f"{md.stem}.provenance.yaml"
+        if not sidecar.exists():
+            continue
+        data = yaml.safe_load(sidecar.read_text("utf-8")) or {}
+        if str(data.get("status", "active")).lower() == "draft":
+            continue
+        out.append(md.stem)
+    return out
+
+
+def generate_missing_critic(suite, fixtures, conditions, runs, gen_dir, run_id,
+                            timeout_sec, progress_fn):  # pragma: no cover
+    """Generate missing critic outputs via invoke.invoke (single-stage critic mode) and
+    write them to the shared gen_dir filename convention `r{run}__{fixture}__{condition}.txt`.
+    Skill lane -> local Claude agent; baseline lanes -> local Codex (resolved in invoke.py
+    from eval.yaml's invocation block). Runs share the invoke output path, so each run is
+    generated then copied to its indexed gen file."""
+    import invoke
+    units = [(f, c, r) for f in fixtures for c in conditions for r in range(1, runs + 1)]
+    for i, (f, c, r) in enumerate(units, 1):
+        dest = gen_dir / f"r{r}__{f}__{c}.txt"
+        if dest.exists():
+            progress_fn("gen-cached", i, len(units), dest.name)
+            continue
+        progress_fn("gen", i, len(units), f"{f}/{c}/r{r}")
+        result = invoke.invoke(run_id=f"{run_id}-r{r}", suite=suite, fixture_id=f,
+                               condition=c, mode="critic", timeout_sec=timeout_sec)
+        dest.write_text(result.final_output or "", encoding="utf-8")
+
+
+def write_critic_scorecard(path: Path, summary: dict[str, Any]) -> None:  # pragma: no cover
+    agg = summary["aggregate"]["by_condition"]
+    fpr = summary["false_positive_rate_tranche_C"]
+    lines = [
+        "# WordPress Critic Answer-Key Scorecard",
+        "",
+        f"Suite: `{summary['suite']}`  ·  runs: {summary['runs']}  ·  "
+        f"primary judge: `{summary['primary_judge']}`",
+        f"Strong pole: `{summary['strong']}`  ·  weak pole: `{summary['weak']}`",
+        "",
+        "Diagnostic only — localizes where the skill helps by tranche; NOT a superiority "
+        "or equivalence claim (`CLAUDE.md` evaluation boundary).",
+        "",
+        "## Per-condition (composite | recall | api | specificity)",
+        "",
+        "| Condition | composite | recall | api | specificity | n |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for c in summary["conditions"]:
+        a = agg.get(c, {})
+        lines.append(f"| `{c}` | {a.get('composite')} | {a.get('recall')} | "
+                     f"{a.get('api_coverage')} | {a.get('specificity')} | {a.get('n')} |")
+    lines += ["", "## Tranche-C false-positive rate (findings raised on clean code)", "",
+              "| Condition | FP rate | committed | checks |", "| --- | ---: | ---: | ---: |"]
+    for c in summary["conditions"]:
+        b = fpr.get(c, {})
+        lines.append(f"| `{c}` | {b.get('false_positive_rate')} | {b.get('committed')} | "
+                     f"{b.get('n_checks')} |")
+    lines += ["", "## Discrimination self-check (strong − weak composite)", "",
+              f"- mean delta: `{summary['discrimination']['mean_delta']}` "
+              f"(threshold {summary['discrimination']['threshold']}; "
+              f"discriminates: {summary['discrimination']['discriminates']})",
+              "- per-fixture: " + json.dumps(summary["discrimination"]["per_fixture_delta"]),
+              ""]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def run_critic_corpus(args, progress) -> None:  # pragma: no cover
+    """Suite-aware three-condition answer-key run for a critic corpus suite."""
+    suite = args.suite
+    suite_dir = SUITES_ROOT_FOR(suite)
+    out_dir = (ROOT / "evals" / "results" / args.out) if args.out else (
+        ROOT / "evals" / "results" / suite / args.run_id)
+    conditions = args.conditions or list(CRITIC_CONDITIONS)
+    runs = 1 if args.fast else args.runs
+    fixtures = args.fixtures if args.fixtures else discover_corpus_fixtures(suite_dir)
+    if not fixtures:
+        raise SystemExit(f"no active corpus fixtures (with .provenance.yaml) under {suite_dir}")
+
+    gen_dir = out_dir / "checkpoint" / "gen"
+    gen_dir.mkdir(parents=True, exist_ok=True)
+    if args.generate:
+        generate_missing_critic(suite, fixtures, conditions, runs, gen_dir, args.run_id,
+                                args.timeout_sec, progress)
+
+    answer_keys = {f: load_answer_key(f, suite_dir) for f in fixtures}
+    fixture_texts = {f: fixture_text(f, suite_dir) for f in fixtures}
+    tiers = {f: load_tier(f, suite_dir) for f in fixtures}
+    gens: dict[tuple, str] = {}
+    for f in fixtures:
+        for c in conditions:
+            for r in range(1, runs + 1):
+                gp = gen_dir / f"r{r}__{f}__{c}.txt"
+                if gp.exists():
+                    gens[(f, c, r)] = gp.read_text("utf-8")
+    if not gens:
+        raise SystemExit(f"no generations under {gen_dir}; pass --generate to produce them")
+
+    ckpt = out_dir / "checkpoint" / "check"
+    ckpt.mkdir(parents=True, exist_ok=True)
+    judges = [args.judge] + ([args.judge_2] if args.judge_2 and args.judge_2 != args.judge else [])
+
+    def check_fn(judge_model, prompt):
+        cache = ckpt / f"{_hash(judge_model, prompt)}.txt"
+        if cache.exists():
+            return cache.read_text("utf-8")
+        call = check_item_via_cli if judge_model.startswith("claude") else check_item_via_codex
+        raw = call(judge_model, prompt, timeout_sec=args.timeout_sec)
+        cache.write_text(raw, "utf-8")
+        return raw
+
+    summary = orchestrate(
+        fixtures=fixtures, conditions=conditions, runs=runs, answer_keys=answer_keys,
+        fixture_texts=fixture_texts, tiers=tiers, gens=gens, judges=judges,
+        check_fn=check_fn, progress_fn=progress, strong=CRITIC_STRONG, weak=CRITIC_WEAK)
+    summary["suite"] = suite
+    summary["n_boot"] = args.n_boot
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "answerkey-summary.json").write_text(json.dumps(summary, indent=2), "utf-8")
+    write_critic_scorecard(out_dir / "scorecard.md", summary)
+
+    print("\n=== PER-CONDITION (composite | recall | api | specificity) ===")
+    for c in conditions:
+        a = summary["aggregate"]["by_condition"][c]
+        print(f"  {c:22s} {a['composite']} | {a['recall']} | {a['api_coverage']} | {a['specificity']}  (n={a['n']})")
+    print("\n=== tranche-C false-positive rate ===")
+    for c, b in summary["false_positive_rate_tranche_C"].items():
+        print(f"  {c:22s} FPR={b['false_positive_rate']}  ({b['committed']}/{b['n_checks']})")
+    print(f"\nwrote {out_dir / 'answerkey-summary.json'} and scorecard.md")
+
+
+def SUITES_ROOT_FOR(suite: str) -> Path:  # pragma: no cover
+    return ROOT / "evals" / "suites" / suite
+
+
 def main():  # pragma: no cover
     p = argparse.ArgumentParser(description="Answer-key diagnostic re-scoring (reuses committed generations).")
+    p.add_argument("--suite", default=None,
+                   help="Score a critic-corpus suite (e.g. wordpress-security-critic) instead of the "
+                        "candidate eval. Uses skill/baseline-zero-shot/baseline-few-shot with strong=skill.")
+    p.add_argument("--out", default=None, help="Results subdirectory under evals/results/ (critic-corpus path).")
     p.add_argument("--run-id", required=True)
     p.add_argument("--gen-from", default="pairwise-cert-1",
                    help="Run-id whose checkpoint/gen/ holds the committed generations to re-score.")
@@ -508,8 +749,8 @@ def main():  # pragma: no cover
     p.add_argument("--judge-2", default=None, help="Optional second judge for the agreement cross-check.")
     p.add_argument("--fast", action="store_true", help="runs=1 directional read.")
     p.add_argument("--runs", type=int, default=3)
-    p.add_argument("--fixtures", nargs="*", default=list(PILOT_FIXTURES))
-    p.add_argument("--conditions", nargs="*", default=list(CONDITIONS))
+    p.add_argument("--fixtures", nargs="*", default=None)
+    p.add_argument("--conditions", nargs="*", default=None)
     p.add_argument("--timeout-sec", type=int, default=600)
     p.add_argument("--n-boot", type=int, default=2000)
     p.add_argument("--generate", action="store_true",
@@ -521,12 +762,17 @@ def main():  # pragma: no cover
     p.add_argument("--upstream-project", type=Path, default=DEFAULT_UPSTREAM_PROJECT)
     args = p.parse_args()
 
-    runs = 1 if args.fast else args.runs
-    fixtures, conditions = args.fixtures, args.conditions
-    out_dir = RESULTS_DIR / args.run_id
-
     def progress(phase, i, n, label):
         print(f"[{phase} {i}/{n}] {label}", flush=True)
+
+    if args.suite:
+        run_critic_corpus(args, progress)
+        return
+
+    runs = 1 if args.fast else args.runs
+    fixtures = args.fixtures if args.fixtures else list(PILOT_FIXTURES)
+    conditions = args.conditions if args.conditions else list(CONDITIONS)
+    out_dir = RESULTS_DIR / args.run_id
 
     if args.generate:
         gen_dir = out_dir / "checkpoint" / "gen"
