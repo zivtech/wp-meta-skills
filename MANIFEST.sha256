@@ -1,6 +1,7 @@
 bb2f12f4a529c39fb3dc6bf7e70e367e8f47708327861258457ba633520dfb9d  .agents/skills/wordpress-block-executor/SKILL.md
 4a575a2fee19d41b7e1a74e5f8b7bd8c4ac67b0cb64f46578733548bf178912a  .agents/skills/wordpress-blueprint-executor/SKILL.md
 fe808408af76277690ea5201ecacbea2b47b2bd5b0dbd14f356ace548d2f8c2f  .agents/skills/wordpress-critic/SKILL.md
+2669862a4d9e898bff8ec6e35cffdbbca14483c2ee60ced4797a5499bb0d5502  .agents/skills/wordpress-environment-probe/SKILL.md
 d6b264efd4b94efaf03272e907db221b7bfa6395ae4695de9ece9923e595bca9  .agents/skills/wordpress-performance-critic/SKILL.md
 922d39996ed12b671fb38dd9de5994a6ce00e8d44cb9a6bfafa61294599fe9ca  .agents/skills/wordpress-planner.block/SKILL.md
 c7a0f7c1280037764415251ca81ef9b9b66e34bf72389dc7351c46a042178af5  .agents/skills/wordpress-planner.content-model/SKILL.md
@@ -17,6 +18,7 @@ ce62bd90ed779690e12d6e22ebce6eb6448e4d1cd35eb49959a01c5118986bc8  .claude/agents
 6a1de9b3fb7a653a6adfb93d592fb6aea37a6bc845f802ea5df473a11bfb2b9b  .claude/agents/wordpress-blueprint-executor.md
 0f41b73b6a0844db807d597ca700754294abfb6530a20daeff2b6e209906bc68  .claude/agents/wordpress-content-model-planner.md
 1311fa5cc633f0d9d6615d81f479810a6638d62d5bddcb8aa3d5c9b3e157b674  .claude/agents/wordpress-critic.md
+fe7305753fc8af02f5ffb82f09512fcf21773ba7d5d7e4bf072b997b84f94ba8  .claude/agents/wordpress-environment-probe.md
 c4c53cc8e4b46367baf4de321ac28f9fc7f8fce5543e3de7265005c15a83e47a  .claude/agents/wordpress-migration-planner.md
 ea6dff3e5db3c72e3312bf7d12392d6ed1aa7f7a5450f87a77f068fb77879f82  .claude/agents/wordpress-performance-critic.md
 d72cd3cf6604554e389357c821f499b863a13ea1b64a3b13ab9b898fdfaf0e1a  .claude/agents/wordpress-planner.md
@@ -29,6 +31,7 @@ d325b5463c1a0c5e5727413c1dd37d32fab463e2d7f1da4f93ff07a601a29413  .claude/agents
 69e9874c7c74ca07f5f333f1351d2fcc22d963da0f1074bb56cb9c1ed521931e  .claude/skills/wordpress-block-executor/SKILL.md
 e33db0f5e6f6dddae07596779085e8f536317b290fe69077e7abb50123772405  .claude/skills/wordpress-blueprint-executor/SKILL.md
 ca0866ca92821a3093d4b30caadf0e3f1373c529cb202f7b88a467439aefac2b  .claude/skills/wordpress-critic/SKILL.md
+6b4d385c6e723185471034d5b5395ccbe87798671e9e5140ccc154cf9d962fb8  .claude/skills/wordpress-environment-probe/SKILL.md
 dd9c440382ed7b0be4bd2d6402d2ab540ff92d70ed559acc57f2cc7b80d38f5f  .claude/skills/wordpress-performance-critic/SKILL.md
 a0f37834b31649aa73f1b841fe680b156e5c5f959e34804825356115ff9d4369  .claude/skills/wordpress-planner.block/SKILL.md
 aad6ac460c56c0231a45640334edec2f783366fbc57f4f87cd8082b3479dde03  .claude/skills/wordpress-planner.content-model/SKILL.md
@@ -45,6 +48,7 @@ e58627106e8b98fb20935adc101fb3e00c74f9323bf3888c66ead2b09ebbff89  .codex/agents/
 ce30b219ed131e0e2637be461f03a174986cbd0c4d4e1b0788092f945cead6a6  .codex/agents/wordpress-blueprint-executor.toml
 8c69fa792d5f0c9a9c907d7600d344d24d46a7551faddd3a9ef3decb666dd8a8  .codex/agents/wordpress-content-model-planner.toml
 9cc7faa9389f0d359e58e089a835484494cb5a8d2d39d36b60129ac619d6cbb8  .codex/agents/wordpress-critic.toml
+5b23a87d0f3a912142c70fcfcf2e9ba4cce6ba66a4fd496f48fa4b3d10d8308e  .codex/agents/wordpress-environment-probe.toml
 67ac2f8bb05c4720c4f79a13b2439febc77b589b469b3a84a3779d8a18be0384  .codex/agents/wordpress-migration-planner.toml
 c11bf7acc42624bda8abb069db588dbac377a73c9ca28b713f2f60d2f01085b2  .codex/agents/wordpress-performance-critic.toml
 62c3f287cc36e265f0cfb032b2f8ada8c66c5ab4f87a7690fa0bc351c9907906  .codex/agents/wordpress-planner.toml
@@ -54,4 +58,4 @@ cc38ca4b599561c0c26cfb33f54dfc2f43b90933d7fd2bfbbc7273cdca8ef564  .codex/agents/
 962a8e6edb96fc724476c6e863325da16dbd64a6127cbdfd600a672e8678b1ff  .codex/agents/wordpress-theme-critic.toml
 727c0386358ad533ffaf0dd09322225f2eb9db6e2c5f80710c0369d0ce4bf14a  .codex/agents/wordpress-theme-executor.toml
 2074a0348cb26a6634570c864857009a644fa3fe594d21db7379172a508e848f  .codex/agents/wordpress-theme-planner.toml
-f01bb41dd7dc488dcb97bda3e0b25b44e1cec81dd9cbb03fad816b53f67205d0  skills.sh.json
+75de8d385ebf8d3ccf621939d30a01e31fb2e46cd20ecc77d3f3646b0b80aabc  skills.sh.json

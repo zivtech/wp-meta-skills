@@ -18,9 +18,11 @@
 | wordpress-theme-critic | critic | claude-fable-5 | `/wordpress-theme-critic` | wordpress-theme-planner |
 | wordpress-security-critic | critic | claude-fable-5 | `/wordpress-security-critic` | wordpress-plugin-planner |
 | wordpress-performance-critic | critic | claude-fable-5 | `/wordpress-performance-critic` | wordpress-planner |
+| wordpress-environment-probe | prober | claude-sonnet-4-6 | `/wordpress-environment-probe` | every planner, executor, and critic |
 
 ## WordPress Lifecycle
 
+0. Measure with `/wordpress-environment-probe` before planning. A prober measures the environment and writes no artifact but its own capability manifest. It emits `capability-manifest.json`, in which only `AVAILABLE` satisfies a requirement: `BLOCKED` and `UNKNOWN` never do. Pass it downstream with `validate_wordpress_skill_output.py --capability-manifest capability-manifest.json`.
 1. Plan with `/wordpress-planner` or a focused planner. Mature V1 planners require current-state evidence, WordPress-native decisions, exact WordPress API/hook/file/command names where relevant, assumptions, verification strategy, acceptance criteria, and critic checkpoints.
 2. Generate artifacts with a WordPress executor when the plan is sufficiently specific. Executors must preserve spec fidelity, stop on critical ambiguity, log deviations, name exact implementation surfaces, and produce verification packets.
 3. Review with the general critic plus the focused critic for theme, security, or performance risk. Critics must use evidence-backed findings, severity calibration, exact remediation APIs, gap analysis, and false-positive control.

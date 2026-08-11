@@ -317,6 +317,7 @@ def test_marker_registry_is_centralized_in_pyproject():
         "live_provider",
         "real_api_lint",
         "real_security_gate",
+        "real_wp_env",
     }
     assert not (ROOT / "pytest.ini").exists()
 
@@ -379,8 +380,9 @@ def test_workflow_uses_locked_directory_wide_corpus_commands():
         )
         assert normalized.count(command) == 1
     assert "pip install --upgrade pytest pyyaml" not in source.lower()
-    assert source.count("uv lock --check") == 3
-    assert source.count("uv sync --locked --extra test") == 3
+    # sandbox-feasibility, generated-runtime-boundary, live-wp-env-probe, validate
+    assert source.count("uv lock --check") == 4
+    assert source.count("uv sync --locked --extra test") == 4
     paths = workflow["on"]["pull_request"]["paths"]
     for required in (".python-version", "pyproject.toml", "uv.lock", "requirements-validation.txt"):
         assert required in paths

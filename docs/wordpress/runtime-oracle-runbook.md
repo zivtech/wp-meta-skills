@@ -2,11 +2,49 @@
 
 Updated: 2026-07-15.
 
-The WordPress executor evidence stack has three deterministic layers before any LLM judge or critic review:
+The WordPress executor evidence stack has four deterministic layers before any LLM judge or critic review:
 
+0. Capability manifest: records what the environment can actually run, before anything is planned.
 1. Saved packet contract: validates the executor's markdown output packet.
 2. Packet materializer: converts materializable packets into generated files.
 3. Generated artifact oracle: validates the files produced from that packet.
+
+## Capability Oracle
+
+Run this before the packet gate, and before any planner or critic spends a token on a WordPress task. It answers what the agent can actually run here, rather than what upstream documentation says exists:
+
+```bash
+python3 evals/harness/probe_wordpress_environment.py --path . --out capability-manifest.json
+python3 evals/harness/probe_wordpress_environment.py --path . --print
+python3 evals/harness/probe_wordpress_environment.py --path . --allow-eval --out capability-manifest.json
+```
+
+The probe reports; it never remediates, never installs, and never modifies a WordPress site. Every command it runs passes through one choke point that refuses anything outside a read-only allowlist: `<prefix> --info`, `cli version`, `help <command>`, `core version --extra`, `core is-installed`, `option get siteurl`, `option get home`, `plugin list`, `theme list`, `ability list`, `plugin check --help`, plus pinned host-tool version checks (`php`, `node`, `composer`, `phpcs --version`/`-i`, `phpstan`, and the two `npx --no-install` version probes). A denylist over the ~400-command WP-CLI surface fails open the moment a command is missing from it; the allowlist fails closed. `wp eval` is the one deliberate exception, gated behind `--allow-eval`, which defaults to off because it runs arbitrary PHP in the WordPress context.
+
+Output is `capability-manifest.json`, validated against `evals/harness/schemas/capability-manifest.schema.json` before it is written. Statuses are `AVAILABLE`, `UNAVAILABLE`, `BLOCKED`, and `UNKNOWN`. The load-bearing rule, stated in the schema and enforced in the consuming validator, is that `BLOCKED` and `UNKNOWN` never satisfy a capability requirement. Absence of a failure is not a pass.
+
+Ground truth is `<prefix> --info`, not a marker file. A marker file picks the invocation prefix; if the prefix does not answer, `environment.kind` is `UNKNOWN` regardless of which marker matched. The wp-env Playground runtime is called out specifically: it provides no `wp-env run`, therefore no WP-CLI, and the manifest reports `wp_env_playground_runtime_has_no_cli` rather than inferring a working CLI from the presence of `.wp-env.json`.
+
+Consume the manifest as a sidecar, exactly like `security-gate.json`:
+
+```bash
+python3 evals/harness/validate_wordpress_skill_output.py --skill wordpress-planner --output <candidate-output.md> --capability-manifest capability-manifest.json
+```
+
+`check_capability_grounding` (weight 3) scans fenced and inline code in the candidate output for WP-CLI invocations and verification-tool invocations. An instruction to run a command the manifest marks `UNAVAILABLE` fails the gate and quotes the manifest's reason string. A `BLOCKED` or `UNKNOWN` status is reported as a named unresolved state rather than passing silently. Omitting the flag skips the check, matching the optional-sidecar semantics of `--security-gate`.
+
+A probe is a snapshot, not a subscription. `generated_at` is stamped in UTC; treat a manifest older than the current session as stale and re-probe. The manifest establishes what can be run. It does not establish that anyone read the output, and it is not evidence of correctness.
+
+Additional flags: `--allow-remote` opts into validating a `.wp-cli.yml` ssh alias over SSH (off by default so a checked-in alias cannot make a fresh clone dial out to a third-party host — the manifest reports `remote_probing_requires_allow_remote` instead); `--budget-seconds` bounds the whole run's wall clock (default 300; exhausted probes record `global_budget_exhausted` rather than running); `--print` and `--out` compose, and `--print` without `--out` suppresses the default file.
+
+### Live Scenario C and golden re-recording
+
+Two fail-closed opt-ins drive the live wp-env tests in `evals/harness/tests/test_probe_wordpress_environment.py`:
+
+- `WP_META_SKILLS_REQUIRE_TOOL=wp-env` runs the environment-independent invariants against a live wp-env; CI's `live-wp-env-probe` job provisions a scratch project (`{"core": null, "plugins": ["https://downloads.wordpress.org/plugin/plugin-check.zip"], "testsEnvironment": false}`) with pinned `@wordpress/env@11.12.0` and runs exactly this.
+- `WP_META_SKILLS_REQUIRE_TOOL=wp-env-golden` additionally checks byte-equality with `evals/harness/tests/fixtures/capability_manifest/golden-wp-env-docker.json`. The golden bakes in the recording machine's host toolchain (host `php`/`node`/`composer` versions and the project's vendored `phpcs`/`phpstan`), so this check belongs on the recording machine, not in CI.
+
+Both take `WP_META_SKILLS_WP_ENV_PATH=<wp-env-project-root>`. To re-record the golden after an intentional manifest change: start the recording project's wp-env, run `probe(root, allow_eval=False, argv=["probe_wordpress_environment.py", "--path", "."])`, pass the result through `normalize_manifest`, and write it with `json.dumps(..., indent=2, sort_keys=True)` plus a trailing newline; then run the `wp-env-golden` opt-in to confirm equality before committing.
 
 ## Packet Gate
 
@@ -560,6 +598,8 @@ Use `--strict-full-profile` when PHPCS/WPCS and WP-CLI Plugin Check have already
 - `pass`: every required check for the chosen command passed.
 - `fail`: the generated artifact violated a required check.
 - `blocked`: the artifact could not be evaluated because required runtime tooling or environment state was missing.
+
+The capability manifest uses the same discipline with a wider enum: `AVAILABLE`, `UNAVAILABLE`, `BLOCKED`, `UNKNOWN`. Only `AVAILABLE` satisfies a requirement.
 
 Do not use a static artifact pass as evidence for WPCS, Plugin Check, wp-env, PHPUnit, block validation, editor smoke, or frontend smoke claims. Those require the runtime profile or a stronger environment-specific command recorded alongside the artifact.
 

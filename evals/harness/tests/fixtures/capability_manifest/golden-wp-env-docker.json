@@ -1,0 +1,884 @@
+{
+  "abilities": {
+    "api_present": null,
+    "api_source": null,
+    "notes": [
+      "abilities_api_inferred_from_core_version"
+    ],
+    "publicly_exposed_count": null,
+    "reason": "ability_command_absent_and_eval_disabled",
+    "registered": [],
+    "registered_count": null,
+    "status": "UNKNOWN"
+  },
+  "allow_eval": false,
+  "blockers": [
+    {
+      "affects": [
+        "can_reach_mcp_abilities"
+      ],
+      "code": "mcp_adapter_absent",
+      "detail": "No publicly exposed MCP ability was observed; exposure is default-deny via meta.mcp.public.",
+      "remediation_hint": "composer require wordpress/mcp-adapter (out of scope for the probe - see rec 07).",
+      "severity": "MAJOR"
+    },
+    {
+      "affects": [
+        "can_register_abilities"
+      ],
+      "code": "abilities_api_unconfirmed",
+      "detail": "The Abilities API was not confirmed present by a probe. Core version alone is an inference, not evidence.",
+      "remediation_hint": "Re-run with --allow-eval, or install wp-cli ability-command (out of scope for the probe - see rec 07).",
+      "severity": "MAJOR"
+    }
+  ],
+  "capabilities": {
+    "can_provision_ephemeral_site": true,
+    "can_reach_mcp_abilities": false,
+    "can_read_site_state": true,
+    "can_register_abilities": false,
+    "can_run_plugin_check": true,
+    "can_run_static_analysis": true,
+    "can_run_wp_cli": true
+  },
+  "environment": {
+    "cwd": "<normalized>",
+    "host": {
+      "composer": "2.10.2",
+      "node": "24.13.0",
+      "os": "darwin",
+      "php": "8.5.8"
+    },
+    "invocation_prefix": [
+      "wp-env",
+      "run",
+      "cli",
+      "wp"
+    ],
+    "kind": "wp-env",
+    "marker_file": ".wp-env.json",
+    "other_markers_present": [],
+    "remote_alias": null,
+    "status": "AVAILABLE",
+    "wp_env_runtime": "docker"
+  },
+  "evidence": [
+    {
+      "argv": [
+        "<filesystem>",
+        "exists",
+        ".ddev/config.yaml"
+      ],
+      "claim": "environment.marker_file",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "absent"
+    },
+    {
+      "argv": [
+        "<filesystem>",
+        "exists",
+        ".lando.yml"
+      ],
+      "claim": "environment.marker_file",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "absent"
+    },
+    {
+      "argv": [
+        "<filesystem>",
+        "exists",
+        ".wp-env.json"
+      ],
+      "claim": "environment.marker_file",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "present"
+    },
+    {
+      "argv": [
+        "<filesystem>",
+        "exists",
+        ".wp-env.override.json"
+      ],
+      "claim": "environment.marker_file",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "absent"
+    },
+    {
+      "argv": [
+        "<filesystem>",
+        "exists",
+        ".wp-cli.yml"
+      ],
+      "claim": "environment.marker_file",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "absent"
+    },
+    {
+      "argv": [
+        "<filesystem>",
+        "exists",
+        "wp-cli.local.yml"
+      ],
+      "claim": "environment.marker_file",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "absent"
+    },
+    {
+      "argv": [
+        "<filesystem>",
+        "exists",
+        "app/public/wp-config.php"
+      ],
+      "claim": "environment.marker_file",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "absent"
+    },
+    {
+      "argv": [
+        "<filesystem>",
+        "exists",
+        "wp-config.php"
+      ],
+      "claim": "environment.marker_file",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "absent"
+    },
+    {
+      "argv": [
+        "<filesystem>",
+        "exists",
+        ".studio"
+      ],
+      "claim": "environment.marker_file",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "absent"
+    },
+    {
+      "argv": [
+        "php",
+        "--version"
+      ],
+      "claim": "environment.host.php",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "PHP 8.5.8 (cli) (built: Jul  1 2026 03:46:27) (NTS)\nCopyright (c) The PHP Group\nBuilt by Homebrew\nZend Engine v4.5.8, Copyright (c) Zend Technologies\n    with Zend OPcache v8.5.8, Copyright (c), by Zend Technologies"
+    },
+    {
+      "argv": [
+        "node",
+        "--version"
+      ],
+      "claim": "environment.host.node",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "v24.13.0"
+    },
+    {
+      "argv": [
+        "composer",
+        "--version"
+      ],
+      "claim": "environment.host.composer",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "PHP version 8.5.8 (/opt/homebrew/Cellar/php/8.5.8/bin/php)\nRun the \"diagnose\" command to get more detailed diagnostics output.",
+      "stdout_excerpt": "Composer version 2.10.2 2026-07-01 11:24:45"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "--info"
+      ],
+      "claim": "wp_cli",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "\u2139 Starting 'wp --info' on the cli container. \n\n\u2714 Ran `wp --info` in 'cli'. (in <normalized>)",
+      "stdout_excerpt": "OS:\tLinux [REDACTED]\nShell:\t\nPHP binary:\t/usr/local/bin/php\nPHP version:\t8.3.33\nphp.ini used:\t/usr/local/etc/php/php.ini\nMySQL binary:\t/usr/bin/mariadb\nMySQL version:\tmariadb from 11.8.8-MariaDB, client 15.2 for Linux (aarch64) using readline 5.1\nSQL modes:\t\nWP-CLI root dir:\tphar://wp-cli.phar/vendor/wp-cli/wp-cli\nWP-CLI vendor dir:\tphar://wp-cli.phar/vendor\nWP_CLI phar path:\tphar:///usr/local/bin/wp\nWP-CLI packages dir:\t\nWP-CLI cache dir:\t~/.wp-cli/cache\nWP-CLI global config:\t\nWP-CLI project config:\t/var/www/html/wp-cli.yml\nWP-CLI version:\t2.12.0"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "cli",
+        "version"
+      ],
+      "claim": "wp_cli.version",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "\u2139 Starting 'wp cli version' on the cli container. \n\n\u2714 Ran `wp cli version` in 'cli'. (in <normalized>)",
+      "stdout_excerpt": "WP-CLI 2.12.0"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "cli",
+        "version"
+      ],
+      "claim": "wp_cli.is_stable_release",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "2.12.0"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "help",
+        "ability"
+      ],
+      "claim": "wp_cli.commands.ability",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "\u2139 Starting 'wp help ability' on the cli container. \n\nError: 'ability' is not a registered wp command. See 'wp help' for available commands.\n\u2716 Command failed with exit code 1\nCommand failed with exit code 1",
+      "stdout_excerpt": ""
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "help",
+        "block"
+      ],
+      "claim": "wp_cli.commands.block",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "\u2139 Starting 'wp help block' on the cli container. \n\nError: 'block' is not a registered wp command. See 'wp help' for available commands.\n\u2716 Command failed with exit code 1\nCommand failed with exit code 1",
+      "stdout_excerpt": ""
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "help",
+        "doctor"
+      ],
+      "claim": "wp_cli.commands.doctor",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "\u2139 Starting 'wp help doctor' on the cli container. \n\nError: 'doctor' is not a registered wp command. See 'wp help' for available commands.\n\u2716 Command failed with exit code 1\nCommand failed with exit code 1",
+      "stdout_excerpt": ""
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "help",
+        "profile"
+      ],
+      "claim": "wp_cli.commands.profile",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "\u2139 Starting 'wp help profile' on the cli container. \n\nError: 'profile' is not a registered wp command. See 'wp help' for available commands.\n\u2716 Command failed with exit code 1\nCommand failed with exit code 1",
+      "stdout_excerpt": ""
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "help",
+        "plugin"
+      ],
+      "claim": "wp_cli.commands.plugin",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "\u2139 Starting 'wp help plugin' on the cli container. \n\n\u2714 Ran `wp help plugin` in 'cli'. (in <normalized>)",
+      "stdout_excerpt": "NAME\n\n  wp plugin\n\nDESCRIPTION\n\n  Plugin check command.\n\nSYNOPSIS\n\n  wp plugin <command>\n\nSUBCOMMANDS\n\n  activate                   Activates one or more plugins.\n  auto-updates               Manages plugin auto-updates.\n  check                      Runs plugin check.\n  deactivate                 Deactivates one or more plugins.\n  delete                     Deletes plugin files without deactivating or\n                             uninstalling.\n  get                        Gets details about an installed plugin.\n  install                    Installs one or more plugins.\n  is-active                  Checks if a given plugin is active.\n  is-installed               Checks if a given plugin is installed.\n  list                       Gets a list of plugins.\n  list-check-categories      Lists the available check categories for plugins.\n  list-checks                Lists the available checks for plugins.\n  path                       Gets the path to a plugin or to the plugin\n                             directory.\n  search                     Searches the WordPress.org plugin directory.\n  status                     Reveals the status of one or all plugins.\n  toggle                     Toggles a plugin's activation state.\n  uninstall                  Uninstalls one or more plugins.\n  update                     Updates one or more plugins.\n  verify-checksums           Verifies plugin files against WordPress.org's\n                             checksums.\n\n\n\nGLOBAL PARAMETERS\n\n  --path=<path>\n      Path to the WordPress files.\n\n  --url=<url>\n      Pretend request came from given URL. In multisite, this argument is how\n      the target site is specified.\n\n  --ssh=[<scheme>:][<user>@]<host|container>[:<port>][<path>]\n      Perform operation against a remote server over SSH (or a container using\n      scheme of \"docker\", \"docker-compose\", \"docker-compose-run\", \"vagrant\").\n\n  --http=<http>\n      Perform operation against a remote WordPress installation over HTTP.\n\n  --user=<id|login"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "help",
+        "theme"
+      ],
+      "claim": "wp_cli.commands.theme",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "\u2139 Starting 'wp help theme' on the cli container. \n\n\u2714 Ran `wp help theme` in 'cli'. (in <normalized>)",
+      "stdout_excerpt": "NAME\n\n  wp theme\n\nDESCRIPTION\n\n  Manages themes, including installs, activations, and updates.\n\nSYNOPSIS\n\n  wp theme <command>\n\nSUBCOMMANDS\n\n  activate          Activates a theme.\n  auto-updates      Manages theme auto-updates.\n  delete            Deletes one or more themes.\n  disable           Disables a theme on a WordPress multisite install.\n  enable            Enables a theme on a WordPress multisite install.\n  get               Gets details about a theme.\n  install           Installs one or more themes.\n  is-active         Checks if a given theme is active.\n  is-installed      Checks if a given theme is installed.\n  list              Gets a list of themes.\n  mod               Sets, gets, and removes theme mods.\n  path              Gets the path to a theme or to the theme directory.\n  search            Searches the WordPress.org theme directory.\n  status            Reveals the status of one or all themes.\n  update            Updates one or more themes.\n\n  See the WordPress [Theme Handbook][1] developer resource for more information\n  on themes.\n\n  ---\n  [1] https://developer.wordpress.org/themes/\n\nEXAMPLES\n\n    # Install the latest version of a theme from wordpress.org and activate\n    $ wp theme install twentysixteen --activate\n    Installing Twenty Sixteen (1.2)\n    Downloading install package from\n    http://downloads.wordpress.org/theme/twentysixteen.1.2.zip...\n    Unpacking the package...\n    Installing the theme...\n    Theme installed successfully.\n    Activating 'twentysixteen'...\n    Success: Switched to 'Twenty Sixteen' theme.\n    Success: Installed 1 of 1 themes.\n\n    # Get details of an installed theme\n    $ wp theme get twentysixteen --fields=name,title,version\n    +---------+----------------+\n    | Field   | Value          |\n    +---------+----------------+\n    | name    | Twenty Sixteen |\n    | title   | Twenty Sixteen |\n    | version | 1.2            |\n    +---------+----------------+\n\n    # Get status of theme\n    $ wp theme status twentysixteen\n"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "help",
+        "option"
+      ],
+      "claim": "wp_cli.commands.option",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "\u2139 Starting 'wp help option' on the cli container. \n\n\u2714 Ran `wp help option` in 'cli'. (in <normalized>)",
+      "stdout_excerpt": "NAME\n\n  wp option\n\nDESCRIPTION\n\n  Retrieves and sets site options, including plugin and WordPress settings.\n\nSYNOPSIS\n\n  wp option <command>\n\nSUBCOMMANDS\n\n  add               Adds a new option value.\n  delete            Deletes an option.\n  get               Gets the value for an option.\n  get-autoload      Gets the 'autoload' value for an option.\n  list              Lists options and their values.\n  patch             Updates a nested value in an option.\n  pluck             Gets a nested value from an option.\n  set-autoload      Sets the 'autoload' value for an option.\n  update            Updates an option value.\n\n  See the [Plugin Settings API][1] and the [Theme Options][2] for more\n  information on adding customized options.\n\n  ---\n  [1] https://developer.wordpress.org/plugins/settings/settings-api/\n  [2] https://developer.wordpress.org/themes/customize-api/\n\nEXAMPLES\n\n    # Get site URL.\n    $ wp option get siteurl\n    http://example.com\n\n    # Add option.\n    $ wp option add my_option foobar\n    Success: Added 'my_option' option.\n\n    # Update option.\n    $ wp option update my_option '{\"foo\": \"bar\"}' --format=json\n    Success: Updated 'my_option' option.\n\n    # Delete option.\n    $ wp option delete my_option\n    Success: Deleted 'my_option' option.\n\nGLOBAL PARAMETERS\n\n  --path=<path>\n      Path to the WordPress files.\n\n  --url=<url>\n      Pretend request came from given URL. In multisite, this argument is how\n      the target site is specified.\n\n  --ssh=[<scheme>:][<user>@]<host|container>[:<port>][<path>]\n      Perform operation against a remote server over SSH (or a container using\n      scheme of \"docker\", \"docker-compose\", \"docker-compose-run\", \"vagrant\").\n\n  --http=<http>\n      Perform operation against a remote WordPress installation over HTTP.\n\n  --user=<id|login|email>\n      Set the WordPress user.\n\n  --skip-plugins[=<plugins>]\n      Skip loading all plugins, or a comma-separated list of plugins. Note:\n      mu-plugins are still loaded.\n\n  --skip-themes["
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "help",
+        "post"
+      ],
+      "claim": "wp_cli.commands.post",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "\u2139 Starting 'wp help post' on the cli container. \n\n\u2714 Ran `wp help post` in 'cli'. (in <normalized>)",
+      "stdout_excerpt": "NAME\n\n  wp post\n\nDESCRIPTION\n\n  Manages posts, content, and meta.\n\nSYNOPSIS\n\n  wp post <command>\n\nSUBCOMMANDS\n\n  create         Creates a new post.\n  delete         Deletes an existing post.\n  edit           Launches system editor to edit post content.\n  exists         Verifies whether a post exists.\n  generate       Generates some posts.\n  get            Gets details about a post.\n  list           Gets a list of posts.\n  meta           Adds, updates, deletes, and lists post custom fields.\n  term           Adds, updates, removes, and lists post terms.\n  update         Updates one or more existing posts.\n  url-to-id      Gets the post ID for a given URL.\n\nEXAMPLES\n\n    # Create a new post.\n    $ wp post create --post_type=post --post_title='A sample post'\n    Success: Created post 123.\n\n    # Update an existing post.\n    $ wp post update 123 --post_status=draft\n    Success: Updated post 123.\n\n    # Delete an existing post.\n    $ wp post delete 123\n    Success: Trashed post 123.\n\nGLOBAL PARAMETERS\n\n  --path=<path>\n      Path to the WordPress files.\n\n  --url=<url>\n      Pretend request came from given URL. In multisite, this argument is how\n      the target site is specified.\n\n  --ssh=[<scheme>:][<user>@]<host|container>[:<port>][<path>]\n      Perform operation against a remote server over SSH (or a container using\n      scheme of \"docker\", \"docker-compose\", \"docker-compose-run\", \"vagrant\").\n\n  --http=<http>\n      Perform operation against a remote WordPress installation over HTTP.\n\n  --user=<id|login|email>\n      Set the WordPress user.\n\n  --skip-plugins[=<plugins>]\n      Skip loading all plugins, or a comma-separated list of plugins. Note:\n      mu-plugins are still loaded.\n\n  --skip-themes[=<themes>]\n      Skip loading all themes, or a comma-separated list of themes.\n\n  --skip-packages\n      Skip loading all installed packages.\n\n  --require=<path>\n      Load PHP file before running the command (may be used more than once).\n\n  --exec=<php-code>\n      Execute PHP code"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "help",
+        "core"
+      ],
+      "claim": "wp_cli.commands.core",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "\u2139 Starting 'wp help core' on the cli container. \n\n\u2714 Ran `wp help core` in 'cli'. (in <normalized>)",
+      "stdout_excerpt": "NAME\n\n  wp core\n\nDESCRIPTION\n\n  Downloads, installs, updates, and manages a WordPress installation.\n\nSYNOPSIS\n\n  wp core <command>\n\nSUBCOMMANDS\n\n  check-update           Checks for WordPress updates via Version Check API.\n  download               Downloads core WordPress files.\n  install                Runs the standard WordPress installation process.\n  is-installed           Checks if WordPress is installed.\n  multisite-convert      Transforms an existing single-site installation into a\n                         multisite installation.\n  multisite-install      Installs WordPress multisite from scratch.\n  update                 Updates WordPress to a newer version.\n  update-db              Runs the WordPress database update procedure.\n  verify-checksums       Verifies WordPress files against WordPress.org's\n                         checksums.\n  version                Displays the WordPress version.\n\nEXAMPLES\n\n    # Download WordPress core\n    $ wp core download --locale=nl_NL\n    Downloading WordPress 4.5.2 (nl_NL)...\n    md5 hash verified: c5366d05b521831dd0b29dfc386e56a5\n    Success: WordPress downloaded.\n\n    # Install WordPress\n    $ wp core install --url=example.com --title=Example --admin_user=supervisor\n    --admin_password=strongpassword --admin_email=info@example.com\n    Success: WordPress installed successfully.\n\n    # Display the WordPress version\n    $ wp core version\n    4.5.2\n\nGLOBAL PARAMETERS\n\n  --path=<path>\n      Path to the WordPress files.\n\n  --url=<url>\n      Pretend request came from given URL. In multisite, this argument is how\n      the target site is specified.\n\n  --ssh=[<scheme>:][<user>@]<host|container>[:<port>][<path>]\n      Perform operation against a remote server over SSH (or a container using\n      scheme of \"docker\", \"docker-compose\", \"docker-compose-run\", \"vagrant\").\n\n  --http=<http>\n      Perform operation against a remote WordPress installation over HTTP.\n\n  --user=<id|login|email>\n      Set the WordPress user.\n\n  --skip-plugins[="
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "core",
+        "version",
+        "--extra"
+      ],
+      "claim": "wordpress.core_version",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "\u2139 Starting 'wp core version --extra' on the cli container. \n\n\u2714 Ran `wp core version --extra` in 'cli'. (in <normalized>)",
+      "stdout_excerpt": "WordPress version: 7.0.3\nDatabase revision: 61833\nTinyMCE version:   4.9110 (49110-20250317)\nPackage language:  en_US"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "core",
+        "is-installed"
+      ],
+      "claim": "wordpress.is_installed",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "\u2139 Starting 'wp core is-installed' on the cli container. \n\n\u2714 Ran `wp core is-installed` in 'cli'. (in <normalized>)",
+      "stdout_excerpt": ""
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "--info"
+      ],
+      "claim": "wordpress.php_version",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "PHP version:\t8.3.33"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "config",
+        "get",
+        "MULTISITE"
+      ],
+      "claim": "wordpress.is_multisite",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "\u2139 Starting 'wp config get MULTISITE' on the cli container. \n\nError: The constant or variable 'MULTISITE' is not defined in the 'wp-config.php' file.\n\u2716 Command failed with exit code 1\nCommand failed with exit code 1",
+      "stdout_excerpt": ""
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "option",
+        "get",
+        "siteurl"
+      ],
+      "claim": "wordpress.siteurl",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "\u2139 Starting 'wp option get siteurl' on the cli container. \n\n\u2714 Ran `wp option get siteurl` in 'cli'. (in <normalized>)",
+      "stdout_excerpt": "http://localhost:8901"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "option",
+        "get",
+        "home"
+      ],
+      "claim": "wordpress.home",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "\u2139 Starting 'wp option get home' on the cli container. \n\n\u2714 Ran `wp option get home` in 'cli'. (in <normalized>)",
+      "stdout_excerpt": "http://localhost:8901"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "plugin",
+        "list",
+        "--format=json",
+        "--fields=name,status,version,update"
+      ],
+      "claim": "wordpress.active_plugins",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "\u2139 Starting 'wp plugin list --format=json --fields=name,status,version,update' on the cli container. \n\n\u2714 Ran `wp plugin list --format=json --fields=name,status,version,update` in 'cli'. (in <normalized>)",
+      "stdout_excerpt": "[{\"name\":\"hello\",\"status\":\"inactive\",\"version\":\"1.7.2\",\"update\":\"none\"},{\"name\":\"plugin-check\",\"status\":\"active\",\"version\":\"2.0.0\",\"update\":\"none\"}]"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "theme",
+        "list",
+        "--format=json",
+        "--fields=name,status,version"
+      ],
+      "claim": "wordpress.active_themes",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "\u2139 Starting 'wp theme list --format=json --fields=name,status,version' on the cli container. \n\n\u2714 Ran `wp theme list --format=json --fields=name,status,version` in 'cli'. (in <normalized>)",
+      "stdout_excerpt": "[{\"name\":\"twentyeleven\",\"status\":\"inactive\",\"version\":\"5.1\"},{\"name\":\"twentyfifteen\",\"status\":\"inactive\",\"version\":\"4.2\"},{\"name\":\"twentyfourteen\",\"status\":\"inactive\",\"version\":\"4.5\"},{\"name\":\"twentynineteen\",\"status\":\"inactive\",\"version\":\"3.3\"},{\"name\":\"twentyseventeen\",\"status\":\"inactive\",\"version\":\"4.1\"},{\"name\":\"twentysixteen\",\"status\":\"inactive\",\"version\":\"3.8\"},{\"name\":\"twentyten\",\"status\":\"inactive\",\"version\":\"4.6\"},{\"name\":\"twentythirteen\",\"status\":\"inactive\",\"version\":\"4.6\"},{\"name\":\"twentytwelve\",\"status\":\"inactive\",\"version\":\"4.8\"},{\"name\":\"twentytwenty\",\"status\":\"inactive\",\"version\":\"3.1\"},{\"name\":\"twentytwentyfive\",\"status\":\"active\",\"version\":\"1.5\"},{\"name\":\"twentytwentyfour\",\"status\":\"inactive\",\"version\":\"1.5\"},{\"name\":\"twentytwentyone\",\"status\":\"inactive\",\"version\":\"2.8\"},{\"name\":\"twentytwentythree\",\"status\":\"inactive\",\"version\":\"1.6\"},{\"name\":\"twentytwentytwo\",\"status\":\"inactive\",\"version\":\"2.1\"}]"
+    },
+    {
+      "argv": [
+        "<derived>",
+        "plugin-list-scan",
+        "mcp-adapter"
+      ],
+      "claim": "mcp.adapter",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "hello, plugin-check"
+    },
+    {
+      "argv": [
+        "<normalized>",
+        "--version"
+      ],
+      "claim": "verification_tools.phpcs",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "PHP_CodeSniffer version 3.13.6 (stable) by Squiz and PHPCSStandards"
+    },
+    {
+      "argv": [
+        "<normalized>",
+        "-i"
+      ],
+      "claim": "verification_tools.phpcs",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "The installed coding standards are MySource, PEAR, PSR1, PSR2, PSR12, Squiz, Zend, Modernize, NormalizedArrays, Universal, PHPCSUtils, WordPress, WordPress-Core, WordPress-Docs and WordPress-Extra"
+    },
+    {
+      "argv": [
+        "<normalized>",
+        "-i"
+      ],
+      "claim": "verification_tools.wpcs",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "MySource, PEAR, PSR1, PSR2, PSR12, Squiz, Zend, Modernize, NormalizedArrays, Universal, PHPCSUtils, WordPress, WordPress-Core, WordPress-Docs, WordPress-Extra"
+    },
+    {
+      "argv": [
+        "<normalized>",
+        "--version"
+      ],
+      "claim": "verification_tools.phpstan",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "PHPStan - PHP Static Analysis Tool 2.2.8"
+    },
+    {
+      "argv": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "plugin",
+        "check",
+        "--help"
+      ],
+      "claim": "verification_tools.plugin_check",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "",
+      "stdout_excerpt": "wp-env run <container> [command...]\n\nRuns an arbitrary command in one of the underlying Docker containers. Use a double dash to pass\narguments to it. You can use bash to open a shell session. composer and phpunit are available in all\nWordPress and CLI containers. wp is also available in the CLI containers.\n\nPositionals:\n  container  The underlying Docker service to run the command on.\n        [string] [required] [choices: \"mysql\", \"tests-mysql\", \"wordpress\", \"tests-wordpress\", \"cli\","
+    },
+    {
+      "argv": [
+        "npx",
+        "--no-install",
+        "@wordpress/env",
+        "--version"
+      ],
+      "claim": "verification_tools.wp_env",
+      "duration_ms": 0,
+      "exit_code": 0,
+      "stderr_excerpt": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.",
+      "stdout_excerpt": "11.12.0"
+    },
+    {
+      "argv": [
+        "npx",
+        "--no-install",
+        "@wp-playground/cli",
+        "--version"
+      ],
+      "claim": "verification_tools.playground_cli",
+      "duration_ms": 0,
+      "exit_code": 1,
+      "stderr_excerpt": "npm warn Unknown user config \"min-release-age\". This will stop working in the next major version of npm.\nnpm error npx canceled due to missing packages and no YES option: [\"@wp-playground/cli@3.1.49\"]\nnpm error A complete log of this run can be found in: ~/.npm/_logs/<normalized>-debug-0.log",
+      "stdout_excerpt": ""
+    }
+  ],
+  "generated_at": "1970-01-01T00:00:00Z",
+  "mcp": {
+    "adapter": {
+      "prerelease": null,
+      "present": false,
+      "version": null
+    },
+    "deprecated_detected": [],
+    "notes": [],
+    "reason": "mcp_adapter_absent",
+    "servers": [],
+    "status": "UNAVAILABLE",
+    "tools": [],
+    "transports": []
+  },
+  "probe_argv": [
+    "probe_wordpress_environment.py",
+    "--path",
+    "."
+  ],
+  "probe_version": "0.1.0",
+  "schema_version": "1.0.0",
+  "verification_tools": {
+    "phpcs": {
+      "invocation": [
+        "<normalized>"
+      ],
+      "notes": [],
+      "reason": null,
+      "runtime": null,
+      "standards": [
+        "MySource",
+        "PEAR",
+        "PSR1",
+        "PSR2",
+        "PSR12",
+        "Squiz",
+        "Zend",
+        "Modernize",
+        "NormalizedArrays",
+        "Universal",
+        "PHPCSUtils",
+        "WordPress",
+        "WordPress-Core",
+        "WordPress-Docs",
+        "WordPress-Extra"
+      ],
+      "status": "AVAILABLE",
+      "version": "3.13.6",
+      "wp_stubs_version": null
+    },
+    "phpstan": {
+      "invocation": [
+        "<normalized>"
+      ],
+      "notes": [
+        "phpstan_stubs_predate_core"
+      ],
+      "reason": null,
+      "runtime": null,
+      "standards": null,
+      "status": "AVAILABLE",
+      "version": "2.2.8",
+      "wp_stubs_version": "6.9.4"
+    },
+    "phpunit": {
+      "invocation": null,
+      "notes": [],
+      "reason": "not_probed",
+      "runtime": null,
+      "standards": null,
+      "status": "UNKNOWN",
+      "version": null,
+      "wp_stubs_version": null
+    },
+    "playground_cli": {
+      "invocation": null,
+      "notes": [
+        "playground_cli_wp_support_unknown"
+      ],
+      "reason": "playground_cli_absent",
+      "runtime": null,
+      "standards": null,
+      "status": "UNKNOWN",
+      "version": null,
+      "wp_stubs_version": null
+    },
+    "plugin_check": {
+      "invocation": [
+        "wp-env",
+        "run",
+        "cli",
+        "wp",
+        "plugin",
+        "check"
+      ],
+      "notes": [],
+      "reason": null,
+      "runtime": null,
+      "standards": null,
+      "status": "AVAILABLE",
+      "version": null,
+      "wp_stubs_version": null
+    },
+    "wp_env": {
+      "invocation": null,
+      "notes": [],
+      "reason": null,
+      "runtime": "docker",
+      "standards": null,
+      "status": "AVAILABLE",
+      "version": "11.12.0",
+      "wp_stubs_version": null
+    },
+    "wpcs": {
+      "invocation": null,
+      "notes": [],
+      "reason": null,
+      "runtime": null,
+      "standards": null,
+      "status": "AVAILABLE",
+      "version": null,
+      "wp_stubs_version": null
+    }
+  },
+  "wordpress": {
+    "active_plugins": [
+      {
+        "activation_state": "inactive",
+        "name": "hello",
+        "version": "1.7.2"
+      },
+      {
+        "activation_state": "active",
+        "name": "plugin-check",
+        "version": "2.0.0"
+      }
+    ],
+    "active_themes": [
+      {
+        "activation_state": "inactive",
+        "name": "twentyeleven",
+        "version": "5.1"
+      },
+      {
+        "activation_state": "inactive",
+        "name": "twentyfifteen",
+        "version": "4.2"
+      },
+      {
+        "activation_state": "inactive",
+        "name": "twentyfourteen",
+        "version": "4.5"
+      },
+      {
+        "activation_state": "inactive",
+        "name": "twentynineteen",
+        "version": "3.3"
+      },
+      {
+        "activation_state": "inactive",
+        "name": "twentyseventeen",
+        "version": "4.1"
+      },
+      {
+        "activation_state": "inactive",
+        "name": "twentysixteen",
+        "version": "3.8"
+      },
+      {
+        "activation_state": "inactive",
+        "name": "twentyten",
+        "version": "4.6"
+      },
+      {
+        "activation_state": "inactive",
+        "name": "twentythirteen",
+        "version": "4.6"
+      },
+      {
+        "activation_state": "inactive",
+        "name": "twentytwelve",
+        "version": "4.8"
+      },
+      {
+        "activation_state": "inactive",
+        "name": "twentytwenty",
+        "version": "3.1"
+      },
+      {
+        "activation_state": "active",
+        "name": "twentytwentyfive",
+        "version": "1.5"
+      },
+      {
+        "activation_state": "inactive",
+        "name": "twentytwentyfour",
+        "version": "1.5"
+      },
+      {
+        "activation_state": "inactive",
+        "name": "twentytwentyone",
+        "version": "2.8"
+      },
+      {
+        "activation_state": "inactive",
+        "name": "twentytwentythree",
+        "version": "1.6"
+      },
+      {
+        "activation_state": "inactive",
+        "name": "twentytwentytwo",
+        "version": "2.1"
+      }
+    ],
+    "core_version": "7.0.3",
+    "home": "http://localhost:8901",
+    "is_installed": true,
+    "is_multisite": false,
+    "notes": [
+      "facts_from_wp_cli_read_probes"
+    ],
+    "php_version": "8.3.33",
+    "reason": null,
+    "siteurl": "http://localhost:8901",
+    "status": "AVAILABLE"
+  },
+  "wp_cli": {
+    "commands": {
+      "ability": {
+        "reason": "command_documented_but_not_in_stable_phar",
+        "status": "UNAVAILABLE"
+      },
+      "block": {
+        "reason": "command_documented_but_not_in_stable_phar",
+        "status": "UNAVAILABLE"
+      },
+      "core": {
+        "reason": null,
+        "status": "AVAILABLE"
+      },
+      "doctor": {
+        "reason": "package_not_installed",
+        "status": "UNAVAILABLE"
+      },
+      "option": {
+        "reason": null,
+        "status": "AVAILABLE"
+      },
+      "plugin": {
+        "reason": null,
+        "status": "AVAILABLE"
+      },
+      "post": {
+        "reason": null,
+        "status": "AVAILABLE"
+      },
+      "profile": {
+        "reason": "package_not_installed",
+        "status": "UNAVAILABLE"
+      },
+      "theme": {
+        "reason": null,
+        "status": "AVAILABLE"
+      }
+    },
+    "is_stable_release": true,
+    "notes": [],
+    "reason": null,
+    "status": "AVAILABLE",
+    "version": "2.12.0"
+  }
+}

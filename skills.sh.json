@@ -33,6 +33,13 @@
         "wordpress-performance-critic",
         "wordpress-theme-critic"
       ]
+    },
+    {
+      "title": "Environment",
+      "description": "WordPress prober skills that measure what an agent can actually run before planning, execution, or review begins.",
+      "skills": [
+        "wordpress-environment-probe"
+      ]
     }
   ]
 }

@@ -70,6 +70,23 @@ REQUIRED_CONTRACT_TOKENS = (
     "Playwright",
 )
 
+EXPECTED_WORDPRESS_PROMPTS = 15
+
+# Probers measure the environment rather than name WordPress implementation
+# surfaces, so the 35-token allowlist above does not apply to them. They are
+# held to their own contract instead: see validate_prober_contract.
+PROBER_PROMPTS = frozenset({"wordpress-environment-probe"})
+REQUIRED_PROBER_CONTRACT_TOKENS = (
+    "probe_wordpress_environment.py",
+    "capability-manifest.json",
+    "AVAILABLE",
+    "UNAVAILABLE",
+    "BLOCKED",
+    "UNKNOWN",
+    "--allow-eval",
+    "--capability-manifest",
+)
+
 CATEGORY_NAMES = {
     "hooks": "hook",
     "argument_keys": "argument_key",
@@ -257,6 +274,32 @@ def is_exact_surface(value: str) -> bool:
     return classify_surface(value) is not None
 
 
+def _prompt_identity(path: Path) -> str:
+    """Return the skill or agent name for a prompt file."""
+    return path.parent.name if path.name == "SKILL.md" else path.stem
+
+
+def validate_prober_contract(path: Path) -> list[Issue]:
+    """Validate a prober's contract.
+
+    A prober measures the environment; it names no WordPress implementation
+    surface, so the 35-token allowlist does not apply. It must still declare the
+    contract heading, name its own oracle, and carry the no-exact-API fallback
+    language so the section is never silently empty.
+    """
+    text = path.read_text(encoding="utf-8")
+    issues: list[Issue] = []
+    if not CONTRACT_HEADING_RE.search(text):
+        issues.append(Issue(path, "missing Exact API and Verification Contract heading"))
+        return issues
+    for token in REQUIRED_PROBER_CONTRACT_TOKENS:
+        if token not in text:
+            issues.append(Issue(path, f"prober contract missing required token `{token}`"))
+    if "If no exact WordPress API applies" not in text:
+        issues.append(Issue(path, "contract missing no-exact-API fallback language"))
+    return issues
+
+
 def validate_prompt_contract(path: Path) -> list[Issue]:
     text = path.read_text(encoding="utf-8")
     issues: list[Issue] = []
@@ -337,11 +380,24 @@ def validate_all() -> list[Issue]:
         return [Issue(REGISTRY_PATH, str(exc))]
     agent_files = wordpress_agent_files()
     skill_files = wordpress_skill_files()
-    if len(agent_files) != 14:
-        issues.append(Issue(AGENT_DIR, f"expected 14 WordPress agent files, found {len(agent_files)}"))
-    if len(skill_files) != 14:
-        issues.append(Issue(SKILL_DIR, f"expected 14 WordPress skill wrappers, found {len(skill_files)}"))
+    if len(agent_files) != EXPECTED_WORDPRESS_PROMPTS:
+        issues.append(
+            Issue(
+                AGENT_DIR,
+                f"expected {EXPECTED_WORDPRESS_PROMPTS} WordPress agent files, found {len(agent_files)}",
+            )
+        )
+    if len(skill_files) != EXPECTED_WORDPRESS_PROMPTS:
+        issues.append(
+            Issue(
+                SKILL_DIR,
+                f"expected {EXPECTED_WORDPRESS_PROMPTS} WordPress skill wrappers, found {len(skill_files)}",
+            )
+        )
     for path in agent_files + skill_files:
+        if _prompt_identity(path) in PROBER_PROMPTS:
+            issues.extend(validate_prober_contract(path))
+            continue
         issues.extend(validate_prompt_contract(path))
     for token in REQUIRED_CONTRACT_TOKENS:
         if classify_surface(token, registry, symbols) is None:
