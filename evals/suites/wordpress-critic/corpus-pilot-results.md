@@ -64,28 +64,57 @@ scoring math unchanged (I/O layer only; unit-tested). The generation + scoring p
   with file:line + reproduction, and a calibration non-finding). They still owe an independent
   reviewer's sanity check before any comparative reading is trusted (§10).
 
-## 4. First three-condition judged run — status
+## 4. First three-condition judged run — results (2026-08-11)
 
-The first `skill` / `baseline-zero-shot` / `baseline-few-shot` judged run was launched over a
-security slice (`sec-idor-user-meta-v1`, `sec-public-read-return-true-clean-v1`,
-`t-escapeoutput-xss-v1`). The **baseline lanes generate quickly; the `skill` lane is
-compute-bound** in this environment — the critic-agent prompt is long and a single
-low-effort Sonnet generation exceeded a 240s budget. A skill-lane generation *failure* would
-show as recall 0 for `skill`, which is a generation artifact, **not** a skill-quality signal,
-and must not be read as "skill trails baseline." The full judged pass should be run where the
-Claude-agent CLI has a longer per-call budget:
+A first `skill` / `baseline-zero-shot` / `baseline-few-shot` judged run ran over a security
+slice — `sec-idor-user-meta-v1` (J), `sec-public-read-return-true-clean-v1` (C),
+`t-escapeoutput-xss-v1` (T) — at runs=1 (`--fast`), primary judge `gpt-5.5`. Skill
+generations used the local Claude critic agent (cross-family with the judge); baselines used
+local Codex.
+
+| Condition | composite | recall | API coverage | specificity | n |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `skill` | 0.72 | 1.00 | **0.33** | 1.00 | 3 |
+| `baseline-zero-shot` | 0.84 | 1.00 | 0.61 | 1.00 | 3 |
+| `baseline-few-shot` | 0.81 | 1.00 | 0.50 | 1.00 | 3 |
+
+Tranche-C false-positive rate: **0.0 for all three** — no condition flagged the
+`__return_true` public-read endpoint (the skill did not over-flag it either).
+
+**Discrimination self-check: skill − zero-shot = −0.12** (threshold 0.20; **does not
+discriminate**). Per `corpus-prereg.md` §6 / the answer-key prereg §6, a sub-threshold delta
+means this slice **saturates** — a competent base model satisfies the `must_detect` list from
+a short prompt — so the skill-vs-baseline composite comparison here is **not** a quality
+verdict. Read the axes, not the ranking:
+
+- **Recall is saturated (1.00 everywhere).** n=3, runs=1, and these three fixtures are caught
+  by every condition. Detection does not discriminate at this scale; the corpus needs more
+  fixtures (and harder ones) before recall separates conditions.
+- **The only moving axis is API coverage, and it is deterministic (substring match, no
+  judge).** The skill named fewer of the expected WordPress APIs (~1 of 3 per fixture) than
+  either baseline. This is judge-independent and reproduces the API-naming deficit prior
+  diagnostics flagged — the clearest actionable signal from this run.
+- **Judge-family caveat:** the deterministic API axis is unaffected, but the judged recall
+  axis pairs a same-family judge with the Codex baselines and a cross-family judge with the
+  Claude skill; with recall saturated at 1.00 it does not bite here, but it must be controlled
+  before a larger judged comparison.
+
+**Honest bottom line:** on this slice the skill does not beat the baselines on composite, and
+the gap is entirely lower exact-API naming, not worse detection or worse precision. That is
+the localization recommendation 09 exists to produce. It is a 3-fixture directional read, not
+a verdict. Reproduce and scale with:
 
 ```bash
 python3 evals/harness/answer_key_score.py \
   --suite wordpress-security-critic \
   --run-id critic-pilot-<date> \
-  --generate --fast --judge gpt-5.5 --timeout-sec 900
+  --generate --judge gpt-5.5 --timeout-sec 900
 # omit --fixtures to score the whole active corpus; drop --fast for runs=3
 ```
 
-The scorecard it writes (`scorecard.md` + `answerkey-summary.json`) carries per-condition
+The scorecard (`scorecard.md` + `answerkey-summary.json`) carries per-condition
 recall/API/specificity, the discrimination self-check, the tranche-C false-positive rate, and
-tranche-J severity recall.
+tranche-J severity recall. Raw run: `evals/results/wordpress-security-critic/critic-pilot-fast-20260811/`.
 
 ## 5. Honest limitations (from `corpus-prereg.md` §6)
 
