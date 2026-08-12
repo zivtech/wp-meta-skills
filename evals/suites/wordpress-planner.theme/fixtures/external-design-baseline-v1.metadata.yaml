@@ -1,0 +1,12 @@
+name: external-design-baseline-v1
+suite: wordpress-planner.theme
+skill_under_test: wordpress-planner.theme
+skill_type: planner
+difficulty_tier: focused
+provenance: synthetic
+expected_behavior:
+  - "records dated external reference provenance"
+  - "separates portable design evidence from application-only architecture"
+  - "maps tokens and routes to WordPress-native theme surfaces"
+  - "requires rights and delivery review for external assets"
+  - "uses paired editor and frontend screenshots"

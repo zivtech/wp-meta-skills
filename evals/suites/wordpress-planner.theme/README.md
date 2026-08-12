@@ -1,6 +1,9 @@
 # wordpress-planner.theme Smoke Eval
 
-Smoke-tier evaluation scaffold for `wordpress-planner.theme`. This suite provides one fixture, one rubric, and fair baselines so the skill has initial eval evidence without claiming full benchmark readiness.
+Smoke-tier evaluation scaffold for `wordpress-planner.theme`. It keeps a
+generic WordPress-native smoke fixture and a separate external-design-baseline
+fixture/rubric, so the baseline translation contract does not replace normal
+theme planning coverage. Both remain scaffolds, not benchmark evidence.
 
 Output contract oracle:
 
