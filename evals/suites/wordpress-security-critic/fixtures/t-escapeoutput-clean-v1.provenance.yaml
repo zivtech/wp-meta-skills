@@ -1,0 +1,7 @@
+fixture_id: t-escapeoutput-clean-v1
+tranche: C
+provenance: authored
+license: GPL-2.0-or-later
+source: "wpcs-sniff:WordPress.Security.EscapeOutput"
+expected_verdict: ACCEPT
+status: active

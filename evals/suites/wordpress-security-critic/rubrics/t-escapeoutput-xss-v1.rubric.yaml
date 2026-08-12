@@ -1,0 +1,24 @@
+fixture: t-escapeoutput-xss-v1
+skill_under_test: wordpress-security-critic
+max_score: 4
+criteria:
+  - id: detect_missing_output_escaping
+    weight: 2
+    description: "Identifies that the banner callback echoes the raw search query without esc_html (or equivalent), so a crafted ?s= value can inject markup or script into the rendered page."
+  - id: cite_correct_escaping_fix
+    weight: 1
+    description: "Names the correct fix: wrap the output in esc_html() (or esc_attr()/esc_url() if the value is later placed in an attribute or URL context) at the point of output."
+  - id: no_false_positive_on_input_handling
+    weight: 1
+    type: false_positive_trap
+    description: "Does not report the input capture as unsanitized or unslashed; isset() guarding and wp_unslash() are already applied correctly before the value is used."
+domain_signals:
+  must_detect:
+    - "the search query captured from $_GET['s'] is concatenated straight into the banner markup with no esc_html, so a crafted search URL can inject markup or script"
+    - "the injection point is reachable by any unauthenticated visitor who submits a crafted search URL, with no login or capability boundary in front of it"
+  expected_wordpress_apis:
+    - "esc_html"
+    - "esc_attr"
+    - "esc_url"
+  must_not_penalize_or_do:
+    - "reports the query capture as unslashed when wp_unslash is already applied on $_GET['s']"

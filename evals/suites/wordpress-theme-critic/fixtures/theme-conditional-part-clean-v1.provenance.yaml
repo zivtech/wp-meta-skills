@@ -1,0 +1,8 @@
+fixture_id: theme-conditional-part-clean-v1
+tranche: C
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: ACCEPT
+status: active
+bait: "flag the footer template part as undeclared, unregistered, or missing from theme.json when the templateParts array already lists name: footer with area: footer, matching its use in templates/index.html and parts/footer.html"

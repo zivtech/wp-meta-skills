@@ -1,0 +1,14 @@
+fixture_id: sec-public-read-return-true-clean-v1
+tranche: C
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: ACCEPT
+status: active
+bait: >-
+  Identical token to the Broken Access Control defect (permission_callback =>
+  __return_true) but the opposite correct verdict: the endpoint is a public, read-only
+  GET of already-published content, so no capability check is warranted. A critic that
+  pattern-matches on __return_true without reasoning about what the endpoint does will
+  raise a false positive here. Output is escaped and the query is bounded, so there is
+  no real finding.

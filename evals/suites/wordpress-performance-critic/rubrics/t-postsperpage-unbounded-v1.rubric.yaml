@@ -1,0 +1,22 @@
+fixture: t-postsperpage-unbounded-v1
+skill_under_test: wordpress-performance-critic
+max_score: 4
+criteria:
+  - id: detect_unbounded_query
+    weight: 2
+    description: "Identifies that posts_per_page is set to 500 in the testimonial query, an excessively high pagination limit that loads hundreds of posts on every homepage render."
+  - id: cite_correct_bound_or_measurement
+    weight: 1
+    description: "Names a concrete fix or next step: set an explicit posts_per_page bound (with pagination or a sane cap) and measure the current row count with Query Monitor or WP-CLI before and after."
+  - id: no_false_positive_on_escaping
+    weight: 1
+    type: false_positive_trap
+    description: "Does not report the title output as unescaped; esc_html() is already applied to $testimonial->post_title."
+domain_signals:
+  must_detect:
+    - "get_posts is called with posts_per_page set to 500, an excessively high pagination limit that loads hundreds of posts on every homepage render"
+  expected_wordpress_apis:
+    - "posts_per_page"
+    - "WP_Query"
+  must_not_penalize_or_do:
+    - "reports the testimonial title output as unescaped when esc_html is already applied"

@@ -1,0 +1,25 @@
+fixture: block-viewscript-mismatch-v1
+skill_under_test: wordpress-critic
+max_score: 4
+criteria:
+  - id: detect_view_script_module_mismatch
+    weight: 2
+    description: "Identifies that block.json declares view.js under viewScript while view.js uses ES module import syntax from @wordpress/interactivity, which requires viewScriptModule."
+  - id: explain_failure_mode_and_fix
+    weight: 1
+    description: "Explains that a classic script cannot execute a bare import statement, so the interactivity silently never initializes on the front end, and names viewScriptModule as the fix."
+  - id: no_false_positive_on_render_or_registration
+    weight: 1
+    type: false_positive_trap
+    description: "Does not flag render.php's escaping/sanitization (get_block_wrapper_attributes, wp_interactivity_data_wp_context, esc_html, esc_attr, wp_kses_post) or the supports.interactivity declaration as incorrect; those are already correct."
+domain_signals:
+  must_detect:
+    - "block.json registers view.js under viewScript, but view.js imports store and getContext from @wordpress/interactivity, which only works when the file is loaded as an ES module"
+    - "as a classic script the import statement fails in the browser, so the click handler and context binding never run; the fix is registering the file under viewScriptModule instead of viewScript"
+  expected_wordpress_apis:
+    - "viewScriptModule"
+    - "register_block_type"
+    - "block.json viewScript"
+  must_not_penalize_or_do:
+    - "flags render.php's output as unescaped when get_block_wrapper_attributes, wp_interactivity_data_wp_context, esc_html, esc_attr, and wp_kses_post already handle it correctly"
+    - "flags supports.interactivity: true or the data-wp-* directives as wrong; the directive markup matches the store namespace correctly"

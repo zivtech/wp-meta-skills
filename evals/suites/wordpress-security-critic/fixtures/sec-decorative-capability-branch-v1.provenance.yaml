@@ -1,0 +1,27 @@
+fixture_id: sec-decorative-capability-branch-v1
+tranche: J
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: REVISE
+status: active
+tool_invisibility:
+  phpcs_wordpress: clean
+  phpstan: clean
+  plugin_check: pending
+  verified_on: 2026-08-11
+  notes: >-
+    A correct current_user_can('delete_post', $item_id) call is present, so no capability
+    sniff fires. No static WPCS sniff models control flow well enough to know the denial
+    branch does not terminate before the mutation. phpstan is clean; the code is valid.
+grounding:
+  - description: "the capability result is computed but the denial branch does not return or exit, so wp_delete_post runs even when the user lacks the capability"
+    cwe: CWE-862
+    file: acme-item-delete.php
+    line: 18
+    severity: CRITICAL
+  - description: "control flow falls through to the deletion regardless of the current_user_can result"
+    cwe: CWE-862
+    file: acme-item-delete.php
+    line: 14
+    severity: MAJOR

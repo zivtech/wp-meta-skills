@@ -1,0 +1,20 @@
+name: t-validatedsanitizedinput-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: unsanitized_input_option_write
+expected_wordpress_apis:
+  - "sanitize_text_field"
+  - "wp_unslash"
+  - "absint"
+expected_verification_surfaces:
+  - "PHPCS/WPCS ValidatedSanitizedInput sniff coverage on the settings save handler"
+  - "PHPUnit test posting a script-bearing support_note and asserting the stored option is sanitized"
+must_detect:
+  - "the support note is read straight from $_POST['support_note'] with no wp_unslash() applied before it is used"
+  - "the support note is stored via update_option with no sanitize_text_field() or other sanitizer applied to the raw value"
+negative_space:
+  - "does not prove stored-XSS exploitability without checking every place acme_support_contact_note is later output"
+  - "does not cover dependency or supply-chain review"

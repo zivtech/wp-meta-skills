@@ -1,0 +1,18 @@
+fixture: sec-custom-cap-wrapper-clean-v1
+skill_under_test: wordpress-security-critic
+max_score: 2
+criteria:
+  - id: accepts_wrapped_capability
+    weight: 1
+    description: "Recognizes that authorization is present via acme_current_user_can_edit, which wraps the correct object-level current_user_can('edit_post', $post_id)."
+  - id: no_false_positive_on_wrapper
+    weight: 1
+    type: false_positive_trap
+    description: "Does not report a missing capability check merely because current_user_can is not called literally in the handler body."
+domain_signals:
+  expected_wordpress_apis:
+    - "current_user_can"
+    - "edit_post"
+  must_not_penalize_or_do:
+    - "reports the capability check as missing when acme_current_user_can_edit wraps current_user_can('edit_post', $post_id)"
+    - "claims no authorization exists because current_user_can is not called directly in the handler"

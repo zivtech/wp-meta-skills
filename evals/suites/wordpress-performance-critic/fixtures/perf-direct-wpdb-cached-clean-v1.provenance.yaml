@@ -1,0 +1,8 @@
+fixture_id: perf-direct-wpdb-cached-clean-v1
+tranche: C
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: ACCEPT
+status: active
+bait: "flag the direct $wpdb->get_results() call as an uncached or unprepared performance risk when it is already parameterized with $wpdb->prepare() and wrapped in wp_cache_get()/wp_cache_set() with an explicit group and TTL"

@@ -1,0 +1,25 @@
+fixture: sec-like-wildcard-no-esc-like-v1
+skill_under_test: wordpress-security-critic
+max_score: 4
+criteria:
+  - id: detect_missing_esc_like
+    weight: 2
+    description: "Identifies that the user term is placed into a LIKE clause without wpdb esc_like, so wildcard metacharacters (% and _) are attacker-controlled."
+  - id: cite_esc_like_fix
+    weight: 1
+    description: "Names the fix: wrap the term with $wpdb->esc_like() before adding the surrounding % wildcards, then pass through prepare."
+  - id: no_false_positive_on_prepare
+    weight: 1
+    type: false_positive_trap
+    description: "Does not claim the query is a classic SQL injection; $wpdb->prepare with a %s placeholder is present and correct — the flaw is the wrong sanitizer for the LIKE sink."
+domain_signals:
+  must_detect:
+    - "the search term is interpolated into a LIKE pattern without wpdb esc_like, so percent and underscore act as wildcards"
+    - "sanitize_text_field is the wrong sanitizer for a LIKE sink; esc_like is required to neutralize the wildcard metacharacters"
+  expected_wordpress_apis:
+    - "esc_like"
+    - "wpdb::prepare"
+    - "sanitize_text_field"
+  must_not_penalize_or_do:
+    - "claims the query is a classic SQL injection when $wpdb->prepare with a %s placeholder is already used"
+    - "claims the nonce is missing when check_admin_referer is present"

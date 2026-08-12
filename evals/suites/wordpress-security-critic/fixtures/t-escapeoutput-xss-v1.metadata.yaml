@@ -1,0 +1,20 @@
+name: t-escapeoutput-xss-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: reflected_xss_missing_output_escaping
+expected_wordpress_apis:
+  - "esc_html"
+  - "esc_attr"
+  - "esc_url"
+expected_verification_surfaces:
+  - "PHPCS/WPCS EscapeOutput sniff coverage on the banner render callback"
+  - "browser or PHPUnit test asserting a crafted ?s= value is rendered inert"
+must_detect:
+  - "the search query captured from $_GET['s'] is concatenated straight into the banner markup with no esc_html, so a crafted search URL can inject markup or script"
+  - "the injection point is reachable by any unauthenticated visitor who submits a crafted search URL, with no login or capability boundary in front of it"
+negative_space:
+  - "does not prove production exploitability without a browser or runtime check"
+  - "does not cover dependency or supply-chain review"

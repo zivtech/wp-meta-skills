@@ -1,0 +1,10 @@
+name: block-viewscript-clean-v1
+suite: wordpress-critic
+skill_under_test: wordpress-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+expected_behavior:
+  - "Recognizes that viewScriptModule is the correct block.json field for a front-end script that imports from @wordpress/interactivity and calls store(), because ES module import syntax cannot run as a classic script"
+  - "Does not recommend renaming viewScriptModule to viewScript or treat viewScriptModule as an invalid or nonstandard block.json field"
+  - "If it raises anything, it is a genuinely new observation about render.php or view.js rather than a registration-field objection"

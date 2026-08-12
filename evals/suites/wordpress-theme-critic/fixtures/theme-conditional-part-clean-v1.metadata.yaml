@@ -1,0 +1,10 @@
+name: theme-conditional-part-clean-v1
+suite: wordpress-theme-critic
+skill_under_test: wordpress-theme-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+expected_behavior:
+  - "Confirms the footer template part (slug: footer) is declared in theme.json's templateParts array with area: footer, matching how it is referenced in templates/index.html and consistent with parts/footer.html"
+  - "Does not claim the footer part is undeclared, unregistered, or missing from theme.json"
+  - "If it raises anything, it is a genuinely new observation rather than a declaration or registration claim"

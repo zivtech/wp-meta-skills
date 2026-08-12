@@ -5,7 +5,7 @@ skill:
 
 fixtures:
   directory: ./fixtures
-  count: 4
+  count: 11
   pattern: "*.md"
   metadata_suffix: ".metadata.yaml"
 
@@ -20,8 +20,8 @@ baselines:
     - baseline-few-shot
 
 evaluation:
-  status: focused_saved_output_answer_key_partial
-  full_run_status: blocked_until_test_critic_or_qa_review
+  status: answer_key_corpus_present
+  full_run_status: judged_run_pending_compute_budget
   latest_saved_output_run: wordpress-performance-critic-saved-outputs-20260621
   latest_answer_key_run: wordpress-high-risk-answer-key-20260621
   latest_regenerated_query_cache_run: wordpress-performance-critic-query-cache-regenerated-20260621

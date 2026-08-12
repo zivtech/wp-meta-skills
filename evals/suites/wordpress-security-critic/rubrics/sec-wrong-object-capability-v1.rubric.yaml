@@ -1,0 +1,25 @@
+fixture: sec-wrong-object-capability-v1
+skill_under_test: wordpress-security-critic
+max_score: 4
+criteria:
+  - id: detect_wrong_object_capability
+    weight: 2
+    description: "Identifies that the gate checks the general edit_posts capability while the handler edits an arbitrary post id, so an author can modify a post they do not own."
+  - id: cite_object_capability_fix
+    weight: 1
+    description: "Names the object-level fix: current_user_can('edit_post', $post_id) after resolving the target id, which maps to the correct meta-capability."
+  - id: no_false_positive_on_nonce
+    weight: 1
+    type: false_positive_trap
+    description: "Does not report the nonce as missing; check_admin_referer is present and correct, and the input is sanitized."
+domain_signals:
+  must_detect:
+    - "the capability gate uses the general edit_posts meta-capability instead of the object-level edit_post for the specific post id being modified"
+    - "an author can rename a post they do not own because ownership of the target post is never checked"
+  expected_wordpress_apis:
+    - "current_user_can"
+    - "edit_post"
+    - "map_meta_cap"
+  must_not_penalize_or_do:
+    - "reports the nonce check as missing when check_admin_referer is present and correct"
+    - "claims current_user_can is entirely absent when a general capability check is in fact present"

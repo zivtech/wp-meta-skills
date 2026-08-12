@@ -1,0 +1,29 @@
+fixture_id: sec-idor-user-meta-v1
+tranche: J
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: REVISE
+status: active
+tool_invisibility:
+  phpcs_wordpress: clean
+  phpstan: clean
+  plugin_check: pending
+  verified_on: 2026-08-11
+  notes: >-
+    Nonce (check_ajax_referer), login gate, and input sanitizers (absint, wp_unslash,
+    sanitize_textarea_field) are all present, so NonceVerification and
+    ValidatedSanitizedInput are satisfied; no WPCS sniff asserts that an object
+    capability must exist. plugin_check requires a full WordPress runtime and is
+    recorded as pending until run in a provisioned environment.
+grounding:
+  - description: "write to another user's meta is gated only on login plus a nonce, not on ownership or an object capability"
+    cwe: CWE-862
+    file: acme-profile-notes.php
+    line: 19
+    severity: CRITICAL
+  - description: "the target profile_id comes from client input and is never checked against the current user"
+    cwe: CWE-639
+    file: acme-profile-notes.php
+    line: 16
+    severity: CRITICAL

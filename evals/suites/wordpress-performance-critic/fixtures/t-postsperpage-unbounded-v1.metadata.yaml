@@ -1,0 +1,18 @@
+name: t-postsperpage-unbounded-v1
+suite: wordpress-performance-critic
+skill_under_test: wordpress-performance-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: unbounded_query_posts_per_page
+expected_wordpress_apis:
+  - "posts_per_page"
+  - "WP_Query"
+expected_verification_surfaces:
+  - "Query Monitor row-count evidence on the homepage render"
+  - "WP-CLI or PHPUnit check confirming the query is bounded under a realistic testimonial count"
+must_detect:
+  - "get_posts is called with posts_per_page set to 500, an excessively high pagination limit that loads hundreds of posts on every homepage render"
+negative_space:
+  - "does not prove production latency or memory impact without measurement"
+  - "does not require a custom table without scale evidence"

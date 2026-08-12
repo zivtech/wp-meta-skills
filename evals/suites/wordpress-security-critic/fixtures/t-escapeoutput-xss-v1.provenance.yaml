@@ -1,0 +1,18 @@
+fixture_id: t-escapeoutput-xss-v1
+tranche: T
+provenance: tool
+license: GPL-2.0-or-later
+source: "wpcs-sniff:WordPress.Security.EscapeOutput"
+expected_verdict: REJECT
+status: active
+grounding:
+  - description: "the search query captured from $_GET['s'] is concatenated straight into the banner markup with no esc_html, so a crafted search URL can inject markup or script"
+    sniff: "WordPress.Security.EscapeOutput"
+    file: acme-search-highlight.php
+    line: 22
+    severity: CRITICAL
+  - description: "the injection point is reachable by any unauthenticated visitor who submits a crafted search URL, with no login or capability boundary in front of it"
+    sniff: "WordPress.Security.EscapeOutput"
+    file: acme-search-highlight.php
+    line: 7
+    severity: CRITICAL

@@ -1,0 +1,25 @@
+fixture: theme-template-part-area-mismatch-v1
+skill_under_test: wordpress-theme-critic
+max_score: 4
+criteria:
+  - id: detect_area_declaration_mismatch
+    weight: 2
+    description: "Identifies that theme.json declares the footer template part's area as header (matching the header part) instead of footer."
+  - id: connect_to_reference_and_rendering
+    weight: 1
+    description: "Connects the mismatch to templates/index.html referencing the footer part without an explicit area or tagName, explaining that it inherits the wrong declared area rather than getting the site's real footer treatment."
+  - id: no_false_positive_on_header_or_content
+    weight: 1
+    type: false_positive_trap
+    description: "Does not flag the header template part's declaration or reference (both consistent and correct), and does not flag parts/footer.html's own content or markup as the problem."
+domain_signals:
+  must_detect:
+    - "theme.json's templateParts entry for the footer part declares area: header, the same area as the header part, instead of area: footer"
+    - "the footer template-part reference in the templates omits an explicit area or tagName, so it falls back to the theme's declared area for that slug and renders grouped and wrapped as a second header instead of the site's footer"
+  expected_wordpress_apis:
+    - "templateParts"
+    - "theme.json"
+    - "wp_template_part"
+  must_not_penalize_or_do:
+    - "flags the header template part's theme.json declaration or its reference in templates/index.html as incorrect; both are consistent"
+    - "flags parts/footer.html's own markup or copyright content as the source of the problem"

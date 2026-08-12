@@ -1,0 +1,10 @@
+name: sec-custom-cap-wrapper-clean-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: clean-bait
+provenance: authored
+expected_behavior:
+  - "Accepts the handler as correctly authorized because acme_current_user_can_edit wraps current_user_can('edit_post', $post_id)"
+  - "Follows the wrapper rather than demanding a literal current_user_can call in the handler body"
+  - "Does not report the nonce or sanitizers as missing"

@@ -1,0 +1,10 @@
+name: sec-public-read-return-true-clean-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: clean-bait
+provenance: authored
+expected_behavior:
+  - "Accepts the endpoint as correct because it is a public, read-only GET of already-published content"
+  - "Explains that permission_callback => __return_true is appropriate here and does not demand a capability check"
+  - "May note defense-in-depth options without treating the endpoint as a vulnerability"

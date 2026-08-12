@@ -1,0 +1,27 @@
+fixture: perf-autoloaded-bloat-v1
+skill_under_test: wordpress-performance-critic
+max_score: 4
+criteria:
+  - id: detect_autoload_decided_while_small
+    weight: 2
+    description: "Identifies that acme_catalog_snapshot is created via add_option with a tiny empty-array value at activation, so its autoload behavior is fixed while the option is still small."
+  - id: connect_to_ongoing_large_updates
+    weight: 1
+    description: "Connects that gap to acme_run_catalog_sync's update_option calls, which repeatedly write the full multi-thousand-SKU catalog without ever revisiting the autoload decision, e.g. via wp_set_option_autoload."
+  - id: no_false_positive_on_small_option_or_guards
+    weight: 1
+    type: false_positive_trap
+    description: "Does not flag acme_catalog_last_synced (a small integer timestamp) as an autoload risk, and does not flag the is_wp_error/is_array guards as missing when both are already present."
+domain_signals:
+  must_detect:
+    - "add_option creates acme_catalog_snapshot with a tiny empty-array value at activation, so its autoload behavior is decided while the option is still small"
+    - "every later sync replaces the value with the full multi-thousand-SKU catalog through update_option without ever revisiting that autoload decision, so the large payload keeps riding along on every request"
+  expected_wordpress_apis:
+    - "add_option"
+    - "update_option"
+    - "wp_load_alloptions"
+    - "wp_set_option_autoload"
+  must_not_penalize_or_do:
+    - "flags update_option for acme_catalog_last_synced as an autoload risk; it stores a small integer timestamp, not the catalog payload"
+    - "flags the missing is_wp_error or is_array guards as absent when both are already present before the option is written"
+    - "requires moving the catalog to a custom table without first considering an explicit autoload=false option or a transient"

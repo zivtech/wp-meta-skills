@@ -1,0 +1,27 @@
+fixture_id: sec-nonce-return-ignored-v1
+tranche: J
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: REVISE
+status: active
+tool_invisibility:
+  phpcs_wordpress: clean
+  phpstan: clean
+  plugin_check: pending
+  verified_on: 2026-08-11
+  notes: >-
+    NonceVerification is satisfied because a wp_verify_nonce call exists in scope; the
+    sniff checks for the presence of a verification token, not that its boolean gates the
+    mutation. phpstan is clean because ignoring a return value is valid PHP.
+grounding:
+  - description: "the return value of wp_verify_nonce is discarded, so the option is written even when the nonce is missing or invalid"
+    cwe: CWE-352
+    file: acme-settings-saver.php
+    line: 14
+    severity: CRITICAL
+  - description: "the nonce is checked in name only and its boolean result never guards the update_option call"
+    cwe: CWE-352
+    file: acme-settings-saver.php
+    line: 17
+    severity: MAJOR

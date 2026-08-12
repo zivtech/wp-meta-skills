@@ -1,0 +1,27 @@
+fixture_id: sec-wrong-object-capability-v1
+tranche: J
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: REVISE
+status: active
+tool_invisibility:
+  phpcs_wordpress: clean
+  phpstan: clean
+  plugin_check: pending
+  verified_on: 2026-08-11
+  notes: >-
+    A current_user_can() call is present, so no capability sniff fires; WPCS has no
+    model of which capability is correct for a given object. Nonce (check_admin_referer)
+    and sanitizers are correct, so NonceVerification and ValidatedSanitizedInput pass.
+grounding:
+  - description: "the capability gate uses the general edit_posts meta-capability instead of the object-level edit_post for the specific post id being modified"
+    cwe: CWE-862
+    file: acme-quick-edit.php
+    line: 12
+    severity: CRITICAL
+  - description: "an author can rename a post they do not own because ownership of the target post is never checked"
+    cwe: CWE-639
+    file: acme-quick-edit.php
+    line: 21
+    severity: CRITICAL

@@ -1,0 +1,18 @@
+fixture: sec-late-escaping-clean-v1
+skill_under_test: wordpress-security-critic
+max_score: 2
+criteria:
+  - id: accepts_central_escaping
+    weight: 1
+    description: "Recognizes that both dynamic values are escaped at assembly (esc_html for text, esc_attr for the class token), so the echoed markup is safe."
+  - id: no_false_positive_on_builder_echo
+    weight: 1
+    type: false_positive_trap
+    description: "Does not flag echo acme_build_badge() as unescaped output; the escaping is central in the builder, not at the echo."
+domain_signals:
+  expected_wordpress_apis:
+    - "esc_html"
+    - "esc_attr"
+  must_not_penalize_or_do:
+    - "flags echo acme_build_badge() as unescaped output when the builder already escaped each dynamic value"
+    - "demands esc_html at the echo when escaping is applied centrally at assembly"

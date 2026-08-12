@@ -1,0 +1,32 @@
+fixture_id: perf-uncached-remote-in-request-v1
+tranche: J
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: REVISE
+status: active
+tool_invisibility:
+  phpcs_wordpress: clean
+  phpstan: clean
+  plugin_check: pending
+  verified_on: 2026-08-11
+  notes: >-
+    Verified locally with phpcs (WordPress-Extra, wpcs 3.3.0, zero violations)
+    and phpstan (level 5 with php-stubs/wordpress-stubs, zero errors). The
+    timeout, is_wp_error guard, and every output value are handled exactly as
+    WPCS and phpstan expect, so there is nothing for either tool to flag; no
+    sniff or static-analysis rule evaluates whether a remote call sits behind
+    a cache, because that is a request-shape/architecture judgment, not a
+    syntax or type property. plugin_check requires a full WordPress runtime
+    and is recorded as pending until run in a provisioned environment.
+grounding:
+  - description: "every render of the shortcode makes a fresh synchronous wp_remote_get call to the status service with no set_transient or object-cache layer around it"
+    sniff: wordpress.performance.uncached-remote-request
+    file: acme-status-badge.php
+    line: 18
+    severity: MAJOR
+  - description: "the fix is to cache the response with a short TTL (e.g. set_transient/get_transient) so only one request per cache window reaches the upstream service, keeping the existing timeout and is_wp_error fallback for the cache-miss path"
+    sniff: wordpress.performance.uncached-remote-request
+    file: acme-status-badge.php
+    line: 9
+    severity: MAJOR

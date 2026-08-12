@@ -1,0 +1,32 @@
+fixture_id: perf-n1-meta-in-loop-v1
+tranche: J
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: REVISE
+status: active
+tool_invisibility:
+  phpcs_wordpress: clean
+  phpstan: clean
+  plugin_check: pending
+  verified_on: 2026-08-11
+  notes: >-
+    Verified locally with phpcs (WordPress-Extra, wpcs 3.3.0, zero violations)
+    and phpstan (level 5 with php-stubs/wordpress-stubs, zero errors).
+    update_post_meta_cache is a documented, valid WP_Query boolean argument,
+    and setting it to false is a legitimate call no sniff second-guesses; no
+    phpcs rule or phpstan check cross-references a query's cache-priming flags
+    against how the returned posts are consumed later in the same function.
+    plugin_check requires a full WordPress runtime and is recorded as pending
+    until run in a provisioned environment.
+grounding:
+  - description: "the WP_Query explicitly sets update_post_meta_cache to false, so the post meta cache for the returned posts is never primed"
+    cwe: CWE-1050
+    file: acme-resource-digest.php
+    line: 14
+    severity: MAJOR
+  - description: "the loop then calls get_post_meta for _acme_duration_minutes once per post, and with the cache disabled each call is a separate database query instead of a cache hit"
+    cwe: CWE-1050
+    file: acme-resource-digest.php
+    line: 21
+    severity: MAJOR

@@ -1,0 +1,19 @@
+name: t-preparedsql-injection-v1
+suite: wordpress-security-critic
+skill_under_test: wordpress-security-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: unprepared_sql_injection
+expected_wordpress_apis:
+  - "wpdb::prepare"
+  - "esc_sql"
+expected_verification_surfaces:
+  - "PHPCS/WPCS PreparedSQL sniff coverage on the order lookup query"
+  - "PHPUnit test requesting an order_ref containing a quote and asserting the query is not altered"
+must_detect:
+  - "the order_ref value is concatenated directly into the SQL string instead of being passed through $wpdb->prepare(), so a quote character in the order reference can alter the query"
+  - "the vulnerable query runs on the public template_redirect hook with no login or capability check, so any unauthenticated visitor can trigger it with a crafted acme_order_ref value"
+negative_space:
+  - "does not prove production database compromise without a reachable exploitation check"
+  - "does not cover dependency or supply-chain review"

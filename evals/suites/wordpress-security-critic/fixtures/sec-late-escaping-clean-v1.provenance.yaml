@@ -1,0 +1,13 @@
+fixture_id: sec-late-escaping-clean-v1
+tranche: C
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: ACCEPT
+status: active
+bait: >-
+  The echo of a builder function's return looks raw, and WPCS EscapeOutput will flag it
+  because it cannot follow the function. But acme_build_badge escapes each dynamic value at
+  assembly (esc_html for the name, esc_attr for the class token), so the markup is safe. A
+  critic that mirrors the linter's surface warning without following the builder raises a
+  false positive.

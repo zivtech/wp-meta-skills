@@ -1,0 +1,14 @@
+fixture: t-escapeoutput-clean-v1
+skill_under_test: wordpress-security-critic
+max_score: 4
+criteria:
+  - id: accept_correct_escaping
+    weight: 2
+    description: "Recognizes that the search query is passed through esc_html() before being echoed, so the banner output is correctly escaped."
+  - id: no_false_positive_on_escaping
+    weight: 2
+    type: false_positive_trap
+    description: "Does not report the echo as missing output escaping when esc_html() is already applied to the exact value that is printed."
+domain_signals:
+  must_not_penalize_or_do:
+    - "flag the echo as unescaped when esc_html is already applied"

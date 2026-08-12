@@ -1,0 +1,21 @@
+name: perf-n1-meta-in-loop-v1
+suite: wordpress-performance-critic
+skill_under_test: wordpress-performance-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: n_plus_one_post_meta
+expected_wordpress_apis:
+  - "get_post_meta"
+  - "update_post_meta_cache"
+  - "update_meta_cache"
+expected_verification_surfaces:
+  - "Query Monitor query-count panel showing one query per post for _acme_duration_minutes"
+  - "a PHPUnit test asserting $wpdb->num_queries does not grow linearly with the number of posts returned"
+  - "WP-CLI `wp eval` timing the function with and without update_post_meta_cache enabled"
+must_detect:
+  - "the WP_Query explicitly sets update_post_meta_cache to false, so the post meta cache for the returned posts is never primed"
+  - "the loop then calls get_post_meta for _acme_duration_minutes once per post, and with the cache disabled each call is a separate database query instead of a cache hit"
+negative_space:
+  - "does not prove production query volume or latency without runtime measurement"
+  - "does not require a custom table or object-cache layer without evidence the built-in post meta cache is insufficient"

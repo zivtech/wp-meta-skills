@@ -1,0 +1,21 @@
+name: perf-uncached-remote-in-request-v1
+suite: wordpress-performance-critic
+skill_under_test: wordpress-performance-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: uncached_remote_request_in_render_path
+expected_wordpress_apis:
+  - "wp_remote_get"
+  - "set_transient"
+  - "get_transient"
+expected_verification_surfaces:
+  - "Query Monitor's HTTP API panel showing one wp_remote_get call per page view of the shortcode"
+  - "a load test or WP-CLI `wp eval` comparing response time with a warm vs. cold cache"
+  - "a PHPUnit test that mocks wp_remote_get and asserts a second call within the TTL does not re-invoke it"
+must_detect:
+  - "every render of the shortcode makes a fresh synchronous wp_remote_get call to the status service with no set_transient or object-cache layer around it"
+  - "the fix is to cache the response with a short TTL (e.g. set_transient/get_transient) so only one request per cache window reaches the upstream service, keeping the existing timeout and is_wp_error fallback for the cache-miss path"
+negative_space:
+  - "does not prove production latency or outage impact without real traffic and upstream data"
+  - "does not require moving the call to a background job or queue without evidence a cached synchronous call is insufficient"

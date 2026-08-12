@@ -1,0 +1,8 @@
+fixture_id: block-viewscript-clean-v1
+tranche: C
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: ACCEPT
+status: active
+bait: "flag viewScriptModule as an invalid, unsupported, or misspelled block.json field when it is the officially correct field (WP 6.5+) for a front-end script that uses ES module import syntax such as @wordpress/interactivity's store()"

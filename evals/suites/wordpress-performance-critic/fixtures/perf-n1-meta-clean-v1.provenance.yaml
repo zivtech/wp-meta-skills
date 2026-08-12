@@ -1,0 +1,8 @@
+fixture_id: perf-n1-meta-clean-v1
+tranche: C
+provenance: authored
+license: GPL-2.0-or-later
+source: hand-authored
+expected_verdict: ACCEPT
+status: active
+bait: "flag get_post_meta in a loop as an N+1 query risk when update_post_meta_cache was never disabled and the default (true) already primes the cache for every post the query returns"

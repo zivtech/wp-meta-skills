@@ -1,0 +1,25 @@
+fixture: sec-nonce-return-ignored-v1
+skill_under_test: wordpress-security-critic
+max_score: 4
+criteria:
+  - id: detect_discarded_nonce_result
+    weight: 2
+    description: "Identifies that wp_verify_nonce is called but its return value is ignored, so update_option runs regardless of whether the nonce is valid (CSRF)."
+  - id: cite_gating_fix
+    weight: 1
+    description: "Names the fix: gate the write on the verification result, e.g. if ( ! wp_verify_nonce(...) ) wp_die(); or use check_admin_referer which dies on failure."
+  - id: no_false_positive_on_capability
+    weight: 1
+    type: false_positive_trap
+    description: "Does not claim the capability check is missing; current_user_can('manage_options') is present and correct."
+domain_signals:
+  must_detect:
+    - "the return value of wp_verify_nonce is discarded, so the option is written even when the nonce is missing or invalid"
+    - "the nonce is checked in name only and its boolean result never guards the update_option call"
+  expected_wordpress_apis:
+    - "wp_verify_nonce"
+    - "check_admin_referer"
+    - "wp_nonce_field"
+  must_not_penalize_or_do:
+    - "claims the capability check is missing when current_user_can('manage_options') is present"
+    - "claims no nonce mechanism exists at all when wp_verify_nonce is called"

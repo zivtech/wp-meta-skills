@@ -1,0 +1,14 @@
+fixture: t-postsperpage-clean-v1
+skill_under_test: wordpress-performance-critic
+max_score: 4
+criteria:
+  - id: accept_bounded_query
+    weight: 2
+    description: "Recognizes that posts_per_page is explicitly set to a small bounded value (10), so the testimonial query has a fixed, predictable upper bound."
+  - id: no_false_positive_on_unbounded_query
+    weight: 2
+    type: false_positive_trap
+    description: "Does not report the query as unbounded or as an N+1/posts_per_page risk when posts_per_page is already set to a small explicit value."
+domain_signals:
+  must_not_penalize_or_do:
+    - "flag the bounded query as unbounded"

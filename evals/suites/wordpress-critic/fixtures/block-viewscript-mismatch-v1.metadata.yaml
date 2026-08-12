@@ -1,0 +1,21 @@
+name: block-viewscript-mismatch-v1
+suite: wordpress-critic
+skill_under_test: wordpress-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: block_view_script_registration_mismatch
+expected_wordpress_apis:
+  - "viewScriptModule"
+  - "register_block_type"
+  - "block.json viewScript"
+expected_verification_surfaces:
+  - "loading the block on the front end and checking the browser console for a module/import error"
+  - "inspecting the enqueued script tag's type attribute (module vs text/javascript) in page source"
+  - "a manual or Playwright click-test confirming the panel actually toggles"
+must_detect:
+  - "block.json registers view.js under viewScript, but view.js imports store and getContext from @wordpress/interactivity, which only works when the file is loaded as an ES module"
+  - "as a classic script the import statement fails in the browser, so the click handler and context binding never run; the fix is registering the file under viewScriptModule instead of viewScript"
+negative_space:
+  - "does not prove the runtime failure without loading the front end in a browser"
+  - "does not claim wp-scripts build-configuration issues without seeing the build config"

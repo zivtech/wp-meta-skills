@@ -1,0 +1,24 @@
+fixture: t-nonceverification-csrf-v1
+skill_under_test: wordpress-security-critic
+max_score: 4
+criteria:
+  - id: detect_missing_nonce
+    weight: 2
+    description: "Identifies that the admin-post delete handler never calls check_admin_referer()/wp_verify_nonce(), so the current_user_can() gate alone does not stop a forged cross-site request."
+  - id: cite_correct_nonce_fix
+    weight: 1
+    description: "Names the correct fix: add check_admin_referer() (paired with wp_nonce_field() on the triggering form/link) before acting on $_POST['report_id']."
+  - id: no_false_positive_on_capability_check
+    weight: 1
+    type: false_positive_trap
+    description: "Does not report the capability check as missing or wrong; current_user_can( 'edit_posts' ) is already present and gates the handler correctly."
+domain_signals:
+  must_detect:
+    - "the report deletion handler reads $_POST['report_id'] with no nonce verification anywhere in the function, so the capability check alone does not stop a forged cross-site request"
+    - "wp_delete_post is called on attacker-influenced input with no CSRF protection, so a forged form submitted by a logged-in editor's browser can delete arbitrary reports"
+  expected_wordpress_apis:
+    - "wp_verify_nonce"
+    - "check_admin_referer"
+    - "wp_nonce_field"
+  must_not_penalize_or_do:
+    - "reports current_user_can( 'edit_posts' ) as missing or insufficient when it is already present and correctly gates the handler"

@@ -1,0 +1,22 @@
+name: perf-autoloaded-bloat-v1
+suite: wordpress-performance-critic
+skill_under_test: wordpress-performance-critic
+skill_type: critic
+difficulty_tier: focused
+provenance: authored
+risk_class: autoloaded_option_bloat
+expected_wordpress_apis:
+  - "add_option"
+  - "update_option"
+  - "wp_load_alloptions"
+  - "wp_set_option_autoload"
+expected_verification_surfaces:
+  - "`wp option list --autoload=on` to confirm acme_catalog_snapshot's autoload flag and size"
+  - "`wp option get acme_catalog_snapshot --format=json | wc -c` to size the stored payload"
+  - "Site Health's autoloaded-options size check before and after the fix"
+must_detect:
+  - "add_option creates acme_catalog_snapshot with a tiny empty-array value at activation, so its autoload behavior is decided while the option is still small"
+  - "every later sync replaces the value with the full multi-thousand-SKU catalog through update_option without ever revisiting that autoload decision, so the large payload keeps riding along on every request"
+negative_space:
+  - "does not claim a specific WordPress version's autoload default without checking the running version"
+  - "does not require moving the catalog to a custom table without evidence that a correctly-flagged option or transient is insufficient"

@@ -202,6 +202,54 @@ def test_judge_agreement_counts_and_lists_splits():
 
 
 # --------------------------------------------------------------------------- #
+# critic-corpus additive extension (§5 grounding sidecar + tranche reports)
+# --------------------------------------------------------------------------- #
+
+def test_grounding_for_items_maps_by_description_and_ignores_unlisted():
+    sidecar = {"grounding": [
+        {"description": "public REST permission_callback on a mutation", "cwe": "CWE-862",
+         "file": "plugin.php", "line": 21, "severity": "CRITICAL"},
+        {"description": "not in must_detect", "cwe": "CWE-79", "severity": "MINOR"},
+        "malformed-non-dict-entry",
+    ]}
+    md = ["public REST permission_callback on a mutation", "some other item"]
+    g = ak.grounding_for_items(sidecar, md)
+    assert set(g) == {"public REST permission_callback on a mutation"}
+    assert g["public REST permission_callback on a mutation"] == {
+        "cwe": "CWE-862", "file": "plugin.php", "line": 21, "severity": "CRITICAL"}
+    # a plain-string must_detect with no grounding entry is simply absent, never an error
+    assert ak.grounding_for_items({}, ["x"]) == {}
+
+
+def test_severity_recall_buckets_confirmed_by_grounding_severity():
+    answer_keys = {"f": {"grounding": {
+        "crit item": {"severity": "CRITICAL"}, "major item": {"severity": "MAJOR"}}}}
+    detect_confirms = {
+        ("f", "skill", 1): {"crit item": True, "major item": False, "ungrounded item": True},
+    }
+    sr = ak.severity_recall(detect_confirms, answer_keys, ["skill"],
+                            {"f": "J"}, only_tranche="J")
+    assert math.isclose(sr["skill"]["CRITICAL"]["recall"], 1.0)
+    assert math.isclose(sr["skill"]["MAJOR"]["recall"], 0.0)
+    assert math.isclose(sr["skill"]["UNGROUNDED"]["recall"], 1.0)
+    # a non-J fixture is excluded when only_tranche='J'
+    assert ak.severity_recall(detect_confirms, answer_keys, ["skill"],
+                              {"f": "T"}, only_tranche="J")["skill"] == {}
+
+
+def test_false_positive_rate_from_clean_tranche():
+    scores = {
+        ("clean1", "skill", 1): {"committed_anti": 1, "n_anti": 3},
+        ("clean2", "skill", 1): {"committed_anti": 0, "n_anti": 2},
+        ("riskyJ", "skill", 1): {"committed_anti": 5, "n_anti": 5},  # not tranche C -> ignored
+    }
+    tranche = {"clean1": "C", "clean2": "C", "riskyJ": "J"}
+    fpr = ak.false_positive_rate(scores, ["skill"], tranche, clean_tranche="C")
+    assert math.isclose(fpr["skill"]["false_positive_rate"], 1 / 5)
+    assert fpr["skill"]["committed"] == 1 and fpr["skill"]["n_checks"] == 5
+
+
+# --------------------------------------------------------------------------- #
 # prompt hygiene
 # --------------------------------------------------------------------------- #
 
