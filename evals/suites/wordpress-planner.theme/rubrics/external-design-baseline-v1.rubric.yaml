@@ -1,4 +1,4 @@
-fixture: smoke-wordpress-v1
+fixture: external-design-baseline-v1
 skill_under_test: wordpress-planner.theme
 max_score: 11
 criteria:
@@ -14,12 +14,12 @@ criteria:
   - id: specificity
     weight: 2
     description: Gives concrete handoff, remediation, generation, or review steps.
-  - id: block_theme_mapping
+  - id: external_baseline_translation
     weight: 2
-    description: Maps the stated editorial requirements to theme.json, templates, template parts, patterns, and responsive behavior without importing an unrelated application architecture.
-  - id: editor_frontend_proof
+    description: Creates a dated reference/provenance inventory, separates portable design evidence from app-specific architecture, maps tokens to theme.json and routes/components to templates, parts, patterns, or explicit exceptions, and reviews asset licenses and delivery.
+  - id: screenshot_regression
     weight: 1
-    description: Defines separate Site Editor and frontend verification at agreed viewport and content states rather than claiming parity from code review.
+    description: Defines paired reference-to-WordPress editor and frontend screenshots at approved viewport and content states rather than claiming visual parity from code review.
   - id: calibration
     weight: 1
     description: Calibrates uncertainty and avoids invented issues.

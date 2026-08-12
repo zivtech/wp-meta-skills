@@ -5,7 +5,7 @@ skill:
 
 fixtures:
   directory: ./fixtures
-  count: 1
+  count: 2
   pattern: "*.md"
   metadata_suffix: ".metadata.yaml"
 

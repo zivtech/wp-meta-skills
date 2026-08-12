@@ -9,3 +9,5 @@ expected_behavior:
   - Applies WordPress-native gates
   - Separates evidence from assumptions
   - Provides specific verification or review handoff
+  - Maps editorial requirements to theme.json and WordPress templates or patterns
+  - Requires separate editor and frontend verification
