@@ -390,7 +390,17 @@ jobs:
           wp-env --version
           scratch="$RUNNER_TEMP/wp-env-live-probe"
           mkdir -p "$scratch"
-          printf '%s\n' '{"core": null, "plugins": ["https://downloads.wordpress.org/plugin/plugin-check.zip"], "testsEnvironment": false}' > "$scratch/.wp-env.json"
+          # Pin core. `null` means "latest", which made this job depend on
+          # WordPress.org and the WordPress/WordPress git mirror agreeing: when
+          # .org advertised 7.0.4 before the mirror carried the tag, wp-env
+          # failed with `couldn't find remote ref 7.0.4` and took main plus every
+          # open PR red at once. The pin must equal `wordpress.core_version` in
+          # tests/fixtures/capability_manifest/golden-wp-env-docker.json, which
+          # normalize_manifest deliberately does not scrub -- so on a WordPress
+          # bump, move this pin and re-record the golden in the same commit.
+          # Unrelated to `wordpress_core` in evals/harness/container-images.json:
+          # that pins the Docker sandbox image, a separate lane.
+          printf '%s\n' '{"core": "WordPress/WordPress#7.0.3", "plugins": ["https://downloads.wordpress.org/plugin/plugin-check.zip"], "testsEnvironment": false}' > "$scratch/.wp-env.json"
           echo "WP_ENV_SCRATCH=$scratch" >> "$GITHUB_ENV"
           cd "$scratch"
           wp-env start
