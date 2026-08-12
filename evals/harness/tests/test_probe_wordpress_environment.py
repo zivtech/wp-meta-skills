@@ -261,6 +261,34 @@ def test_capability_grounding_is_skipped_without_the_sidecar() -> None:
     assert "capability_grounding" not in {check["id"] for check in result["checks"]}
 
 
+def test_capability_grounding_still_sees_fenced_commands() -> None:
+    """Guard the argument this check receives inside ``validate_output``.
+
+    Every other check reads the ``_strip_non_authoritative_markdown`` text so a
+    quoted example cannot satisfy a contract. This check is the exception: it
+    inspects code occurrences, and stripping blanks fenced blocks, so routing it
+    through the stripped text turns an instructed-but-unavailable command into a
+    silent pass. It must keep reading the raw output.
+    """
+    text = (FIXTURES.parent / "a_short_valid_heading.md").read_text(encoding="utf-8")
+    text += "\nRun the import:\n\n```bash\nwp plugin install foo --activate\n```\n"
+    manifest = {
+        "wp_cli": {"status": "UNAVAILABLE", "reason": "wp_cli_absent", "commands": {}},
+    }
+
+    stripped = output_oracle._strip_non_authoritative_markdown(text)
+    assert "wp plugin install" in text
+    assert "wp plugin install" not in stripped
+
+    result = output_oracle.validate_output(
+        "wordpress-planner", text, capability_manifest=manifest
+    )
+    check = next(c for c in result["checks"] if c["id"] == "capability_grounding")
+
+    assert check["passed"] is False
+    assert "wp_cli_absent" in check["detail"]
+
+
 def test_scenario_b_cli_flag_fails_the_run(tmp_path: Path) -> None:
     root = _project(tmp_path)
     bin_dir = _install_fake_wp(tmp_path)

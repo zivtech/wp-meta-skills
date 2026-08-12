@@ -4,6 +4,9 @@ Focused evaluation scaffold for `wordpress-planner.migration`. The suite now
 contains the original broad smoke fixture plus three focused migration planning
 fixtures:
 
+- `smoke-wordpress-v1`: an exact source-to-block contract for a repository-owned
+  importer, including semantic block properties, unsupported-source accounting,
+  byte-idempotent writes, and separate editor/frontend proof.
 - `legacy-cms-content-mapping-v1`: source schema uncertainty, post type and
   taxonomy mapping, author/byline handling, media relationships, and field
   transforms.
@@ -12,16 +15,17 @@ fixtures:
 - `cutover-rollback-reconciliation-v1`: dry-run findings, delta migration,
   rollback triggers, reconciliation queues, and launch ownership.
 
-This is not a benchmark result. Saved skill and baseline outputs plus
-deterministic output-contract results exist at
-`evals/results/wordpress-planner-migration-saved-outputs-20260621/`; generation
-passed for 12/12 outputs, all four skill outputs passed the deterministic
-output contract, and the three focused skill outputs passed 3/3. Deterministic
-answer-key coverage now exists at
-`evals/results/wordpress-high-risk-answer-key-20260621/`; focused `skill`
-outputs scored composite `0.954`, `baseline-zero-shot` scored `0.861`, and
-`baseline-few-shot` scored `0.926`. `test-critic` or QA review is still
-required before making any public benchmark claim.
+Historical saved outputs and answer-key diagnostics exist under `evals/results/`,
+but they are directional internal evidence only. They do not establish a quality
+edge over a current ChatGPT-level baseline and are not a public benchmark claim.
+The fixture/rubric definitions in this suite describe planning expectations, not
+proof that any migration was implemented or run.
+
+For plans that affirmatively target Gutenberg, the saved-output oracle uses one
+exact, duplicate-rejecting decision record per owning section. Record values are
+enumerated by the smoke fixture and skill; negative-space prose and fenced
+examples are not authoritative contract evidence. Non-Gutenberg plans do not
+emit the Gutenberg-only records.
 
 Output contract oracle:
 

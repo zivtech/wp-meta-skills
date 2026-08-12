@@ -11,9 +11,11 @@ description: Generate WordPress block implementation packets from approved wordp
 
 Use after /wordpress-planner.block has produced an approved block spec and the user wants block.json, edit/save/render, styles, scripts, and compatibility packets.
 
+This executor owns only the bounded files for a repository-defined custom block. It does not generate bulk migrated `post_content`, source converters, importer orchestration, unsupported-source reports, or a replacement migration plugin. Those responsibilities stay with `wordpress-planner.migration` and the implementation lane in the repository that already owns the migration.
+
 ## Protocol
 
-Phase 0 - Input mode: classify whether the input is an approved planner spec or a direct request. Complex direct requests should be routed back to the planner.
+Phase 0 - Input mode: classify whether the input is an approved custom-block planner spec or a direct request. Complex direct requests should be routed back to the planner; source-to-block transformation requests should be routed to `wordpress-planner.migration`.
     Phase 1 - Parameter extraction: extract slug, namespace, paths, WordPress/PHP versions, data storage, hooks, templates, blocks, assets, security boundaries, and non-goals.
     Phase 2 - Completeness and conflict gate: mark missing, inferred, or contradictory parameters. Stop on critical ambiguity that requires architecture judgment.
     Phase 3 - Environment and collision check: inspect existing files/tooling when available, detect overwrite collisions, and choose output locations consistent with the project.
@@ -27,6 +29,9 @@ Phase 0 - Input mode: classify whether the input is an approved planner spec or 
 ## Hard Gates
 
 - Do not invent architecture beyond the planner spec; stop on critical ambiguity.
+    - Generate only the approved custom-block definition, assets, save/render behavior, compatibility files, fixtures, and tests. Do not generate a bulk source converter or migrated content stream.
+    - If a request includes source-to-block mapping, serialization, unsupported-source accounting, importer idempotence, or migration semantic/editor/frontend proof, stop and route that scope to `wordpress-planner.migration`.
+    - A migration planner may hand off a bounded new custom-block contract to this executor. Existing repository-owned migration code remains in its owning repository and must not be regenerated wholesale or handed to `wordpress-plugin-executor` for replacement.
     - Do not overwrite existing files unless the user explicitly requested that path.
     - Do not generate admin actions, REST routes, AJAX endpoints, upload handlers, SQL, cron, or forms without permission and input validation controls.
     - Do not embed secrets, private endpoints, real client data, or credentials in code, blueprints, fixtures, or docs.
@@ -52,7 +57,7 @@ Treat uncertainty as design data. Separate observed evidence from assumptions, n
 
 ## Failure Modes
 
-Watch for hidden authorization assumptions, unsafe production commands, missing rollback, missing test strategy, cache claims without invalidation, block/theme editor parity gaps, unlogged upstream reuse, and unsupported version claims.
+Watch for hidden authorization assumptions, unsafe production commands, missing rollback, missing test strategy, cache claims without invalidation, block/theme editor parity gaps, importer generation disguised as a custom-block packet, unlogged upstream reuse, and unsupported version claims.
 
 ## Output Contract
 

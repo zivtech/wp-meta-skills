@@ -4,8 +4,26 @@ skill_under_test: wordpress-planner.migration
 skill_type: planner
 difficulty_tier: smoke
 provenance: synthetic
-expected_behavior:
-  - Uses the required output contract
-  - Applies WordPress-native gates
-  - Separates evidence from assumptions
-  - Provides specific verification or review handoff
+risk_class: source_to_block_semantic_contract
+expected_wordpress_apis:
+  - "parse_blocks"
+  - "serialize_blocks"
+  - "wp_update_post"
+  - "WP_Error"
+  - "wp_get_post_revisions"
+expected_verification_surfaces:
+  - "stored post_content semantic checks"
+  - "unsupported-content report"
+  - "editor dirty save reload restore"
+  - ".wp-block-acme-promo-card"
+  - "Promo nine"
+must_detect:
+  - "repo-owned ArticleImporter is revised in place"
+  - "block order alone is insufficient"
+  - "unchanged import requires zero body writes"
+  - "unsupported legacy-carousel requires manual_required accounting"
+  - "frontend proof is independent of parse_blocks"
+negative_space:
+  - "does not regenerate the importer through wordpress-plugin-executor"
+  - "does not redefine acme/promo-card"
+  - "does not claim production or benchmark proof"
