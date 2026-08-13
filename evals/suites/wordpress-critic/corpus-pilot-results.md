@@ -98,6 +98,12 @@ verdict. Read the axes, not the ranking:
   axis pairs a same-family judge with the Codex baselines and a cross-family judge with the
   Claude skill; with recall saturated at 1.00 it does not bite here, but it must be controlled
   before a larger judged comparison.
+  **Controlled 2026-08-13** (after this run, which is unchanged and stands as recorded):
+  `answer_key_score.py --judge-mode balanced` scores with one judge per family and averages,
+  so every condition receives one same-family and one cross-family judgment. It is the
+  default for the critic corpus; the candidate eval stays on `primary` so archived runs
+  remain reproducible. The size of the effect is now reported per condition as
+  `judge_self_preference` rather than only avoided.
 
 **Honest bottom line:** on this slice the skill does not beat the baselines on composite, and
 the gap is entirely lower exact-API naming, not worse detection or worse precision. That is

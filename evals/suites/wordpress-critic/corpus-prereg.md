@@ -36,9 +36,19 @@ will later be measured against. It does **not** change any critic prompt.
 
 Conditions: `skill`, `baseline-zero-shot`, `baseline-few-shot`. Strong pole = `skill`, weak
 pole = `baseline-zero-shot` (the discrimination self-check must clear ≥ 0.20 or the read is
-saturated). The judge is blind to condition and cross-family by default (generations Claude;
-judge non-Claude codex). None of this scoring math changed; only suite-aware loaders, a
-`--suite` path, and additive per-tranche reports were added (I/O layer, unit-tested).
+saturated). The judge is blind to condition. None of this scoring math changed; only
+suite-aware loaders, a `--suite` path, and additive per-tranche reports were added
+(I/O layer, unit-tested).
+
+**Judge family (amended 2026-08-13).** "Cross-family by default" held only for the `skill`
+lane. Generation is split — the skill lane runs on a local Claude agent, both `baseline-*`
+lanes on local Codex — so a single non-Claude judge scored the baselines *same-family* and
+the skill *cross-family*, an asymmetry pointing at the one lane under test. The corpus now
+defaults to `--judge-mode balanced`: one judge per family, scores averaged, so each condition
+gets exactly one same-family and one cross-family judgment. `judge_self_preference` reports
+the per-condition size of the effect, and the scorecard marks any single-family panel as
+uncontrolled. A balanced run without an explicit `--judge-2` appends the counterpart judge
+rather than silently degrading.
 
 ## 3. The three tranches
 
