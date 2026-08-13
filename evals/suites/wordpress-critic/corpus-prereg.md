@@ -110,16 +110,29 @@ anti-leakage.
   unnoticed. Result on the current corpus: all nine PHP-bearing J fixtures are invisible to
   both tools. The claim was true; it simply had never been checked.
 
-  **Limitation — the gate analyses excerpts, not plugins.** Fixtures are bare snippets, so
-  `global $wpdb;` leaves `$wpdb` untyped and every call on it degrades to "cannot call X on
-  mixed". Those findings are allowlisted as artifacts, which is verified: annotating
-  `/** @var \wpdb $wpdb */` on `sec-like-wildcard-no-esc-like-v1` clears them and reveals
-  nothing about the missing `esc_like`. But that same annotation makes PHPStan report
-  `wpdb::prepare() expects literal-string, non-falsy-string given` — a genuine SQL-safety
-  signal that the untyped excerpt hides. So "PHPStan clean" is established **for these
-  fixtures as analysed**, not for the same code inside a fully-typed plugin. That gap is
-  worth closing before recommendation 01, whose tool-running critic would run PHPStan in
-  situ rather than on excerpts.
+  **The excerpt limitation, measured and narrowed 2026-08-13.** It was first recorded as
+  "the gate analyses excerpts, not plugins". Quantifying it moved the problem:
+
+  - **Scope is one fixture, not the corpus.** Only `sec-like-wildcard-no-esc-like-v1`
+    declares a global at all; the other nine J fixtures have none, so the untyped-`$wpdb`
+    masking route cannot apply to them.
+  - **The real hole was the allowlist, not the excerpt format.** All 15 `argument.type`
+    findings in the corpus are the `mixed`-propagation shape untyped `$_POST`/`$_GET` input
+    produces, so allowlisting the identifier was accurate *for today's corpus*. But the same
+    identifier carries `wpdb::prepare() expects literal-string, non-falsy-string given` —
+    PHPStan's SQL-injection heuristic. Measured on a typed variant of that fixture, the
+    literal-string finding was classified **benign** by the identifier-only allowlist. The
+    gate would have suppressed a genuine SQL-safety signal.
+  - **Fixed.** `argument.type` is now benign only when the message carries `mixed given`;
+    anything else disqualifies. `class.notFound`/`function.notFound` were dropped from the
+    allowlist entirely — they never fire here, and "this WordPress function does not exist"
+    is a real defect class. The corpus still passes 0-disqualifying as analysed, and the
+    typed variant now correctly reports 2 disqualifying findings.
+
+  What remains open is narrower than first stated: PHPStan sees more in typed code than in
+  these excerpts, so "PHPStan clean" is still established **for these fixtures as analysed**.
+  The gate no longer mistakes a real signal for noise when it does appear, which was the
+  part that could have produced a false clean before recommendation 01 runs tools in situ.
 
 ## 6. Honest limitations (also written into `pilot-results.md`)
 

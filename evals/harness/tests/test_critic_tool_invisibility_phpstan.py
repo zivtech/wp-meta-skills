@@ -17,7 +17,9 @@ def _f(identifier, message="m", line=1):
 
 
 def test_known_benign_identifiers_do_not_disqualify():
-    findings = [_f("missingType.return"), _f("argument.type"), _f("constant.notFound")]
+    findings = [_f("missingType.return"),
+                _f("argument.type", "Parameter #1 $text of function esc_html expects string, mixed given."),
+                _f("constant.notFound")]
     assert vti.classify_phpstan(findings) == []
 
 
@@ -50,7 +52,46 @@ def test_a_finding_with_no_identifier_disqualifies():
 
 
 def test_the_benign_allowlist_is_configurable():
-    assert vti.classify_phpstan([_f("custom.thing")], benign=("custom.",)) == []
+    assert vti.classify_phpstan([_f("custom.thing")], rules=(("custom.", None),)) == []
+
+
+# --- the argument.type narrowing (2026-08-13) ------------------------------- #
+
+def test_argument_type_is_benign_only_in_its_mixed_propagation_shape():
+    mixed = _f("argument.type", "Parameter #1 $str of function sanitize_text_field expects string, mixed given.")
+    assert vti.classify_phpstan([mixed]) == []
+
+
+def test_argument_type_carrying_the_literal_string_sql_signal_disqualifies():
+    """The measured hole: PHPStan's SQL-injection heuristic shares `argument.type` with
+    harmless mixed-propagation. Suppressing the identifier wholesale hid it on a typed
+    variant of sec-like-wildcard-no-esc-like-v1."""
+    sql = _f("argument.type",
+             "Parameter #1 $query of method wpdb::prepare() expects literal-string, "
+             "non-falsy-string given.")
+    assert vti.classify_phpstan([sql]) == [sql]
+
+
+def test_argument_type_with_a_nullable_mismatch_disqualifies():
+    nullable = _f("argument.type",
+                  "Parameter #1 $input_list of function wp_list_pluck expects array, "
+                  "array<array<mixed>|stdClass>|null given.")
+    assert len(vti.classify_phpstan([nullable])) == 1
+
+
+def test_undefined_symbol_identifiers_are_not_allowlisted():
+    """A typo'd hook callback is a silent no-op and a real defect class, so these must
+    surface for triage rather than being pre-approved."""
+    findings = [_f("function.notFound", "Function acme_typoed() not found."),
+                _f("class.notFound", "Class Acme_Missing not found.")]
+    assert len(vti.classify_phpstan(findings)) == 2
+
+
+def test_is_benign_requires_both_identifier_and_message_to_match():
+    rules = (("argument.type", "mixed given"),)
+    assert vti.is_benign(_f("argument.type", "... mixed given."), rules)
+    assert not vti.is_benign(_f("argument.type", "... literal-string given."), rules)
+    assert not vti.is_benign(_f("other.rule", "... mixed given."), rules)
 
 
 def test_parse_phpstan_json_flattens_per_file_messages():
