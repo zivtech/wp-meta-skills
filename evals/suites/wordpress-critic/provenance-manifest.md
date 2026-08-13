@@ -44,3 +44,9 @@ Each tranche-J sidecar's `tool_invisibility` block records the WPCS/PHPStan resu
 the defect is not statically catchable. The evidence is reproducible via
 `python3 evals/harness/verify_critic_tool_invisibility.py` (requires the pinned PHPCS/WPCS/PHPStan
 stack in `evals/harness/php-tools/vendor`, installed with `composer install`).
+
+Until 2026-08-13 this page overstated the gate: it named the PHPStan stack, but the script ran
+WPCS only, so the PHPStan half of every sidecar's `tool_invisibility` claim was unexecuted. The
+script now runs both, default-deny on unrecognised PHPStan identifiers, and runs in CI rather
+than by hand. All nine PHP-bearing J fixtures pass both. See `corpus-prereg.md` §5 for the
+result and for the excerpt-versus-plugin limitation that remains.

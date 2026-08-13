@@ -490,6 +490,13 @@ jobs:
             --strict-suites wordpress-skill-candidate-eval \
             --allow-known-gaps
 
+      - name: Verify tranche-J tool invisibility (WPCS + PHPStan)
+        # The entry criterion the critic corpus's discriminating power rests on: a J fixture
+        # claims no static tool can see its defect. It was a manual gate, so a mislabeled
+        # fixture could land unnoticed -- and it matters more once recommendation 01 makes
+        # the critic a tool-runner.
+        run: uv run --locked --extra test python evals/harness/verify_critic_tool_invisibility.py
+
       - name: Validate public documentation references and controls
         run: uv run --locked --extra test python scripts/validate-public-docs.py
 

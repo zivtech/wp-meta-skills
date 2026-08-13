@@ -66,7 +66,8 @@ sidecar. The sidecar carries `tranche`, `provenance`, `license`, `source`, `expe
   tool output scores zero here. Weighted to Broken Access Control (IDOR, wrong-object
   capability, nonce-result-discarded, decorative-capability-branch, wrong-sanitizer-for-sink).
   Tool-invisibility is an *entry criterion*, verified by
-  `evals/harness/verify_critic_tool_invisibility.py` (WPCS) and recorded in the sidecar.
+  `evals/harness/verify_critic_tool_invisibility.py` (WPCS **and**, since 2026-08-13,
+  PHPStan) and recorded in the sidecar.
 - **C (clean / false-positive trap, `expected_verdict: ACCEPT*`).** Code that looks
   suspicious but is correct. The mandatory one: `permission_callback => '__return_true'` on a
   genuinely public read-only endpoint — same token as the BAC defect, opposite verdict. A
@@ -100,6 +101,25 @@ anti-leakage.
   out of the scored root.
 - `verify_critic_tool_invisibility.py`: every tranche-J fixture is run through WPCS and must
   show zero security/perf sniffs firing, or it is mislabeled and belongs in T.
+  **PHPStan half added 2026-08-13.** The "and PHPStan" in §3 was asserted from the corpus's
+  first day but never executed, though the PHPStan stack was pinned in `php-tools` the whole
+  time. It now runs at `level: max` and classifies findings **default-deny**: only
+  identifiers on a justified benign allowlist pass, so a PHPStan upgrade that starts seeing
+  a J defect trips the gate instead of passing quietly the way the WPCS deny-list would.
+  The gate also now runs in CI; it was manual, so a mislabeled fixture could have landed
+  unnoticed. Result on the current corpus: all nine PHP-bearing J fixtures are invisible to
+  both tools. The claim was true; it simply had never been checked.
+
+  **Limitation — the gate analyses excerpts, not plugins.** Fixtures are bare snippets, so
+  `global $wpdb;` leaves `$wpdb` untyped and every call on it degrades to "cannot call X on
+  mixed". Those findings are allowlisted as artifacts, which is verified: annotating
+  `/** @var \wpdb $wpdb */` on `sec-like-wildcard-no-esc-like-v1` clears them and reveals
+  nothing about the missing `esc_like`. But that same annotation makes PHPStan report
+  `wpdb::prepare() expects literal-string, non-falsy-string given` — a genuine SQL-safety
+  signal that the untyped excerpt hides. So "PHPStan clean" is established **for these
+  fixtures as analysed**, not for the same code inside a fully-typed plugin. That gap is
+  worth closing before recommendation 01, whose tool-running critic would run PHPStan in
+  situ rather than on excerpts.
 
 ## 6. Honest limitations (also written into `pilot-results.md`)
 
