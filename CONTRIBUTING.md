@@ -115,6 +115,21 @@ run-owned cleanup, a 20 GiB admission floor, and the reviewed post-run disk
 delta. A host `wp-env`, Docker Desktop result, mutable tag, or cached local image
 is not a substitute for the required hosted Linux boundary.
 
+## Removing a Worktree
+
+Use `scripts/safe-worktree-remove.py <worktree>`, not `git worktree remove`.
+
+`evals/results/` is gitignored, so a worktree holding a recorded run reports **clean**
+under `git status --short` — which does not list ignored files — and `git worktree remove`
+then deletes the directory and the run with it. That is not hypothetical: it destroyed a
+recorded judged run on 2026-08-12, and the "is this safe?" check that was run could not
+have caught it.
+
+The wrapper refuses when expensive artifacts are present and tells you the ways out:
+`--archive-to <dir>` to move them somewhere durable first, `--force` to discard them
+deliberately, `--check-only` to report and touch nothing. Tracked files are recoverable
+from git and caches are cheap to rebuild; run artifacts are neither.
+
 ## Reuse and Provenance
 
 Reference-only upstream comparison is allowed. Direct copied or closely
