@@ -109,6 +109,13 @@ anti-leakage.
   name the dimensions and carry worked findings *and a calibration non-finding*; they still owe
   an independent reviewer's sanity check (a human who is not the fixture author) before any
   comparative reading is trusted.
+  **Review package prepared 2026-08-13:** [`baseline-strength-review.md`](baseline-strength-review.md),
+  open and awaiting a reviewer. It also records a finding that reframes the check: the
+  few-shot prompts already contain a mean **0.79** of the corpus's own
+  `expected_wordpress_apis` answer key before reading any fixture (zero-shot: 0.00), measured
+  by `evals/harness/measure_baseline_api_leakage.py`. The risk is therefore not only a weak
+  baseline inflating the skill, but a prompt-supplied API vocabulary deflating it on the one
+  axis the pilot called its clearest signal. Both directions are open until that review lands.
 - **Tranche T can't fully exercise the critic until rec 01 lands** (the critic still can't run
   tools). T establishes the target and baseline now; consumption is measured after 01.
 - **CVE-diff labels are noisier than WPCS's** — the `researcher` tranche is staged as drafts
