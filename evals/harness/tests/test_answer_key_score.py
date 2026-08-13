@@ -5,6 +5,7 @@ discrimination self-check, the cluster bootstrap (fixture-resampled), aggregatio
 judge agreement. The I/O transports (check_item_via_cli/codex) and orchestrate()/main()
 are exercised only during a real run, after this passes.
 """
+import json
 import math
 import sys
 from pathlib import Path
@@ -319,3 +320,193 @@ def test_generate_missing_keeps_skill_lane_on_isolated_claude(tmp_path, monkeypa
 
     assert (tmp_path / "r1__security-boundary-risk__zivtech_prototype.txt").read_text(encoding="utf-8") == "claude generated skill"
     assert calls == [("skill prompt", "claude-sonnet-4-6", "agent prompt", 321)]
+
+
+# --------------------------------------------------------------------------- #
+# judge-family balance (prereg §4 confound control)
+# --------------------------------------------------------------------------- #
+
+def test_judge_family_mirrors_the_cli_routing_rule():
+    # The CLI sends `claude*` to check_item_via_cli and everything else to codex.
+    assert ak.judge_family("claude-sonnet-4-6") == ak.CLAUDE_FAMILY
+    assert ak.judge_family("Claude-Opus-5") == ak.CLAUDE_FAMILY
+    assert ak.judge_family("gpt-5.5") == ak.NON_CLAUDE_FAMILY
+
+
+def test_condition_family_splits_skill_from_baseline_lanes():
+    # generate_missing_critic: skill lane -> local Claude agent, baseline-* -> local Codex.
+    assert ak.condition_family("skill") == ak.CLAUDE_FAMILY
+    assert ak.condition_family("zivtech_prototype") == ak.CLAUDE_FAMILY
+    assert ak.condition_family("baseline-zero-shot") == ak.NON_CLAUDE_FAMILY
+    assert ak.condition_family("baseline-few-shot") == ak.NON_CLAUDE_FAMILY
+
+
+def test_judges_span_families_requires_both_sides():
+    assert not ak.judges_span_families(["gpt-5.5"])
+    assert not ak.judges_span_families(["gpt-5.5", "gpt-5-mini"])
+    assert ak.judges_span_families(["gpt-5.5", "claude-sonnet-4-6"])
+
+
+def test_resolve_judge_panel_adds_the_counterpart_only_for_balanced():
+    # primary mode is unchanged -- archived candidate-eval runs stay reproducible.
+    assert ak.resolve_judge_panel("gpt-5.5", None, "primary") == ["gpt-5.5"]
+    # balanced without --judge-2 must not silently degrade to a single-family panel.
+    panel = ak.resolve_judge_panel("gpt-5.5", None, "balanced")
+    assert ak.judges_span_families(panel)
+    assert panel[0] == "gpt-5.5"
+    # an explicit cross-family --judge-2 is respected as given.
+    assert ak.resolve_judge_panel("gpt-5.5", "claude-sonnet-4-6", "balanced") == [
+        "gpt-5.5", "claude-sonnet-4-6"]
+    # a same-family --judge-2 still gets a counterpart appended.
+    assert ak.judges_span_families(ak.resolve_judge_panel("gpt-5.5", "gpt-5-mini", "balanced"))
+
+
+def test_balance_scores_means_judged_axes_and_keeps_deterministic_ones():
+    per_judge = {
+        "gpt-5.5": {("f1", "skill", 1): {
+            "recall": 1.0, "api_coverage": 0.4, "specificity": 1.0, "composite": 0.8,
+            "confirmed_detect": 2, "committed_anti": 0, "n_must_detect": 2, "n_anti": 1,
+            "unsupported_spans": 1, "parse_failures": 0}},
+        "claude-sonnet-4-6": {("f1", "skill", 1): {
+            "recall": 0.5, "api_coverage": 0.4, "specificity": 1.0, "composite": 0.6,
+            "confirmed_detect": 1, "committed_anti": 0, "n_must_detect": 2, "n_anti": 1,
+            "unsupported_spans": 2, "parse_failures": 1}},
+    }
+    merged = ak.balance_scores(per_judge)[("f1", "skill", 1)]
+    assert math.isclose(merged["recall"], 0.75)
+    assert math.isclose(merged["composite"], 0.7)
+    assert math.isclose(merged["confirmed_detect"], 1.5)
+    # API coverage is deterministic, so averaging must not perturb it.
+    assert math.isclose(merged["api_coverage"], 0.4)
+    # counts of judge events are summed, not averaged
+    assert merged["unsupported_spans"] == 3 and merged["parse_failures"] == 1
+    # item counts are judge-invariant
+    assert merged["n_must_detect"] == 2 and merged["n_anti"] == 1
+    # nothing is hidden behind the mean
+    assert math.isclose(merged["per_judge"]["gpt-5.5"]["recall"], 1.0)
+    assert math.isclose(merged["per_judge"]["claude-sonnet-4-6"]["recall"], 0.5)
+
+
+def test_balance_scores_uses_only_keys_every_judge_scored():
+    per_judge = {
+        "gpt-5.5": {("f1", "skill", 1): {"composite": 0.8}, ("f2", "skill", 1): {"composite": 0.2}},
+        "claude-sonnet-4-6": {("f1", "skill", 1): {"composite": 0.6}},
+    }
+    merged = ak.balance_scores(per_judge)
+    assert set(merged) == {("f1", "skill", 1)}
+
+
+def test_balance_scores_empty_panel_is_not_an_error():
+    assert ak.balance_scores({}) == {}
+
+
+def test_mean_severity_recall_averages_across_judges():
+    a = {"skill": {"CRITICAL": {"recall": 1.0, "n": 2}, "MAJOR": {"recall": 0.5, "n": 4}}}
+    b = {"skill": {"CRITICAL": {"recall": 0.0, "n": 2}}}
+    out = ak.mean_severity_recall([a, b])
+    assert math.isclose(out["skill"]["CRITICAL"]["recall"], 0.5)
+    # n counts checks, not judges
+    assert out["skill"]["CRITICAL"]["n"] == 2
+    # a severity only one judge bucketed still reports that judge's rate
+    assert math.isclose(out["skill"]["MAJOR"]["recall"], 0.5)
+
+
+def test_judge_self_preference_signs_the_confound_per_condition():
+    # Each judge favours the family that generated the output: the exact asymmetry that
+    # a single non-Claude judge would have charged entirely to the Claude-generated skill.
+    per_judge = {
+        "gpt-5.5": {  # non-Claude judge
+            ("f1", "skill", 1): {"composite": 0.5},
+            ("f1", "baseline-zero-shot", 1): {"composite": 0.9},
+        },
+        "claude-sonnet-4-6": {  # Claude judge
+            ("f1", "skill", 1): {"composite": 0.7},
+            ("f1", "baseline-zero-shot", 1): {"composite": 0.6},
+        },
+    }
+    pref = ak.judge_self_preference(per_judge, ["skill", "baseline-zero-shot"])
+    skill = pref["by_condition"]["skill"]
+    assert skill["generated_by"] == ak.CLAUDE_FAMILY
+    # same-family (claude judge) 0.7 - cross-family (gpt judge) 0.5
+    assert math.isclose(skill["self_preference_delta"], 0.2)
+    base = pref["by_condition"]["baseline-zero-shot"]
+    assert base["generated_by"] == ak.NON_CLAUDE_FAMILY
+    # same-family (gpt judge) 0.9 - cross-family (claude judge) 0.6
+    assert math.isclose(base["self_preference_delta"], 0.3)
+    assert math.isclose(pref["mean_self_preference_delta"], 0.25)
+
+
+def test_judge_self_preference_is_none_when_a_family_never_judged():
+    per_judge = {"gpt-5.5": {("f1", "skill", 1): {"composite": 0.5}}}
+    pref = ak.judge_self_preference(per_judge, ["skill"])
+    assert pref["by_condition"]["skill"]["self_preference_delta"] is None
+    assert pref["mean_self_preference_delta"] is None
+
+
+def _self_preferring_check_fn(response_marker="DETECTED"):
+    """A judge panel that favours its own family: the Claude judge confirms only for the
+    Claude-generated lane, the codex judge only for the codex-generated lane. This is the
+    confound in its purest form, so the two modes must visibly differ."""
+    def check_fn(judge, prompt):
+        # The prompt embeds the response; recover which lane it came from by marker.
+        lane = ak.CLAUDE_FAMILY if response_marker + "-claude" in prompt else ak.NON_CLAUDE_FAMILY
+        present = ak.judge_family(judge) == lane
+        return json.dumps({"present": present, "span": "the nonce result is discarded here"})
+    return check_fn
+
+
+def _orchestrate_kwargs():
+    span = "the nonce result is discarded here"
+    answer_keys = {"f1": {"must_detect": [span], "anti_patterns": [],
+                          "expected_apis": [], "grounding": {}}}
+    return {
+        "fixtures": ["f1"],
+        "conditions": ["skill", "baseline-zero-shot"],
+        "runs": 1,
+        "answer_keys": answer_keys,
+        "fixture_texts": {"f1": "fixture body"},
+        "tiers": {"f1": "J"},
+        "gens": {
+            ("f1", "skill", 1): f"DETECTED-claude: {span}",
+            ("f1", "baseline-zero-shot", 1): f"DETECTED-codex: {span}",
+        },
+        "check_fn": _self_preferring_check_fn(),
+        "strong": "skill",
+        "weak": "baseline-zero-shot",
+    }
+
+
+def test_orchestrate_primary_mode_charges_the_confound_to_the_cross_family_lane():
+    """One non-Claude judge + a Claude-generated skill lane = the pilot's setup. The skill
+    scores 0 and the codex-generated baseline scores 1 purely from judge family."""
+    out = ak.orchestrate(judges=["gpt-5.5", "claude-sonnet-4-6"], judge_mode="primary",
+                         **_orchestrate_kwargs())
+    agg = out["aggregate"]["by_condition"]
+    assert out["judge_mode"] == "primary"
+    assert math.isclose(agg["skill"]["recall"], 0.0)
+    assert math.isclose(agg["baseline-zero-shot"]["recall"], 1.0)
+
+
+def test_orchestrate_balanced_mode_cancels_the_family_asymmetry():
+    """Same panel, same generations, balanced scoring: each lane gets one same-family and
+    one cross-family judgment, so the family-driven gap disappears."""
+    out = ak.orchestrate(judges=["gpt-5.5", "claude-sonnet-4-6"], judge_mode="balanced",
+                         **_orchestrate_kwargs())
+    agg = out["aggregate"]["by_condition"]
+    assert out["judge_mode"] == "balanced"
+    assert out["judge_family_balanced"] is True
+    assert math.isclose(agg["skill"]["recall"], 0.5)
+    assert math.isclose(agg["baseline-zero-shot"]["recall"], 0.5)
+    # and the effect it cancelled is reported rather than buried
+    pref = out["judge_self_preference"]
+    assert math.isclose(pref["by_condition"]["skill"]["self_preference_delta"], 1.0)
+    assert math.isclose(pref["by_condition"]["baseline-zero-shot"]["self_preference_delta"], 1.0)
+
+
+def test_orchestrate_balanced_falls_back_to_primary_on_a_single_judge():
+    """Balanced is meaningless with one judge; it must degrade to primary and say so
+    rather than pretend the confound is controlled."""
+    out = ak.orchestrate(judges=["gpt-5.5"], judge_mode="balanced", **_orchestrate_kwargs())
+    assert out["judge_mode"] == "primary"
+    assert out["judge_family_balanced"] is False
+    assert "judge_self_preference" not in out

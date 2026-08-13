@@ -312,6 +312,147 @@ def judge_agreement(primary: dict[tuple, dict], secondary: dict[tuple, dict]) ->
 
 
 # --------------------------------------------------------------------------- #
+# PURE: judge-family balance (controls the confound named in prereg §4)
+# --------------------------------------------------------------------------- #
+#
+# The pilot judged every condition with one non-Claude judge. Generation is split:
+# the skill lane runs on a local Claude agent, every `baseline-*` lane on local
+# Codex (generate_missing_critic). So the baselines were judged by their OWN family
+# and the skill cross-family -- an asymmetry that lands entirely on the skill,
+# in the direction of the deficit the pilot reported. Recall saturated at 1.00 there
+# so it did not bite, but corpus-pilot-results.md §4 says plainly it "must be
+# controlled before a larger judged comparison".
+#
+# Control: judge with one model per family and average. Every condition then receives
+# exactly one same-family and one cross-family judgment, so self-preference cancels at
+# the condition level instead of falling on one lane. The size of the effect is also
+# reported rather than merely avoided -- see `judge_self_preference`.
+
+CLAUDE_FAMILY = "claude"
+NON_CLAUDE_FAMILY = "non-claude"
+# Counterpart used when --judge-mode balanced is requested without an explicit --judge-2.
+DEFAULT_COUNTERPART_JUDGE = {CLAUDE_FAMILY: "gpt-5.5", NON_CLAUDE_FAMILY: "claude-sonnet-4-6"}
+_BALANCED_MEAN_FIELDS = ("recall", "specificity", "composite",
+                         "confirmed_detect", "committed_anti")
+_BALANCED_SUM_FIELDS = ("unsupported_spans", "parse_failures")
+
+
+def judge_family(model: str) -> str:
+    """PURE. Family of a judge id, mirroring the CLI's own routing rule: a judge whose
+    id starts with `claude` runs through the local Claude CLI, anything else through
+    codex."""
+    return CLAUDE_FAMILY if str(model).lower().startswith("claude") else NON_CLAUDE_FAMILY
+
+
+def condition_family(condition: str) -> str:
+    """PURE. Family that GENERATED a condition's outputs. `generate_missing_critic`
+    routes the skill lane to a local Claude agent and every `baseline-*` lane to local
+    Codex, so the prefix is the discriminator."""
+    return NON_CLAUDE_FAMILY if str(condition).startswith("baseline-") else CLAUDE_FAMILY
+
+
+def judges_span_families(judges) -> bool:
+    """PURE. True when the judge panel covers both families, which is the precondition
+    for balanced scoring to actually cancel anything."""
+    return len({judge_family(j) for j in judges}) > 1
+
+
+def balance_scores(per_judge_scores: dict[str, dict[tuple, dict]]) -> dict[tuple, dict]:
+    """PURE. Mean each judged axis across judges for every (fixture, condition, run).
+
+    Deterministic fields (API coverage, item counts) are judge-invariant and carried
+    through unchanged; judge-behaviour diagnostics (unsupported spans, parse failures)
+    are summed because they count judge events, not response properties. Per-judge axes
+    are retained under `per_judge` so nothing is hidden behind the mean.
+    """
+    judges = list(per_judge_scores)
+    if not judges:
+        return {}
+    keys = set(per_judge_scores[judges[0]])
+    for judge in judges[1:]:
+        keys &= set(per_judge_scores[judge])
+    out: dict[tuple, dict] = {}
+    for key in sorted(keys, key=str):
+        rows = [per_judge_scores[judge][key] for judge in judges]
+        merged = dict(rows[0])
+        for field in _BALANCED_MEAN_FIELDS:
+            merged[field] = _mean([row.get(field) for row in rows])
+        for field in _BALANCED_SUM_FIELDS:
+            merged[field] = sum(row.get(field, 0) for row in rows)
+        merged["per_judge"] = {
+            judge: {ax: per_judge_scores[judge][key].get(ax)
+                    for ax in ("recall", "specificity", "composite")}
+            for judge in judges
+        }
+        out[key] = merged
+    return out
+
+
+def mean_severity_recall(per_judge: list[dict]) -> dict[str, Any]:
+    """PURE. Average per-severity recall across judges. `n` counts checks, not judges,
+    so it is judge-invariant and taken rather than summed."""
+    out: dict[str, Any] = {}
+    for cond in sorted({c for table in per_judge for c in table}):
+        severities = sorted({s for table in per_judge for s in table.get(cond, {})})
+        out[cond] = {}
+        for sev in severities:
+            rows = [table[cond][sev] for table in per_judge if sev in table.get(cond, {})]
+            out[cond][sev] = {"recall": _mean([row.get("recall") for row in rows]),
+                              "n": max((row.get("n", 0) for row in rows), default=0)}
+    return out
+
+
+def resolve_judge_panel(judge: str, judge_2: str | None, judge_mode: str) -> list[str]:
+    """PURE. Build the judge panel from the CLI flags. Balanced mode is meaningless with a
+    single-family panel, so when it is requested without an explicit `--judge-2` the
+    default counterpart from the other family is appended rather than silently degrading
+    to primary-judge scoring."""
+    panel = [judge] + ([judge_2] if judge_2 and judge_2 != judge else [])
+    if judge_mode == "balanced" and not judges_span_families(panel):
+        counterpart = DEFAULT_COUNTERPART_JUDGE[judge_family(judge)]
+        if counterpart not in panel:
+            panel.append(counterpart)
+    return panel
+
+
+def judge_self_preference(per_judge_scores: dict[str, dict[tuple, dict]],
+                          conditions) -> dict[str, Any]:
+    """PURE. Measure the confound instead of only cancelling it: per condition, the mean
+    composite awarded by judges of the generating family minus the mean awarded by judges
+    of the other family. Positive means the same-family judge scored it higher."""
+    by_condition: dict[str, Any] = {}
+    deltas: list[float] = []
+    for cond in conditions:
+        family = condition_family(cond)
+        same: list[float] = []
+        cross: list[float] = []
+        for judge, scores in per_judge_scores.items():
+            values = [row["composite"] for (f, c, r), row in scores.items()
+                      if c == cond and row.get("composite") is not None]
+            if not values:
+                continue
+            (same if judge_family(judge) == family else cross).append(_mean(values))
+        same_mean, cross_mean = _mean(same), _mean(cross)
+        delta = None if (same_mean is None or cross_mean is None) else round(same_mean - cross_mean, 4)
+        if delta is not None:
+            deltas.append(delta)
+        by_condition[cond] = {
+            "generated_by": family,
+            "same_family_composite": None if same_mean is None else round(same_mean, 4),
+            "cross_family_composite": None if cross_mean is None else round(cross_mean, 4),
+            "self_preference_delta": delta,
+        }
+    mean_delta = _mean(deltas)
+    return {
+        "by_condition": by_condition,
+        "mean_self_preference_delta": None if mean_delta is None else round(mean_delta, 4),
+        "note": "Positive delta = the generating family's own judge scored that condition "
+                "higher than the other family's judge. Diagnostic, not a correction: "
+                "balanced mode already averages the two.",
+    }
+
+
+# --------------------------------------------------------------------------- #
 # I/O — runs only at execution time (not exercised in unit tests)
 # --------------------------------------------------------------------------- #
 
@@ -477,17 +618,24 @@ def false_positive_rate(scores: dict[tuple, dict], conditions, tranche_by_fixtur
 
 def orchestrate(*, fixtures, conditions, runs, answer_keys, fixture_texts, tiers,
                 gens, judges, check_fn, progress_fn=None,
-                strong=KNOWN_STRONG, weak=KNOWN_WEAK) -> dict[str, Any]:  # pragma: no cover
-    """Run atomic blind checks for every (fixture, condition, run, item) for the PRIMARY
-    judge (judges[0]); if a second judge is given, also collect its confirmations for the
-    agreement cross-check. `gens[(fixture,condition,run)]->text`. `check_fn(judge,prompt)->raw`.
+                strong=KNOWN_STRONG, weak=KNOWN_WEAK,
+                judge_mode="primary") -> dict[str, Any]:  # pragma: no cover
+    """Run atomic blind checks for every (fixture, condition, run, item) for every judge.
+    `gens[(fixture,condition,run)]->text`. `check_fn(judge,prompt)->raw`.
     `strong`/`weak` name the discrimination poles (candidate eval: zivtech vs zero-shot;
-    critic corpus: skill vs zero-shot)."""
+    critic corpus: skill vs zero-shot).
+
+    `judge_mode='primary'` scores from judges[0] alone and uses any second judge only for
+    the agreement cross-check -- the historical behaviour, kept so archived candidate-eval
+    runs stay reproducible. `judge_mode='balanced'` averages every judge's scores, which
+    controls the generation/judge family asymmetry described above; it requires a panel
+    spanning both families to mean anything."""
     progress_fn = progress_fn or (lambda *a: None)
     primary = judges[0]
+    balanced = judge_mode == "balanced" and len(judges) > 1
     per_item: dict[str, dict[tuple, dict]] = {j: {} for j in judges}
-    scores: dict[tuple, dict] = {}
-    detect_confirms: dict[tuple, dict] = {}
+    per_judge_scores: dict[str, dict[tuple, dict]] = {j: {} for j in judges}
+    per_judge_detect: dict[str, dict[tuple, dict]] = {j: {} for j in judges}
 
     units = [(f, c, r) for f in fixtures for c in conditions for r in range(1, runs + 1)
              if (f, c, r) in gens]
@@ -507,14 +655,29 @@ def orchestrate(*, fixtures, conditions, runs, answer_keys, fixture_texts, tiers
                     res = confirm_item(parsed, resp)
                     (per_judge_confirm[j][0] if kind == "detect" else per_judge_confirm[j][1])[item] = res
                     per_item[j][(f, c, r, kind, item)] = res
-        scores[(f, c, r)] = score_output(ak, resp, *per_judge_confirm[primary])
-        detect_confirms[(f, c, r)] = {item: res.get("confirmed", False)
-                                      for item, res in per_judge_confirm[primary][0].items()}
+        for j in judges:
+            per_judge_scores[j][(f, c, r)] = score_output(ak, resp, *per_judge_confirm[j])
+            per_judge_detect[j][(f, c, r)] = {item: res.get("confirmed", False)
+                                              for item, res in per_judge_confirm[j][0].items()}
 
+    scores = balance_scores(per_judge_scores) if balanced else per_judge_scores[primary]
     tranche_by_fixture = {f: tiers.get(f) for f in fixtures}
+    if balanced:
+        severity_tranche_J = mean_severity_recall([
+            severity_recall(per_judge_detect[j], answer_keys, conditions,
+                            tranche_by_fixture, only_tranche="J")
+            for j in judges
+        ])
+    else:
+        severity_tranche_J = severity_recall(
+            per_judge_detect[primary], answer_keys, conditions,
+            tranche_by_fixture, only_tranche="J")
     out = {
         "instrument": "answer-key-diagnostic",
         "judges": judges, "primary_judge": primary, "strong": strong, "weak": weak,
+        "judge_mode": "balanced" if balanced else "primary",
+        "judge_families": {j: judge_family(j) for j in judges},
+        "judge_family_balanced": judges_span_families(judges),
         "conditions": list(conditions), "fixtures": list(fixtures), "runs": runs,
         "discrimination": discrimination_check(scores, fixtures, strong=strong, weak=weak),
         "aggregate": aggregate(scores, conditions, tiers),
@@ -522,8 +685,7 @@ def orchestrate(*, fixtures, conditions, runs, answer_keys, fixture_texts, tiers
             other: cluster_bootstrap_delta(scores, fixtures, strong, other)
             for other in conditions if other != strong
         },
-        "severity_recall_tranche_J": severity_recall(
-            detect_confirms, answer_keys, conditions, tranche_by_fixture, only_tranche="J"),
+        "severity_recall_tranche_J": severity_tranche_J,
         "false_positive_rate_tranche_C": false_positive_rate(
             scores, conditions, tranche_by_fixture, clean_tranche="C"),
         "per_fixture_grounding": {f: answer_keys[f].get("grounding", {}) for f in fixtures},
@@ -536,6 +698,8 @@ def orchestrate(*, fixtures, conditions, runs, answer_keys, fixture_texts, tiers
         out["deltas_vs_zivtech"] = out["deltas_vs_strong"]
     if len(judges) > 1:
         out["judge_agreement"] = judge_agreement(per_item[primary], per_item[judges[1]])
+    if judges_span_families(judges):
+        out["judge_self_preference"] = judge_self_preference(per_judge_scores, conditions)
     return out
 
 
@@ -639,9 +803,34 @@ def write_critic_scorecard(path: Path, summary: dict[str, Any]) -> None:  # prag
         f"Suite: `{summary['suite']}`  ·  runs: {summary['runs']}  ·  "
         f"primary judge: `{summary['primary_judge']}`",
         f"Strong pole: `{summary['strong']}`  ·  weak pole: `{summary['weak']}`",
+        f"Judge mode: `{summary.get('judge_mode', 'primary')}`  ·  panel: "
+        + ", ".join(f"`{j}` ({fam})" for j, fam in summary.get("judge_families", {}).items())
+        + ("" if summary.get("judge_family_balanced") else
+           "  ·  **single-family panel: the generation/judge family confound is NOT controlled**"),
         "",
         "Diagnostic only — localizes where the skill helps by tranche; NOT a superiority "
         "or equivalence claim (`CLAUDE.md` evaluation boundary).",
+        "",]
+    pref = summary.get("judge_self_preference")
+    if pref:
+        lines += [
+            "## Judge self-preference (family confound, prereg §4)",
+            "",
+            "Composite awarded by the generating family's own judge minus the other "
+            "family's. Positive = self-preference. Balanced mode averages both, so this "
+            "reports the size of the effect it cancels.",
+            "",
+            f"Mean across conditions: **{pref.get('mean_self_preference_delta')}**",
+            "",
+            "| Condition | generated by | same-family | cross-family | delta |",
+            "| --- | --- | ---: | ---: | ---: |",
+        ]
+        for c, row in pref.get("by_condition", {}).items():
+            lines.append(f"| `{c}` | {row.get('generated_by')} | "
+                         f"{row.get('same_family_composite')} | "
+                         f"{row.get('cross_family_composite')} | "
+                         f"{row.get('self_preference_delta')} |")
+    lines += [
         "",
         "## Per-condition (composite | recall | api | specificity)",
         "",
@@ -700,7 +889,10 @@ def run_critic_corpus(args, progress) -> None:  # pragma: no cover
 
     ckpt = out_dir / "checkpoint" / "check"
     ckpt.mkdir(parents=True, exist_ok=True)
-    judges = [args.judge] + ([args.judge_2] if args.judge_2 and args.judge_2 != args.judge else [])
+    # Critic corpus defaults to balanced: its conditions are generated by two different
+    # families, so a single-family judge would reintroduce the prereg §4 confound.
+    judge_mode = args.judge_mode or "balanced"
+    judges = resolve_judge_panel(args.judge, args.judge_2, judge_mode)
 
     def check_fn(judge_model, prompt):
         cache = ckpt / f"{_hash(judge_model, prompt)}.txt"
@@ -714,7 +906,8 @@ def run_critic_corpus(args, progress) -> None:  # pragma: no cover
     summary = orchestrate(
         fixtures=fixtures, conditions=conditions, runs=runs, answer_keys=answer_keys,
         fixture_texts=fixture_texts, tiers=tiers, gens=gens, judges=judges,
-        check_fn=check_fn, progress_fn=progress, strong=CRITIC_STRONG, weak=CRITIC_WEAK)
+        check_fn=check_fn, progress_fn=progress, strong=CRITIC_STRONG, weak=CRITIC_WEAK,
+        judge_mode=judge_mode)
     summary["suite"] = suite
     summary["n_boot"] = args.n_boot
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -747,6 +940,11 @@ def main():  # pragma: no cover
     p.add_argument("--judge", default="gpt-5.5",
                    help="Primary judge model id. Non-'claude*' routes to codex (cross-family, default).")
     p.add_argument("--judge-2", default=None, help="Optional second judge for the agreement cross-check.")
+    p.add_argument("--judge-mode", choices=("primary", "balanced"), default=None,
+                   help="'balanced' averages one judge per model family so generation/judge "
+                        "family self-preference cancels (default for the critic corpus); "
+                        "'primary' scores from --judge alone (default for the candidate eval). "
+                        "Balanced adds the counterpart judge automatically if --judge-2 is omitted.")
     p.add_argument("--fast", action="store_true", help="runs=1 directional read.")
     p.add_argument("--runs", type=int, default=3)
     p.add_argument("--fixtures", nargs="*", default=None)
@@ -801,7 +999,10 @@ def main():  # pragma: no cover
     ckpt = out_dir / "checkpoint" / "check"
     ckpt.mkdir(parents=True, exist_ok=True)
 
-    judges = [args.judge] + ([args.judge_2] if args.judge_2 and args.judge_2 != args.judge else [])
+    # Candidate eval defaults to primary so archived runs stay reproducible; its lanes
+    # were generated single-family historically. Opt in with --judge-mode balanced.
+    judge_mode = args.judge_mode or "primary"
+    judges = resolve_judge_panel(args.judge, args.judge_2, judge_mode)
 
     def check_fn(judge_model, prompt):
         cache = ckpt / f"{_hash(judge_model, prompt)}.txt"
@@ -815,7 +1016,7 @@ def main():  # pragma: no cover
     summary = orchestrate(
         fixtures=fixtures, conditions=conditions, runs=runs, answer_keys=answer_keys,
         fixture_texts=fixture_texts, tiers=tiers, gens=gens, judges=judges,
-        check_fn=check_fn, progress_fn=progress)
+        check_fn=check_fn, progress_fn=progress, judge_mode=judge_mode)
     summary["gen_from"] = args.gen_from
     summary["n_boot"] = args.n_boot
     if args.generate:
