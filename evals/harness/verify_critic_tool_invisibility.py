@@ -73,25 +73,37 @@ DISQUALIFYING_PREFIXES = (
 PHPSTAN_LEVEL = "max"
 PHPSTAN_MEMORY_LIMIT = "2G"
 
-# Identifiers that describe the SNIPPET's incompleteness, not the defect under test.
-# Fixtures are bare excerpts analysed with no autoloader, no plugin bootstrap, no type
-# declarations and no runtime constants, so these fire on correct and defective code alike
-# and carry no signal about tool-visibility.
-PHPSTAN_BENIGN_IDENTIFIERS = (
-    "missingType.",                  # no return/param/property types in an excerpt
-    "argument.type",                 # `mixed` flowing from untyped excerpt boundaries
-    "foreach.nonIterable",           # e.g. get_posts() typed as array|null without context
-    "property.nonObject",            # int|WP_Post unions the excerpt never narrows
-    "offsetAccess.nonOffsetAccessible",
-    "constant.notFound",             # WordPress runtime constants absent from the stubs
-    "class.notFound",
-    "function.notFound",
-    # `global $wpdb;` in an excerpt gives $wpdb no type, so every call on it degrades to
-    # "cannot call X on mixed". Verified noise, not detection: annotating `/** @var \wpdb
-    # $wpdb */` on sec-like-wildcard-no-esc-like-v1 clears all three findings and surfaces
-    # nothing about the missing esc_like. See the limitation recorded in corpus-prereg.md.
-    "method.nonObject",
-    "encapsedStringPart.nonString",
+# Rules describing the SNIPPET's incompleteness, not the defect under test: fixtures are
+# bare excerpts with no autoloader, no plugin bootstrap, no type declarations and no runtime
+# constants, so these fire on correct and defective code alike.
+#
+# Each rule is (identifier prefix, required message substring or None). The message
+# discriminator exists because an identifier alone is sometimes too coarse to be safe --
+# see `argument.type` below, which is the whole reason this structure is not a plain tuple
+# of strings.
+PHPSTAN_BENIGN_RULES = (
+    ("missingType.", None),          # no return/param/property types in an excerpt
+    ("foreach.nonIterable", None),   # e.g. get_posts() typed as array<int|WP_Post>|null
+    ("property.nonObject", None),    # int|WP_Post unions the excerpt never narrows
+    ("offsetAccess.nonOffsetAccessible", None),
+    ("constant.notFound", None),     # WordPress runtime constants absent from the stubs
+    # `global $wpdb;` in an excerpt gives $wpdb no type, so calls on it degrade to
+    # "on mixed". Verified noise, not detection: annotating `/** @var \wpdb $wpdb */` on
+    # sec-like-wildcard-no-esc-like-v1 clears these and surfaces nothing about the
+    # missing esc_like.
+    ("method.nonObject", None),
+    ("encapsedStringPart.nonString", None),
+    # NARROWED 2026-08-13. `argument.type` is benign only in its `mixed`-propagation shape,
+    # which is what untyped $_POST/$_GET input produces -- all 15 occurrences in the current
+    # corpus are "… expects X, mixed given". The SAME identifier also carries
+    # "wpdb::prepare() expects literal-string, non-falsy-string given", which is PHPStan's
+    # SQL-injection heuristic and a genuine finding. Suppressing the identifier wholesale
+    # hid it: measured on a typed variant of sec-like-wildcard-no-esc-like-v1, the
+    # literal-string finding was classified benign. The discriminator closes that.
+    ("argument.type", "mixed given"),
+    # Deliberately NOT allowlisted: class.notFound / function.notFound. They never fire on
+    # the current corpus, and "this WordPress function does not exist" is a real defect
+    # class (a typo'd hook callback is a silent no-op), so default-deny should surface them.
 )
 
 
@@ -124,15 +136,23 @@ def run_wpcs(code: str) -> tuple[list | None, str]:
     return msgs, ""
 
 
-def classify_phpstan(findings: list[dict],
-                     benign: tuple[str, ...] = PHPSTAN_BENIGN_IDENTIFIERS) -> list[dict]:
+def is_benign(finding: dict, rules: tuple = PHPSTAN_BENIGN_RULES) -> bool:
+    """PURE. True iff a finding matches an allowlist rule: identifier prefix, and the
+    message substring when that rule carries one."""
+    identifier = str(finding.get("identifier", ""))
+    message = str(finding.get("message", ""))
+    return any(identifier.startswith(prefix) and (needle is None or needle in message)
+               for prefix, needle in rules)
+
+
+def classify_phpstan(findings: list[dict], rules: tuple = PHPSTAN_BENIGN_RULES) -> list[dict]:
     """PURE. Return the findings that disqualify a fixture from tranche J.
 
-    Default-deny: a finding is benign only if its identifier matches the allowlist, so an
-    unrecognised identifier is surfaced for triage rather than assumed harmless.
+    Default-deny: a finding is benign only if it matches an allowlist rule, so an
+    unrecognised identifier -- or a recognised identifier carrying an unrecognised message
+    shape -- is surfaced for triage rather than assumed harmless.
     """
-    return [f for f in findings
-            if not any(str(f.get("identifier", "")).startswith(b) for b in benign)]
+    return [f for f in findings if not is_benign(f, rules)]
 
 
 def parse_phpstan_json(payload: str) -> tuple[list[dict] | None, str]:
