@@ -27,6 +27,11 @@ This collection gives WordPress the same lifecycle shape as the Drupal skill eco
 | `docs/wordpress/v1-completion-todo.md` | Ordered checklist for finishing V1 before standalone public release |
 | `docs/wordpress/skill-improvement-research-2026-06-20.md` | Research synthesis and evidence-based improvement direction after pairwise and answer-key diagnostics |
 
+## Repository Maintenance
+
+- When CI fails outside the apparent diff scope, read the first real error in the failed-job log, compare the diff with the failing code path, inspect the protected assertion, check recent run history, and rerun only the failed job. Do not weaken a security or correctness invariant to clear an unrelated pull request; record confirmed flake evidence separately.
+- Before acting on a recorded analyzer or fixture limitation, count affected cases, enumerate suppressed findings by identifier and message, and test the suspected cause with a counterfactual. Narrow suppressions by exact message shape, rerun the full corpus, extend classifier tests, and correct documentation that measurement disproves.
+
 ## Reuse Policy
 
 This repository is licensed under GPL-3.0 (root `LICENSE`; relicensed from Apache-2.0 on 2026-07-03, before first public release). Direct copied or closely adapted third-party prompt text remains excluded from the V1 skill prompts: all skill text is clean-room Zivtech writing, and upstream projects are reference-only comparators recorded in `docs/wordpress/reuse-ledger.md`. Clean-room original Zivtech text does not need passage-level attribution, but it should still list compatible references in the relevant skill file. Any future direct adaptation of third-party text requires a license-compatibility check (GPL-compatible sources now qualify) plus a reuse-ledger entry per `docs/wordpress/license-reuse-policy.md`.
