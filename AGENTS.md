@@ -28,6 +28,11 @@
 3. Review with the general critic plus the focused critic for theme, security, or performance risk. Critics must use evidence-backed findings, severity calibration, exact remediation APIs, gap analysis, and false-positive control.
 4. Revise and re-review before treating generated work as production-ready.
 
+## Repository Maintenance
+
+- When CI fails outside the apparent diff scope, read the first real error in the failed-job log, compare the diff with the failing code path, inspect the protected assertion, check recent run history, and rerun only the failed job. Do not weaken a security or correctness invariant to clear an unrelated pull request; record confirmed flake evidence separately.
+- Before acting on a recorded analyzer or fixture limitation, count affected cases, enumerate suppressed findings by identifier and message, and test the suspected cause with a counterfactual. Narrow suppressions by exact message shape, rerun the full corpus, extend classifier tests, and correct documentation that measurement disproves.
+
 ## Evaluation Status
 
 V1 protocols are complete for in-repo use, with a 2026-06-20 Exact API and Verification Contract amendment. The upstream candidate suite is closed as directional-internal for frontier-model review quality: pairwise and answer-key diagnostics do not establish a Zivtech quality edge over a strong few-shot prompt. The 27-fixture superiority benchmark remains blocked.
