@@ -202,10 +202,20 @@ def materialize_blueprint(text: str, out_dir: Path) -> tuple[list[MaterializedFi
     return [MaterializedFile("blueprint.json", len(content.encode("utf-8")))], []
 
 
+WORKSPACE_SENTINEL = ".workspace-lease"
+
+
+def _has_nonsentinel_entries(out_dir: Path) -> bool:
+    # A freshly created workspace lease holds only its sentinel file; the
+    # certifier already treats such directories as valid artifact roots
+    # (see execution_closure_for), so the emptiness refusal must agree.
+    return any(item.name != WORKSPACE_SENTINEL for item in out_dir.iterdir())
+
+
 def materialize_packet(executor: str, packet_text: str, out_dir: Path, overwrite: bool = False) -> dict[str, Any]:
     if executor not in PACKET_SECTIONS:
         raise ValueError(f"unknown executor `{executor}`")
-    if out_dir.exists() and any(out_dir.iterdir()) and not overwrite:
+    if out_dir.exists() and _has_nonsentinel_entries(out_dir) and not overwrite:
         return {
             "executor": executor,
             "out_dir": str(out_dir),

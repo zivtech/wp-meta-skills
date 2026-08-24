@@ -389,3 +389,31 @@ def test_mask_fences_preserves_offsets():
     assert set(spans) == {"A", "B"}
     start, end = spans["A"]
     assert "code();" in text[start:end]
+
+
+def test_workspace_lease_sentinel_does_not_block_materialization(tmp_path):
+    """The repair loop materializes into a fresh workspace lease, whose
+    `.workspace-lease` sentinel must not trip the non-empty refusal. This was
+    the hidden wall behind every repair-loop static certification: a packet
+    clearing the packet gate then failed materialization on harness
+    infrastructure, and the model was told to fix an unfixable error."""
+    out_dir = tmp_path / "artifact"
+    out_dir.mkdir()
+    (out_dir / ".workspace-lease").write_text("lease", encoding="utf-8")
+
+    result = materializer.materialize_packet("plugin", GOOD_PLUGIN_PACKET, out_dir)
+
+    assert result["pass"] is True
+    assert (out_dir / "acme-runtime" / "acme-runtime.php").exists()
+
+
+def test_real_prior_content_still_blocks_materialization(tmp_path):
+    out_dir = tmp_path / "artifact"
+    out_dir.mkdir()
+    (out_dir / ".workspace-lease").write_text("lease", encoding="utf-8")
+    (out_dir / "stale.php").write_text("<?php\n", encoding="utf-8")
+
+    result = materializer.materialize_packet("plugin", GOOD_PLUGIN_PACKET, out_dir)
+
+    assert result["pass"] is False
+    assert any("is not empty" in issue["detail"] for issue in result["issues"])
