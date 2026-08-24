@@ -198,15 +198,50 @@ def _surface_present(surface: str, text: str) -> bool:
     return bool(tokens) and all(tok in normalized for tok in tokens)
 
 
-def sections(text: str) -> dict[str, str]:
-    matches = list(SECTION_RE.finditer(text))
-    out: dict[str, str] = {}
+def mask_fences(text: str) -> str:
+    """Blank the interior of column-0 fenced code blocks, preserving offsets.
+
+    Heading regexes must never match inside a fenced file body: a generated
+    readme.txt written with markdown `## Description` headings would otherwise
+    split the enclosing packet section mid-fence, severing the closing fence
+    and losing every file after it ("no fenced code block found"). The returned
+    string has identical length and line structure, so match positions carry
+    back to the original text. An unterminated fence masks to end-of-text,
+    which surfaces as ordinary missing-heading/missing-fence failures.
+    """
+    out: list[str] = []
+    in_fence = False
+    for line in text.splitlines(keepends=True):
+        if line.startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+        elif in_fence:
+            body = line.rstrip("\r\n")
+            out.append(" " * len(body) + line[len(body):])
+        else:
+            out.append(line)
+    return "".join(out)
+
+
+def section_spans(text: str) -> dict[str, tuple[int, int]]:
+    """Map section name -> (start, end) offsets of its body in the raw text.
+
+    Headings are located on the fence-masked text so fenced content cannot
+    open or close a section; the spans index into the original text.
+    """
+    matches = list(SECTION_RE.finditer(mask_fences(text)))
+    out: dict[str, tuple[int, int]] = {}
     for idx, match in enumerate(matches):
         name = match.group(1).strip()
         start = match.end()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
-        out[name] = text[start:end].strip()
+        out[name] = (start, end)
     return out
+
+
+def sections(text: str) -> dict[str, str]:
+    return {name: text[start:end].strip()
+            for name, (start, end) in section_spans(text).items()}
 
 
 def check_headings(text: str, contract: dict[str, Any]) -> Check:
@@ -227,9 +262,10 @@ def check_packet_only(text: str, contract: dict[str, Any]) -> Check:
     issues: list[str] = []
     if first_line != f"## {expected}":
         issues.append(f"first non-empty line must be ## {expected}")
-    if re.search(r"(?m)^##\s+Phase\b", text):
+    masked = mask_fences(text)
+    if re.search(r"(?m)^##\s+Phase\b", masked):
         issues.append("phase transcript headings are not allowed")
-    if re.search(r"(?m)^##\s+(Deviations|Verification Commands|Quality Self-Check)\b", text):
+    if re.search(r"(?m)^##\s+(Deviations|Verification Commands|Quality Self-Check)\b", masked):
         issues.append("renamed contract headings are not allowed")
     return Check(
         "packet_only_output",

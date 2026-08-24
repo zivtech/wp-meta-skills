@@ -37,7 +37,6 @@ APPROVED_LOCKS = {
     "block-scripts-32.4.1-deprecation": ("block-scripts-32.4.1-deprecation.package-lock.json", "package-lock.json", "package.json"),
     "plugin-phpunit-12.5.31": ("plugin-phpunit-12.5.31.composer.lock", "acme-runtime-tested/composer.lock", "acme-runtime-tested/composer.json"),
 }
-SECTION_RE = re.compile(r"(?m)^##\s+(.+?)\s*$")
 PATH_HEADING_RE = re.compile(r"(?m)^(?:#{3,6}|[-*])\s+`?([A-Za-z0-9_./-]+\.[A-Za-z0-9_+-]+)`?\s*$")
 SAFE_SUFFIXES = {
     ".php",
@@ -74,14 +73,9 @@ class MaterializationIssue:
 
 
 def sections(text: str) -> dict[str, str]:
-    matches = list(SECTION_RE.finditer(text))
-    out: dict[str, str] = {}
-    for idx, match in enumerate(matches):
-        name = match.group(1).strip()
-        start = match.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
-        out[name] = text[start:end].strip()
-    return out
+    # Fence-aware: a `## ...` line inside a generated file's fenced body (a
+    # readme.txt written with markdown headings) must not split the section.
+    return validate_wordpress_executor_packet.sections(text)
 
 
 def safe_relative_path(raw_path: str) -> Path:
@@ -95,7 +89,8 @@ def safe_relative_path(raw_path: str) -> Path:
     return path
 
 
-def first_fence_after(text: str, start: int) -> tuple[str, int] | None:
+def first_fence_span_after(text: str, start: int) -> tuple[int, int] | None:
+    """Return (content_start, content_end) of the next fenced body, or None."""
     cursor = start
     while cursor < len(text) and text[cursor] in " \t\r\n":
         cursor += 1
@@ -108,14 +103,30 @@ def first_fence_after(text: str, start: int) -> tuple[str, int] | None:
     close_start = text.find("\n```", content_start)
     if close_start == -1:
         return None
+    return content_start, close_start
+
+
+def first_fence_after(text: str, start: int) -> tuple[str, int] | None:
+    span = first_fence_span_after(text, start)
+    if span is None:
+        return None
+    content_start, close_start = span
     return text[content_start:close_start], close_start + 4
 
 
-def extract_file_blocks(section_text: str) -> tuple[list[tuple[Path, str]], list[MaterializationIssue]]:
-    blocks: list[tuple[Path, str]] = []
+def file_fence_spans(section_text: str) -> tuple[list[tuple[Path, tuple[int, int]]], list[MaterializationIssue]]:
+    """Locate each generated file's fenced-content span within a section.
+
+    Path headings are matched on the fence-masked text so a heading-shaped
+    line inside a file body cannot start a phantom file entry; the returned
+    spans index into the original section text. This is the single scanner
+    behind both materialization and deterministic packet rewriting.
+    """
+    spans: list[tuple[Path, tuple[int, int]]] = []
     issues: list[MaterializationIssue] = []
     seen: set[Path] = set()
-    for match in PATH_HEADING_RE.finditer(section_text):
+    masked = validate_wordpress_executor_packet.mask_fences(section_text)
+    for match in PATH_HEADING_RE.finditer(masked):
         raw_path = match.group(1)
         try:
             rel_path = safe_relative_path(raw_path)
@@ -125,13 +136,19 @@ def extract_file_blocks(section_text: str) -> tuple[list[tuple[Path, str]], list
         if rel_path in seen:
             issues.append(MaterializationIssue("fail", f"duplicate generated file path: {rel_path}"))
             continue
-        fence = first_fence_after(section_text, match.end())
-        if fence is None:
+        span = first_fence_span_after(section_text, match.end())
+        if span is None:
             issues.append(MaterializationIssue("fail", f"no fenced code block found after {raw_path}"))
             continue
-        content, _end = fence
-        blocks.append((rel_path, content.rstrip() + "\n"))
+        spans.append((rel_path, span))
         seen.add(rel_path)
+    return spans, issues
+
+
+def extract_file_blocks(section_text: str) -> tuple[list[tuple[Path, str]], list[MaterializationIssue]]:
+    spans, issues = file_fence_spans(section_text)
+    blocks = [(rel_path, section_text[start:end].rstrip() + "\n")
+              for rel_path, (start, end) in spans]
     return blocks, issues
 
 
