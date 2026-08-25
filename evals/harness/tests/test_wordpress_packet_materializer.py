@@ -329,3 +329,91 @@ def test_heading_without_immediate_fence_fails(tmp_path):
 
     assert result["pass"] is False
     assert any("no fenced code block found" in issue["detail"] for issue in result["issues"])
+
+
+def test_markdown_headings_inside_readme_fence_do_not_split_sections(tmp_path):
+    """A generated readme.txt written with markdown `## headings` must not
+    sever the enclosing section: every file still materializes and no phantom
+    section appears. This is the recorded local-model failure that was
+    misreported as "no fenced code block found"."""
+    packet = GOOD_PLUGIN_PACKET.replace(
+        "=== Acme Runtime ===\nContributors: acme",
+        "=== Acme Runtime ===\nContributors: acme\n\n## Description\n\nMarkdown-style readme heading inside the fence.",
+    )
+
+    parsed = materializer.sections(packet)
+    assert "Description" not in parsed
+
+    result = materializer.materialize_packet("plugin", packet, tmp_path / "artifact")
+
+    assert result["pass"] is True
+    readme = (tmp_path / "artifact" / "acme-runtime" / "readme.txt").read_text(encoding="utf-8")
+    assert "## Description" in readme
+
+
+def test_heading_shaped_line_inside_fence_is_not_a_file_entry(tmp_path):
+    packet = GOOD_PLUGIN_PACKET.replace(
+        "=== Acme Runtime ===\nContributors: acme",
+        "=== Acme Runtime ===\nContributors: acme\n### fake-plugin/fake.php",
+    )
+
+    result = materializer.materialize_packet("plugin", packet, tmp_path / "artifact")
+
+    assert result["pass"] is True
+    written = {entry["path"] for entry in result["written"]}
+    assert written == {"acme-runtime/acme-runtime.php", "acme-runtime/readme.txt"}
+
+
+def test_unterminated_fence_still_reports_missing_fence(tmp_path):
+    packet = GOOD_PLUGIN_PACKET.replace(
+        "### acme-runtime/readme.txt\n```txt",
+        "### acme-runtime/readme.txt\n```txt",
+    ).rsplit("```", 1)[0]  # drop the final closing fence
+
+    result = materializer.materialize_packet("plugin", packet, tmp_path / "artifact")
+
+    assert result["pass"] is False
+    assert any("no fenced code block found" in issue["detail"] for issue in result["issues"])
+
+
+def test_mask_fences_preserves_offsets():
+    import validate_wordpress_executor_packet as oracle
+
+    text = "## A\n```php\n## not a heading\ncode();\n```\n## B\nbody\n"
+    masked = oracle.mask_fences(text)
+    assert len(masked) == len(text)
+    assert "## not a heading" not in masked
+    assert masked.splitlines()[0] == "## A"
+    assert masked.splitlines()[-2] == "## B"
+    spans = oracle.section_spans(text)
+    assert set(spans) == {"A", "B"}
+    start, end = spans["A"]
+    assert "code();" in text[start:end]
+
+
+def test_workspace_lease_sentinel_does_not_block_materialization(tmp_path):
+    """The repair loop materializes into a fresh workspace lease, whose
+    `.workspace-lease` sentinel must not trip the non-empty refusal. This was
+    the hidden wall behind every repair-loop static certification: a packet
+    clearing the packet gate then failed materialization on harness
+    infrastructure, and the model was told to fix an unfixable error."""
+    out_dir = tmp_path / "artifact"
+    out_dir.mkdir()
+    (out_dir / ".workspace-lease").write_text("lease", encoding="utf-8")
+
+    result = materializer.materialize_packet("plugin", GOOD_PLUGIN_PACKET, out_dir)
+
+    assert result["pass"] is True
+    assert (out_dir / "acme-runtime" / "acme-runtime.php").exists()
+
+
+def test_real_prior_content_still_blocks_materialization(tmp_path):
+    out_dir = tmp_path / "artifact"
+    out_dir.mkdir()
+    (out_dir / ".workspace-lease").write_text("lease", encoding="utf-8")
+    (out_dir / "stale.php").write_text("<?php\n", encoding="utf-8")
+
+    result = materializer.materialize_packet("plugin", GOOD_PLUGIN_PACKET, out_dir)
+
+    assert result["pass"] is False
+    assert any("is not empty" in issue["detail"] for issue in result["issues"])

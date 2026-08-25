@@ -571,3 +571,25 @@ def test_held_tree_accepts_one_caller_owned_absolute_proof_deadline(tmp_path):
             assert held.proof_budget.deadline==proof_deadline
     finally:
         staging.cleanup_staged_tree(staged)
+
+def test_stage_tree_tolerates_regular_file_workspace_sentinel(tmp_path):
+    source=tmp_path/"source"; source.mkdir()
+    (source/".workspace-lease").write_text("lease")
+    (source/"a.php").write_text("<?php\n")
+    result=staging.stage_tree(source,tmp_path/"leases")
+    try:
+        assert [entry.path for entry in result.manifest]==["a.php"]  # sentinel ignored, not staged
+    finally: cleanup(result)
+
+def test_stage_tree_rejects_symlink_workspace_sentinel(tmp_path):
+    source=tmp_path/"source"; source.mkdir()
+    (source/"real.txt").write_text("x")
+    os.symlink(source/"real.txt",source/".workspace-lease")
+    with pytest.raises(ValueError,match="must not be a symlink"):
+        staging.stage_tree(source,tmp_path/"leases")
+
+def test_stage_tree_still_rejects_file_shaped_ignored_directory_roots(tmp_path):
+    source=tmp_path/"source"; source.mkdir()
+    (source/".git").write_text("not a directory")
+    with pytest.raises(ValueError,match="ignored root must be a real directory"):
+        staging.stage_tree(source,tmp_path/"leases")

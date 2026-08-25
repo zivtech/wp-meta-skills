@@ -43,8 +43,13 @@ from workspace_lease import WorkspacePurpose, create_named  # noqa: E402
 #       failed/empty generation (model timeout) so orchestrate can retry / preserve last-good
 #   certify_fn(iteration, packet) -> {"passed": bool, "failing_gates": [...],
 #                                     "failures": str, "gate_vector": {...}}
+#       iteration is an int for model slots and "<slot>-autofix" for the
+#       deterministic re-certification of an auto-fixed packet.
+#   autofix_fn(slot, packet, failing_gates) -> repaired packet token, or None when
+#       the failure is not deterministically repairable (then the model repairs).
 GenerateFn = Callable[[int, Any, str], Any]
-CertifyFn = Callable[[int, Any], dict[str, Any]]
+CertifyFn = Callable[[int | str, Any], dict[str, Any]]
+AutofixFn = Callable[[int, Any, list[str]], Any]
 
 
 EXECUTOR_PROFILE_MATRIX = MappingProxyType({
@@ -123,7 +128,7 @@ def _generate_nonempty(generate_fn: GenerateFn, iteration: int, prior: Any,
 
 
 def orchestrate(generate_fn: GenerateFn, certify_fn: CertifyFn, max_repairs: int,
-                gen_retries: int = 1) -> dict[str, Any]:
+                gen_retries: int = 1, autofix_fn: AutofixFn | None = None) -> dict[str, Any]:
     """Run generate -> certify -> repair loop until a green certification or max_repairs.
 
     iteration 0 is the initial generation; iterations 1..max_repairs are repairs driven
@@ -136,6 +141,14 @@ def orchestrate(generate_fn: GenerateFn, certify_fn: CertifyFn, max_repairs: int
     last-good packet — the loop records a generation_failed iteration and keeps repairing
     from the last-good base. A transient model timeout therefore cannot discard accumulated
     progress or feed an empty "previous packet" into the next repair prompt.
+
+    Deterministic autofix: after each failed certification of a freshly generated
+    packet, autofix_fn (when provided) may return a repaired packet — e.g. phpcbf
+    fixing WPCS whitespace — which is re-certified immediately as an "<slot>-autofix"
+    pass without spending a model repair slot. History records the pass with
+    "autofix": True; pass@1 and `generations` count model output only. An autofix
+    pass runs at most once per slot, always on the model's own fresh packet, so the
+    measurement stays a model measurement with a declared deterministic assist.
     """
     if max_repairs < 0:
         raise ValueError("max_repairs must be >= 0")
@@ -145,14 +158,17 @@ def orchestrate(generate_fn: GenerateFn, certify_fn: CertifyFn, max_repairs: int
     history: list[dict[str, Any]] = []
     gen_failures = 0
 
-    def _record(iteration: int, verdict: dict[str, Any]) -> bool:
+    def _record(iteration: int, verdict: dict[str, Any], autofix: bool = False) -> bool:
         passed = bool(verdict.get("passed"))
-        history.append({
+        entry = {
             "iteration": iteration,
             "passed": passed,
             "failing_gates": list(verdict.get("failing_gates") or []),
             "gate_vector": dict(verdict.get("gate_vector") or {}),
-        })
+        }
+        if autofix:
+            entry["autofix"] = True
+        history.append(entry)
         return passed
 
     def _record_gen_failure(iteration: int) -> None:
@@ -167,7 +183,9 @@ def orchestrate(generate_fn: GenerateFn, certify_fn: CertifyFn, max_repairs: int
         })
 
     def _result(green: bool, iters_to_green: int | None) -> dict[str, Any]:
-        certified = [h for h in history if not h.get("generation_failed")]
+        certified = [h for h in history
+                     if not h.get("generation_failed") and not h.get("autofix")]
+        autofix_passes = [h for h in history if h.get("autofix")]
         return {
             "green": green,
             "iterations_to_green": iters_to_green,
@@ -175,8 +193,23 @@ def orchestrate(generate_fn: GenerateFn, certify_fn: CertifyFn, max_repairs: int
             "generation_failures": gen_failures,
             "pass_at_1": bool(certified and certified[0]["passed"]
                               and certified[0]["iteration"] == 0),
+            "autofix_passes": len(autofix_passes),
+            "green_via_autofix": bool(green and history and history[-1].get("autofix")),
             "history": history,
         }
+
+    def _autofix_stage(slot: int, packet: Any,
+                       verdict: dict[str, Any]) -> tuple[Any, dict[str, Any], bool]:
+        """Offer the failed packet to autofix_fn; certify the repaired packet."""
+        if autofix_fn is None:
+            return packet, verdict, False
+        failing = list(verdict.get("failing_gates") or [])
+        repaired = autofix_fn(slot, packet, failing)
+        if repaired is None:
+            return packet, verdict, False
+        new_verdict = certify_fn(f"{slot}-autofix", repaired)
+        passed = _record(slot, new_verdict, autofix=True)
+        return repaired, new_verdict, passed
 
     packet = _generate_nonempty(generate_fn, 0, None, "", gen_retries)
     if packet is None:
@@ -185,6 +218,9 @@ def orchestrate(generate_fn: GenerateFn, certify_fn: CertifyFn, max_repairs: int
 
     verdict = certify_fn(0, packet)
     if _record(0, verdict):
+        return _result(True, 0)
+    packet, verdict, green = _autofix_stage(0, packet, verdict)
+    if green:
         return _result(True, 0)
 
     slot = 1
@@ -200,6 +236,9 @@ def orchestrate(generate_fn: GenerateFn, certify_fn: CertifyFn, max_repairs: int
         packet = new_packet
         verdict = certify_fn(slot, packet)
         if _record(slot, verdict):
+            return _result(True, slot)
+        packet, verdict, green = _autofix_stage(slot, packet, verdict)
+        if green:
             return _result(True, slot)
         slot += 1
 
@@ -300,6 +339,18 @@ def _stage_failure(gate: str, detail: str, checks: list[dict[str, Any]] | None =
         subordinate.append({"id": identifier, "status": str(check.get("status"))})
     return {"passed": False, "failing_gates": [gate], "failures": diagnostics,
             "gate_vector": {gate: {"status": "fail", "checks": subordinate}}}
+
+
+def _surfaced_failure(gate: str, detail: str, checks: list[dict[str, Any]]) -> dict[str, Any]:
+    """A stage failure whose failing_gates also name the real non-passing checks.
+
+    A nonzero certifier/runtime return code otherwise collapses to a single
+    synthetic gate label, hiding e.g. a real phpcs_wpcs failure from both the
+    run history and the autofix trigger.
+    """
+    failure = _stage_failure(gate, detail, checks)
+    residual = [cid for cid in _nonpassing_check_ids(checks) if cid != gate]
+    return {**failure, "failing_gates": [gate, *residual]}
 
 
 def _isolated_runtime_command(
@@ -571,7 +622,7 @@ def make_certify(
             checks = _checks_with_status(static or {})
             checks.insert(0, {"id": "static_command", "status": "fail",
                               "detail": f"return code {static_proc.returncode}"})
-            return _stage_failure("static_command", f"return code {static_proc.returncode}", checks)
+            return _surfaced_failure("static_command", f"return code {static_proc.returncode}", checks)
         if static is None:
             return _stage_failure("static_evidence", "certification.json missing or malformed")
         candidates: list[Path] = []
@@ -636,13 +687,16 @@ def make_certify(
             }])
         if runtime_proc is None:
             return _stage_failure("runtime_timeout", "isolated runtime did not return")
+        for stream, content in (("stdout", runtime_proc.stdout), ("stderr", runtime_proc.stderr)):
+            if content:
+                (res / f"runtime-command.{stream}.txt").write_text(content, encoding="utf-8")
         rj = runtime_root / run_id / "runtime-smoke.json"
         data = _load_json_object(rj)
         if runtime_proc.returncode != 0:
             checks = _checks_with_status(data or {})
             checks.insert(0, {"id": "runtime_command", "status": "fail",
                               "detail": f"return code {runtime_proc.returncode}"})
-            return _stage_failure("runtime_command", f"return code {runtime_proc.returncode}", checks)
+            return _surfaced_failure("runtime_command", f"return code {runtime_proc.returncode}", checks)
         if data is None:
             return _stage_failure("runtime_result", "exact runtime result missing or malformed")
         return _isolated_runtime_verdict(
@@ -651,6 +705,38 @@ def make_certify(
         )
 
     return certify
+
+
+def make_autofix(executor: str, run_dir: Path, timeout: int) -> AutofixFn:
+    """Wire the deterministic phpcbf stage: repair only WPCS failures, write
+    the repaired packet and an evidence record beside the model iterations."""
+    import wpcs_autofix
+
+    def autofix(slot: int, packet: Any, failing_gates: list[str]) -> Path | None:
+        if "phpcs_wpcs" not in failing_gates:
+            return None
+        try:
+            workspace = create_named(
+                run_dir, f"iter{slot}.autofix", WorkspacePurpose.ARTIFACT_EXECUTION,
+            ).root
+        except (ValueError, FileExistsError):
+            return None
+        packet_text = Path(packet).read_text(encoding="utf-8")
+        outcome = wpcs_autofix.autofix_packet_text(packet_text, executor, workspace, timeout)
+        (run_dir / f"iter{slot}.autofix.json").write_text(
+            json.dumps({
+                "slot": slot, "changed": outcome.changed,
+                "files_changed": list(outcome.files_changed),
+                "detail": outcome.detail,
+            }, indent=2) + "\n", encoding="utf-8",
+        )
+        if not outcome.changed:
+            return None
+        repaired = run_dir / f"iter{slot}.autofix.packet.md"
+        repaired.write_text(outcome.packet_text, encoding="utf-8")
+        return repaired
+
+    return autofix
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +758,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Retries for a failed/empty generation (model timeout) before that slot is "
                         "recorded as a generation failure. Failures never discard the last-good packet.")
     p.add_argument("--profile", default="runtime", choices=("static", "runtime"))
+    p.add_argument("--wpcs-autofix", action="store_true",
+                   help="After a failed certification with phpcs_wpcs among the failing "
+                        "gates, run phpcbf (pinned toolchain) over the packet's PHP files "
+                        "and re-certify the repaired packet without spending a model "
+                        "repair slot. Recorded as autofix passes in history.")
     p.add_argument("--run-id", required=True)
     p.add_argument("--model", default=None)
     p.add_argument("--effort", default=None, choices=("low", "medium", "high", "xhigh", "max"))
@@ -718,18 +809,21 @@ def main(argv: list[str] | None = None) -> int:
                              fixture_path=fixture_pair.fixture_path if fixture_pair else None)
     certify = make_certify(args.suite, args.executor, run_dir, args.profile, args.timeout_sec,
                            block_assertion)
+    autofix = make_autofix(args.executor, run_dir, args.timeout_sec) if args.wpcs_autofix else None
 
-    result = orchestrate(generate, certify, args.max_repairs, args.gen_retries)
+    result = orchestrate(generate, certify, args.max_repairs, args.gen_retries, autofix)
 
     summary = {
         "suite": args.suite, "fixture": args.fixture, "condition": args.condition,
         "provider": args.provider, "model": args.model,
         "executor": args.executor, "profile": args.profile, "max_repairs": args.max_repairs,
-        "gen_retries": args.gen_retries,
+        "gen_retries": args.gen_retries, "wpcs_autofix": bool(args.wpcs_autofix),
         "green": result["green"], "pass_at_1": result["pass_at_1"],
         "pass_at_k": result["green"], "iterations_to_green": result["iterations_to_green"],
         "generations": result["generations"],
         "generation_failures": result.get("generation_failures", 0),
+        "autofix_passes": result.get("autofix_passes", 0),
+        "green_via_autofix": result.get("green_via_autofix", False),
         "history": result["history"],
     }
     (run_dir / "repair-loop-summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -737,10 +831,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"=== repair loop: {args.condition} / {args.fixture} ({args.profile}) ===")
     for h in result["history"]:
         tag = "PASS" if h["passed"] else "fail"
+        label = f"{h['iteration']}-autofix" if h.get("autofix") else h["iteration"]
         fails = "" if h["passed"] else f"  failing: {', '.join(h['failing_gates']) or '?'}"
-        print(f"  iter {h['iteration']}: {tag}{fails}")
+        print(f"  iter {label}: {tag}{fails}")
     if result["green"]:
-        print(f"GREEN after {result['iterations_to_green']} repair(s)  (pass@1={result['pass_at_1']})")
+        via = " via phpcbf autofix" if result.get("green_via_autofix") else ""
+        print(f"GREEN after {result['iterations_to_green']} repair(s){via}  (pass@1={result['pass_at_1']})")
     else:
         print(f"NOT GREEN within {args.max_repairs} repair(s)")
     if result.get("generation_failures"):

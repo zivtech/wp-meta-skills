@@ -14,7 +14,8 @@ MAX_TOTAL_BYTES=512*1024*1024; MAX_PATH_BYTES=4096
 MAX_TARGET_MEMBER_BYTES=8*1024*1024; SCAN_HANDOFF_CHUNK_BYTES=64*1024
 MAX_ARCHIVE_STREAM_BYTES=MAX_TOTAL_BYTES+MAX_ENTRIES*(MAX_PATH_BYTES+2048)+10240
 DEPENDENCY_ROOTS=frozenset({"node_modules","vendor","sandbox-cache"})
-EXECUTION_CLOSURE_IGNORE=frozenset({".workspace-lease",".git",".wp-env","node_modules"})
+WORKSPACE_SENTINEL=".workspace-lease"  # the one ignored name that is a regular file, not a directory
+EXECUTION_CLOSURE_IGNORE=frozenset({WORKSPACE_SENTINEL,".git",".wp-env","node_modules"})
 SNAPSHOT_IGNORE=EXECUTION_CLOSURE_IGNORE
 
 @dataclass(frozen=True)
@@ -143,7 +144,10 @@ def _walk_source_fd(fd:int,relative_dir:Path,policy:str,barrier,state:SnapshotSt
         if name in SNAPSHOT_IGNORE:
             if policy=="stage":
                 info=os.stat(name,dir_fd=fd,follow_symlinks=False)
-                if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode): raise ValueError("ignored root must be a real directory")
+                if stat.S_ISLNK(info.st_mode): raise ValueError("ignored root must not be a symlink")
+                if name==WORKSPACE_SENTINEL:
+                    if not stat.S_ISREG(info.st_mode): raise ValueError("workspace sentinel must be a regular file")
+                elif not stat.S_ISDIR(info.st_mode): raise ValueError("ignored root must be a real directory")
             continue
         relative=relative_dir/name; normalized=relative.as_posix(); folded=normalized.casefold()
         if len(relative.parts)>MAX_DEPTH: raise ValueError("artifact depth exceeds bounds")

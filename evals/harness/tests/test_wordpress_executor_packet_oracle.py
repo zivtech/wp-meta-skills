@@ -190,3 +190,26 @@ def test_table_file_map_counts_code_spanned_paths():
 
     assert result["pass"] is True
     assert any(check["id"] == "file_map" and check["passed"] for check in result["checks"])
+
+
+def test_phase_heading_inside_fence_does_not_fail_packet_only_gate():
+    """`## Phase` (or a renamed heading) inside a generated file's fenced body
+    is file content, not a packet transcript heading."""
+    packet = GOOD_PLUGIN_PACKET.replace(
+        "```php\n<?php",
+        "```php\n<?php\n// ## Phase note kept in code is fine, and so is a raw line:\n/*\n## Phase 1\n## Deviations\n*/",
+    )
+
+    result = oracle.validate_packet(packet, "plugin")
+
+    packet_only = next(check for check in result["checks"] if check["id"] == "packet_only_output")
+    assert packet_only["passed"] is True
+
+
+def test_fenced_markdown_heading_does_not_create_phantom_section():
+    packet = GOOD_PLUGIN_PACKET.replace(
+        "```php\n<?php",
+        "```php\n<?php\n// content below simulates a readme-style heading\n?>\n## Description",
+    )
+
+    assert "Description" not in oracle.sections(packet)

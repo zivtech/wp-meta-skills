@@ -708,3 +708,118 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     raise SystemExit(1 if failed else 0)
+
+
+# ---------------------------------------------------------------------------
+# Deterministic autofix stage
+# ---------------------------------------------------------------------------
+
+
+def _wpcs_fail_verdict():
+    return {
+        "passed": False,
+        "failing_gates": ["phpcs_wpcs"],
+        "failures": "tabs not spaces",
+        "gate_vector": {"phpcs_wpcs": "fail"},
+    }
+
+
+def test_autofix_green_at_slot_zero_without_model_repair():
+    rec, cert_ids, autofix_calls = [], [], []
+
+    def cert(iteration, packet):
+        cert_ids.append(iteration)
+        if isinstance(iteration, str) and iteration.endswith("-autofix"):
+            return {"passed": True, "gate_vector": {"phpcs_wpcs": "pass"}}
+        return _wpcs_fail_verdict()
+
+    def autofix(slot, packet, failing):
+        autofix_calls.append((slot, packet, tuple(failing)))
+        return f"{packet}+fixed"
+
+    res = loop.orchestrate(_stub_generate(rec), cert, max_repairs=2, autofix_fn=autofix)
+
+    assert res["green"] is True
+    assert res["green_via_autofix"] is True
+    assert res["iterations_to_green"] == 0
+    assert res["pass_at_1"] is False  # the model's own packet did not pass
+    assert res["generations"] == 1
+    assert res["autofix_passes"] == 1
+    assert autofix_calls == [(0, "packet-0", ("phpcs_wpcs",))]
+    assert cert_ids == [0, "0-autofix"]
+    assert [h.get("autofix", False) for h in res["history"]] == [False, True]
+    assert len(rec) == 1  # no model repair slot consumed
+
+
+def test_autofix_none_falls_through_to_model_repair():
+    rec = []
+    res = loop.orchestrate(_stub_generate(rec), _stub_certify(pass_at=1), max_repairs=2,
+                           autofix_fn=lambda slot, packet, failing: None)
+    assert res["green"] is True
+    assert res["iterations_to_green"] == 1
+    assert res["autofix_passes"] == 0
+    assert res["green_via_autofix"] is False
+
+
+def test_failed_autofix_feeds_fixed_packet_and_residual_failures_to_next_repair():
+    rec = []
+
+    def cert(iteration, packet):
+        if iteration == 1:
+            return {"passed": True, "gate_vector": {"plugin_check": "pass"}}
+        if isinstance(iteration, str) and iteration.endswith("-autofix"):
+            return {"passed": False, "failing_gates": ["plugin_check"],
+                    "failures": "REAL-ISSUE", "gate_vector": {"plugin_check": "fail"}}
+        return {"passed": False, "failing_gates": ["phpcs_wpcs", "plugin_check"],
+                "failures": "whitespace noise + real issue",
+                "gate_vector": {"phpcs_wpcs": "fail", "plugin_check": "fail"}}
+
+    res = loop.orchestrate(_stub_generate(rec), cert, max_repairs=2,
+                           autofix_fn=lambda slot, packet, failing: f"{packet}+fixed")
+
+    assert res["green"] is True
+    assert res["iterations_to_green"] == 1
+    assert res["autofix_passes"] == 1
+    # The model repair at slot 1 starts from the autofixed packet and sees only
+    # the residual (post-phpcbf) failures, not the whitespace noise.
+    assert rec[1]["prior"] == "packet-0+fixed"
+    assert rec[1]["failures"] == "REAL-ISSUE"
+
+
+def test_autofix_runs_once_per_slot_and_only_after_fresh_certifications():
+    rec, autofix_calls = [], []
+
+    def cert(iteration, packet):
+        return _wpcs_fail_verdict()
+
+    def autofix(slot, packet, failing):
+        autofix_calls.append(slot)
+        return f"{packet}+fixed"
+
+    res = loop.orchestrate(_stub_generate(rec), cert, max_repairs=2, autofix_fn=autofix)
+
+    assert res["green"] is False
+    assert autofix_calls == [0, 1, 2]  # once per failing slot, never re-fixing its own output
+    assert res["autofix_passes"] == 3
+
+
+def test_surfaced_failure_names_real_nonpassing_checks():
+    checks = [
+        {"id": "runtime_command", "status": "fail", "detail": "return code 2"},
+        {"id": "phpcs_wpcs", "status": "fail", "detail": ""},
+        {"id": "plugin_check", "status": "blocked", "detail": ""},
+        {"id": "activation", "status": "pass", "detail": ""},
+    ]
+    verdict = loop._surfaced_failure("runtime_command", "return code 2", checks)
+
+    assert verdict["failing_gates"] == ["runtime_command", "phpcs_wpcs", "plugin_check"]
+    assert verdict["passed"] is False
+    # The autofix trigger keys on phpcs_wpcs appearing in failing_gates.
+    assert "phpcs_wpcs" in verdict["failing_gates"]
+
+
+def test_surfaced_failure_without_subordinates_matches_stage_failure_shape():
+    verdict = loop._surfaced_failure("static_command", "return code 1", [
+        {"id": "static_command", "status": "fail", "detail": "return code 1"},
+    ])
+    assert verdict["failing_gates"] == ["static_command"]
