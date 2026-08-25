@@ -533,8 +533,12 @@ WPCS_REPAIR_HINTS: tuple[tuple[str, str], ...] = (
      "Every function named in a 'Missing doc comment for function' finding needs its own "
      "docblock immediately above its `function` line, shaped exactly like:\n"
      "```\n/**\n * One-sentence summary of what the function does, ending with a period.\n */\n```\n"
-     "with no blank line between the docblock and the declaration. A file-level docblock "
-     "does not satisfy this; add one per named function."),
+     "with no blank line between the docblock and the declaration. The docblock must sit "
+     "on the line DIRECTLY above the `function` keyword: when an `add_action()`/"
+     "`add_filter()` registration call precedes the function, the docblock goes between "
+     "the registration call and the function declaration — a docblock above the "
+     "registration call documents that call, not the function, and the finding persists. "
+     "A file-level docblock does not satisfy this; add one per named function."),
     ("Empty line required before block comment",
      "For each 'Empty line required before block comment' finding, insert exactly one "
      "blank line between the preceding code line and the `/*` or `/**` comment opener."),

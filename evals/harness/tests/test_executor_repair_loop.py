@@ -856,6 +856,7 @@ def test_wpcs_repair_hints_translate_docblock_and_spacing_findings():
     hints = loop.wpcs_repair_hints(failures)
     assert "## How to satisfy the WPCS findings" in hints
     assert "docblock immediately above its `function` line" in hints
+    assert "between the registration call and the function declaration" in hints
     assert "one blank line between the preceding code line" in hints
     body = loop._repair_body(failures, "PRIOR")
     assert body.index("## Gate failures") < body.index(
