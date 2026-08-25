@@ -20,9 +20,9 @@
   },
   "python": {
    "tag": "python:3.13-slim-bookworm",
-   "index": "sha256:00faa2debb87529f9f0764e9491d8ba400a3678976616c3bd7cb193745ac20d1",
-   "amd64": "sha256:0f16c5d35fe6464ee471792ab3bb9116f911b65b3fbf10120c98d2bdc6332f48",
-   "arm64": "sha256:3b6bee0531ed64639c7846e5a083a3d13531ceb58326f52d63d436f4edabf50e",
+   "index": "sha256:cbd229d7b9bd041012af758ce5ffd807a6518d76493ce9035d208f1db9ceff1e",
+   "amd64": "sha256:b6bd71b0dd3811ddbcbc523ec2965fd1e1bcfdf7a20ab24679273d3bee726129",
+   "arm64": "sha256:e424b523c9296fdef9d2533c368facee1dc45be4c1f8e1555f90c4feac439594",
    "license": "PSF-2.0",
    "purpose": "trusted proxy"
   },
