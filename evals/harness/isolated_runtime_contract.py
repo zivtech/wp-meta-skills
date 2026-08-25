@@ -186,6 +186,26 @@ def _named_check_status(gate: dict[str, Any] | None, check_id: str) -> str:
     return _normalized_status(matches[0].get("status")) if len(matches) == 1 else "blocked"
 
 
+PERSISTED_CHECK_DETAIL_LIMIT = 4200
+
+
+def _named_check_detail(gate: dict[str, Any] | None, check_id: str) -> str:
+    """The tool diagnostics for one named gate check, bounded for persistence.
+
+    Repair prompts are built from the persisted runtime evidence; a status
+    with no detail starves the repair loop of the violations the model must
+    fix (the phpcs_wpcs entry previously persisted status-only).
+    """
+    matches = [
+        check for check in (gate or {}).get("checks", [])
+        if isinstance(check, dict) and check.get("id") == check_id
+    ]
+    if len(matches) != 1:
+        return ""
+    detail = matches[0].get("detail")
+    return str(detail)[:PERSISTED_CHECK_DETAIL_LIMIT] if isinstance(detail, str) else ""
+
+
 def _full_profile(runtime: RuntimeResult, wpcs_gate: dict[str, Any] | None) -> dict[str, Any]:
     statuses = _oracle_statuses(
         runtime.checks, ("wp_cli_activation", "plugin_check", "container_browser")
@@ -194,9 +214,14 @@ def _full_profile(runtime: RuntimeResult, wpcs_gate: dict[str, Any] | None) -> d
         _gate_status(True, wpcs_gate),
         _named_check_status(wpcs_gate, "phpcs_wpcs"),
     ])
+    wpcs_check: dict[str, Any] = {"id": "phpcs_wpcs", "status": wpcs_status,
+                                  "required": True}
+    if wpcs_status != "pass":
+        wpcs_detail = _named_check_detail(wpcs_gate, "phpcs_wpcs")
+        if wpcs_detail:
+            wpcs_check["detail"] = wpcs_detail
     checks = [
-        {"id": "phpcs_wpcs", "status": wpcs_status,
-         "required": True},
+        wpcs_check,
         {"id": "plugin_check", "status": statuses["plugin_check"], "required": True},
         {"id": "wp_env_smoke", "status": dominant_status([
             statuses["wp_cli_activation"], statuses["container_browser"],

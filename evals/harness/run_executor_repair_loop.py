@@ -302,7 +302,10 @@ def _failure_text(checks: list[dict[str, Any]]) -> str:
                 if ln.strip() and ("ERROR" in ln or "WARNING" in ln)]
         lines.append(f"- {check_id} ({c['status']}):")
         if diag:
-            selected = diag[:10]
+            # Wide enough for a small plugin's full WPCS report — a 10-line cap
+            # dropped violations the model then could not fix. The 12 KB total
+            # budget below still bounds the prompt.
+            selected = diag[:40]
         else:
             selected = [detail[:500]]
         for item in selected:

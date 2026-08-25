@@ -44,6 +44,10 @@ BANNED_UNSAFE_PATTERNS = (
 
 SECRETISH_RE = re.compile(r"(?i)(api[_-]?key|password|secret|token)\s*[:=]\s*['\"][^'\"]{12,}")
 PHPCS_IGNORE_PATTERNS = ("*.asset.php", "*/node_modules/*", "*/vendor/*")
+# WPCS reports feed repair prompts; the generic 500-char command detail cap
+# starves them (~3 violations of a full report). Wide enough for a small
+# plugin's complete report, still bounded for persistence.
+PHPCS_DETAIL_LIMIT = 4000
 @dataclass(frozen=True)
 class Check:
     id: str
@@ -368,7 +372,8 @@ def find_executable(path: Path, names: tuple[str, ...], extra_roots: list[Path] 
     return None
 
 
-def command_check(check_id: str, command: list[str], cwd: Path, timeout_sec: int, required: bool = True) -> Check:
+def command_check(check_id: str, command: list[str], cwd: Path, timeout_sec: int, required: bool = True,
+                  detail_limit: int = 500) -> Check:
     try:
         result = run_command(command, cwd, timeout_sec)
     except FileNotFoundError:
@@ -377,9 +382,9 @@ def command_check(check_id: str, command: list[str], cwd: Path, timeout_sec: int
         return fail_check(check_id, f"command timed out after {timeout_sec}s", required)
     detail = f"exit {result.returncode}"
     if result.stdout.strip():
-        detail += f"; stdout: {result.stdout.strip()[:500]}"
+        detail += f"; stdout: {result.stdout.strip()[:detail_limit]}"
     if result.stderr.strip():
-        detail += f"; stderr: {result.stderr.strip()[:500]}"
+        detail += f"; stderr: {result.stderr.strip()[:detail_limit]}"
     if result.returncode == 0:
         return Check(check_id, "pass", required, detail, command)
     return Check(check_id, "fail", required, detail, command)
@@ -417,7 +422,8 @@ def check_phpcs(path: Path, args: argparse.Namespace, required: bool) -> Check:
         command = [*prefix, "--standard=WordPress", "--extensions=php",
                    f"--ignore={','.join(PHPCS_IGNORE_PATTERNS)}", str(path)]
         return command_check("phpcs_wpcs", command, toolchain.root,
-                             args.timeout_sec, required)
+                             args.timeout_sec, required,
+                             detail_limit=PHPCS_DETAIL_LIMIT)
     extra_roots = [Path(root).resolve() for root in (args.wp_env_root, args.wp_root) if root]
     phpcs = find_executable(path, ("phpcs",), extra_roots)
     if not phpcs:
@@ -434,7 +440,8 @@ def check_phpcs(path: Path, args: argparse.Namespace, required: bool) -> Check:
         f"--ignore={','.join(PHPCS_IGNORE_PATTERNS)}",
         str(path),
     ]
-    return command_check("phpcs_wpcs", command, ROOT, args.timeout_sec, required)
+    return command_check("phpcs_wpcs", command, ROOT, args.timeout_sec, required,
+                         detail_limit=PHPCS_DETAIL_LIMIT)
 
 
 def check_plugin_check(path: Path, args: argparse.Namespace, required: bool) -> Check:
