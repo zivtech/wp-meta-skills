@@ -823,3 +823,25 @@ def test_surfaced_failure_without_subordinates_matches_stage_failure_shape():
         {"id": "static_command", "status": "fail", "detail": "return code 1"},
     ])
     assert verdict["failing_gates"] == ["static_command"]
+
+
+def test_seeded_generate_serves_seed_at_iteration_zero_only(tmp_path):
+    rec = []
+    inner = _stub_generate(rec)
+    seed = b"# Implementation Packets\nseed body\n"
+    gen = loop.make_seeded_generate(inner, seed, tmp_path)
+    first = gen(0, None, "")
+    assert first == tmp_path / "iter0.packet.md"
+    assert first.read_bytes() == seed
+    assert rec == []  # the model was not consulted for the seed
+    second = gen(1, first, "F0")
+    assert second == "packet-1"
+    assert rec == [{"iteration": 1, "prior": first, "failures": "F0"}]
+
+
+def test_seeded_loop_repairs_from_the_seed(tmp_path):
+    rec = []
+    gen = loop.make_seeded_generate(_stub_generate(rec), b"seed\n", tmp_path)
+    res = loop.orchestrate(gen, _stub_certify(pass_at=1), max_repairs=2)
+    assert res["green"] is True and res["iterations_to_green"] == 1
+    assert [r["iteration"] for r in rec] == [1]
