@@ -4,7 +4,7 @@
  "images": {
   "node": {
    "tag": "node:22-bookworm-slim",
-   "index": "sha256:e9bff3a454208b46a1f96da92878cc7f56a2a41ceac2216825be3177736896b5",
+   "index": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
    "amd64": "sha256:4d676821dff059fd00d277ee4261ef34ea712317fed0737c03941481b5760c96",
    "arm64": "sha256:8d342e46d3b2883df69f797cb60fc71d8a0b65de65ddfbf4bf63fdc02049615f",
    "license": "MIT",
@@ -20,7 +20,7 @@
   },
   "python": {
    "tag": "python:3.13-slim-bookworm",
-   "index": "sha256:cbd229d7b9bd041012af758ce5ffd807a6518d76493ce9035d208f1db9ceff1e",
+   "index": "sha256:c45a22ea000adfd9cda29364bbe7edd23001ce5cc2ad15857cfbf7766943b9ca",
    "amd64": "sha256:b6bd71b0dd3811ddbcbc523ec2965fd1e1bcfdf7a20ab24679273d3bee726129",
    "arm64": "sha256:e424b523c9296fdef9d2533c368facee1dc45be4c1f8e1555f90c4feac439594",
    "license": "PSF-2.0",
