@@ -225,3 +225,41 @@ re-rolls:
    `make_certify` composition inside the no-secrets Linux boundary where
    `wp_cli_activation`, `plugin_check`, and `container_browser` actually
    execute. This is the missing half of every macOS run's certification.
+
+## The seeded continuations (2026-08-25) — local phpcs_wpcs green, captured
+
+Three seeded continuations from run 5's iter7 packet (3 WPCS errors: two
+missing function docblocks, one comment-spacing) isolated and then broke the
+docblock blind spot. All on `llama3.3:70b`, same fixture, `--wpcs-autofix`;
+each seed reproduced its source state byte-exact before the first repair.
+
+1. **No hints** (`…-seeded-finish-…`, 3 slots): zero movement. The model
+   edited the packet every slot (all distinct digests) yet lines 14/25 stayed
+   `Missing doc comment` in every iteration while the third error drifted
+   around the growing file. Raw sniff messages do not move this class — nine
+   consecutive named repairs across runs failed it.
+2. **How-to-satisfy hints** (`…-seeded-hints-…`, 2 slots): the hint moved the
+   model — it began writing docblocks (with `@param` when needed) and cleared
+   the spacing error (3 → 5 → 2, the bump from incomplete new docblocks it
+   then fixed) — but placed the two stubborn docblocks **above the
+   `add_action()` registration calls**, so phpcs attributed them to the call
+   statement and the named functions stayed bare. The blind spot was a
+   placement misunderstanding, not a refusal.
+3. **Placement clause added to the hint** (`…-seeded-placement-…`, seeded
+   from continuation 2's iter2): **iter1 went macOS-green** — `phpcs_wpcs`
+   pass, 0 errors 0 warnings on the pinned toolchain, with only the
+   Linux-blocked oracles non-passing. One hinted slot, done. The leftover
+   slot (iter2) then *regressed* the packet at the static contract — with
+   only unfixable-blocked feedback left, continued repair is churn risk; a
+   future stop-on-local-green refinement would bank the artifact instead.
+
+The arc is the feedback-actionability thesis in miniature: message names the
+defect (no movement) → message explains the fix (wrong placement) → message
+pins the placement (green in one slot). Deterministic prompt text did all of
+it; the gates never changed.
+
+The converged iter1 packet is committed as
+`evals/handoff/abilities-llama70b-20260825/` (sha256-bound provenance, full
+lineage recorded) for the Linux lane's activation / Plugin Check / browser
+half. Local re-certification of the committed bytes reproduces the verdict
+exactly: static green, `phpcs_wpcs` pass, Linux oracles blocked.
