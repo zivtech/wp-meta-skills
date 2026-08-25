@@ -524,6 +524,36 @@ def _run_provider(provider: str, prompt: str, model: str | None, effort: str | N
     raise ValueError(f"unknown provider: {provider}")
 
 
+# How-to-satisfy hints for WPCS findings that models repeatedly fail to act on
+# from the raw sniff message alone (the check_verification hint precedent:
+# deterministic prompt text, pass/fail logic untouched). Keyed by the exact
+# message substring phpcs emits; matched against the failure feedback only.
+WPCS_REPAIR_HINTS: tuple[tuple[str, str], ...] = (
+    ("Missing doc comment for function",
+     "Every function named in a 'Missing doc comment for function' finding needs its own "
+     "docblock immediately above its `function` line, shaped exactly like:\n"
+     "```\n/**\n * One-sentence summary of what the function does, ending with a period.\n */\n```\n"
+     "with no blank line between the docblock and the declaration. The docblock must sit "
+     "on the line DIRECTLY above the `function` keyword: when an `add_action()`/"
+     "`add_filter()` registration call precedes the function, the docblock goes between "
+     "the registration call and the function declaration — a docblock above the "
+     "registration call documents that call, not the function, and the finding persists. "
+     "A file-level docblock does not satisfy this; add one per named function."),
+    ("Empty line required before block comment",
+     "For each 'Empty line required before block comment' finding, insert exactly one "
+     "blank line between the preceding code line and the `/*` or `/**` comment opener."),
+)
+
+
+def wpcs_repair_hints(failures: str) -> str:
+    """Deterministic how-to-satisfy text for WPCS findings present in the feedback."""
+    hints = [hint for marker, hint in WPCS_REPAIR_HINTS if marker in failures]
+    if not hints:
+        return ""
+    return ("\n\n## How to satisfy the WPCS findings\n"
+            + "\n\n".join(hints))
+
+
 def _repair_body(failures: str, prior_text: str) -> str:
     return (
         "A WordPress release gate (Plugin Check / WPCS / wp-env activation) REJECTED your "
@@ -531,6 +561,7 @@ def _repair_body(failures: str, prior_text: str) -> str:
         "packet in the exact same format (first non-empty line must be '## Spec Conformance', "
         "same top-level headings in order, full materializable file contents, valid non-example.com "
         "URLs). Do not narrate.\n\n## Gate failures\n" + failures
+        + wpcs_repair_hints(failures)
         + "\n\n## Your previous packet\n\n" + prior_text
     )
 
@@ -592,6 +623,24 @@ def make_generate(suite: str, fixture: str, condition: str, run_dir: Path,
             (run_dir / f"iter{iteration}.generate.stderr.txt").write_text(err, encoding="utf-8")
             return None
         return pkt
+
+    return generate
+
+
+def make_seeded_generate(inner: GenerateFn, seed_bytes: bytes, run_dir: Path) -> GenerateFn:
+    """Substitute a saved packet for iteration 0; repairs still use the model.
+
+    A seeded run is a continuation of a recorded near-miss, not fresh generation
+    evidence: iteration 0 certifies the seed byte-exact, so pass@1/pass@k from a
+    seeded summary must be read under its ``seeded`` flag.
+    """
+
+    def generate(iteration: int, prior: Any, failures: str) -> Path | None:
+        if iteration == 0:
+            packet = run_dir / "iter0.packet.md"
+            packet.write_bytes(seed_bytes)
+            return packet
+        return inner(iteration, prior, failures)
 
     return generate
 
@@ -767,6 +816,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "and re-certify the repaired packet without spending a model "
                         "repair slot. Recorded as autofix passes in history.")
     p.add_argument("--run-id", required=True)
+    p.add_argument("--seed-packet", type=Path, default=None,
+                   help="Start from this saved packet instead of a model generation: "
+                        "iteration 0 certifies the seed byte-exact and repairs continue "
+                        "from it. The summary records seeded provenance; seeded runs are "
+                        "continuations, not pass@k evidence.")
     p.add_argument("--model", default=None)
     p.add_argument("--effort", default=None, choices=("low", "medium", "high", "xhigh", "max"))
     p.add_argument("--timeout-sec", type=int, default=900)
@@ -810,6 +864,18 @@ def main(argv: list[str] | None = None) -> int:
     generate = make_generate(args.suite, args.fixture, args.condition, run_dir,
                              args.model, args.effort, args.timeout_sec, provider=args.provider,
                              fixture_path=fixture_pair.fixture_path if fixture_pair else None)
+    seed_sha256 = None
+    if args.seed_packet is not None:
+        try:
+            seed_bytes = args.seed_packet.read_bytes()
+        except OSError as exc:
+            print(f"repair run refused: seed packet unreadable: {exc}", file=sys.stderr)
+            return 2
+        if not seed_bytes.strip():
+            print("repair run refused: seed packet is empty", file=sys.stderr)
+            return 2
+        seed_sha256 = hashlib.sha256(seed_bytes).hexdigest()
+        generate = make_seeded_generate(generate, seed_bytes, run_dir)
     certify = make_certify(args.suite, args.executor, run_dir, args.profile, args.timeout_sec,
                            block_assertion)
     autofix = make_autofix(args.executor, run_dir, args.timeout_sec) if args.wpcs_autofix else None
@@ -821,6 +887,9 @@ def main(argv: list[str] | None = None) -> int:
         "provider": args.provider, "model": args.model,
         "executor": args.executor, "profile": args.profile, "max_repairs": args.max_repairs,
         "gen_retries": args.gen_retries, "wpcs_autofix": bool(args.wpcs_autofix),
+        "seeded": args.seed_packet is not None,
+        "seed_packet": str(args.seed_packet) if args.seed_packet else None,
+        "seed_packet_sha256": seed_sha256,
         "green": result["green"], "pass_at_1": result["pass_at_1"],
         "pass_at_k": result["green"], "iterations_to_green": result["iterations_to_green"],
         "generations": result["generations"],

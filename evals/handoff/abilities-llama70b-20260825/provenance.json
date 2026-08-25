@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "handoff_id": "abilities-llama70b-20260825",
+  "executor": "plugin",
+  "profile": "runtime",
+  "packet_sha256": "9b0fcc7717c464cece1a6480683e08ed307e4d96df5d1d65cfd7e31703d86d15",
+  "source": {
+    "run_id": "llama70b-abilities-seeded-placement-20260825",
+    "iteration": 1,
+    "provider": "ollama",
+    "model": "llama3.3:70b",
+    "suite": "wordpress-plugin-executor",
+    "fixture": "abilities-ai-surface-v1",
+    "condition": "skill",
+    "converged_at": "2026-08-25",
+    "continuation_of": [
+      "llama70b-abilities-green7-20260825 (iter7, 3 WPCS errors)",
+      "llama70b-abilities-seeded-hints-20260825 (iter2, 2 WPCS errors)"
+    ],
+    "local_gate_summary": {
+      "packet_contract": "pass",
+      "materialization": "pass",
+      "static_artifact": "pass",
+      "phpcs_wpcs": "pass (0 errors, 0 warnings, pinned toolchain)",
+      "wp_cli_activation": "blocked on macOS by design",
+      "plugin_check": "blocked on macOS by design",
+      "container_browser": "blocked on macOS by design"
+    }
+  },
+  "notes": "Model-generated evaluation artifact; WPCS docblock placement landed via the how-to-satisfy repair hints (see repair-loop-levers-reland-2026-08-24.md)."
+}

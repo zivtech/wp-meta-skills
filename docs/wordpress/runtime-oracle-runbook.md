@@ -759,3 +759,35 @@ behavior is benign, that untested WordPress integrations are correct, or that
 a static/WPCS/Plugin Check pass is release readiness. Ordinary repository-owned
 fixtures may still use their legacy feasibility path, but that path is not
 evidence for generated-artifact runtime certification.
+
+# Converged artifact handoff lane
+
+A repair-loop packet that clears every macOS-reachable gate (packet contract,
+materialization, static artifact heuristics, pinned-toolchain `phpcs_wpcs`
+with the phpcbf autofix stage) still lacks the Linux-only oracles:
+`wp_cli_activation`, `plugin_check`, and `container_browser` execute generated
+code and are blocked outside the no-secrets Linux boundary by design.
+
+The handoff closes that gap deterministically. Commit the converged packet and
+its identity record under `evals/handoff/<handoff-id>/` (see
+`evals/handoff/README.md` for the layout and provenance schema). The
+`converged-artifact-handoff` CI job re-runs
+`evals/harness/recertify_wordpress_executor_packet.py` — the exact
+`make_certify` composition the repair loop used, with no LLM — against each
+committed packet, refuses a packet whose bytes do not hash to the recorded
+`packet_sha256`, and requires a green full-profile verdict. Evidence lands in
+the job step summary as `recertification.json`.
+
+Run the same re-certification locally:
+
+```bash
+python3 evals/harness/recertify_wordpress_executor_packet.py \
+  --packet evals/handoff/<handoff-id>/packet.md \
+  --run-id <fresh-run-id> \
+  --expected-packet-sha256 <provenance packet_sha256>
+```
+
+A macOS run of the runtime profile exits nonzero with the isolated oracles
+reported blocked; that is the designed local reading, not a defect. Green
+belongs to the Linux lane. A green re-certification claims exactly what the
+gates test inside the reviewed boundary and nothing more.

@@ -380,9 +380,10 @@ def test_workflow_uses_locked_directory_wide_corpus_commands():
         )
         assert normalized.count(command) == 1
     assert "pip install --upgrade pytest pyyaml" not in source.lower()
-    # sandbox-feasibility, generated-runtime-boundary, live-wp-env-probe, validate
-    assert source.count("uv lock --check") == 4
-    assert source.count("uv sync --locked --extra test") == 4
+    # sandbox-feasibility, generated-runtime-boundary, converged-artifact-handoff,
+    # live-wp-env-probe, validate
+    assert source.count("uv lock --check") == 5
+    assert source.count("uv sync --locked --extra test") == 5
     paths = workflow["on"]["pull_request"]["paths"]
     for required in (".python-version", "pyproject.toml", "uv.lock", "requirements-validation.txt"):
         assert required in paths

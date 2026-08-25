@@ -179,3 +179,87 @@ macOS by design — but the feedback-actionability thesis lands:
   cross-model claims stay pinned to llama3.3:70b, the surviving recorded model.
 - Full-profile GREEN claims for generated artifacts belong to the Linux
   boundary lane (CI's no-secrets runtime job), not to macOS runs.
+
+## Run 5 (2026-08-25, max-repairs 7) — static variance eats the budget
+
+`llama70b-abilities-green7-20260825`, `--max-repairs 7`, `--wpcs-autofix`,
+`--timeout-sec 1800`, 8 generations, zero generation failures. Not green
+(macOS cannot be, by design), and the raised budget did **not** capture the
+local `phpcs_wpcs` clear — for a reason the run decomposes cleanly:
+
+- **Static churn consumed six slots (iters 0–5):** `verification_oracles`
+  (a missing WPCS reference term) through iter3, then `plugin_header` at
+  iters 4–5 — the header was genuinely absent (the model wrote a file
+  docblock but no `Plugin Name:` block), so the feedback was accurate; the
+  model simply took two slots to act on it.
+- **The runtime phase repeated run 4's mechanics in two slots:** iter6
+  reached the runtime gate; autofix fired live (2 files); iter7 ended at
+  **3 WPCS errors** (two missing function docblocks, one
+  empty-line-before-block-comment that phpcbf reported non-auto-fixable) —
+  out of slots.
+- Reading: run 4's "one more slot would plausibly clear it" was the right
+  endgame diagnosis but the wrong budget model. Static-phase slot
+  consumption varies wildly across runs (3, >2, 3, 6 slots on the identical
+  configuration); a fresh run re-rolls that variance in front of the
+  runtime phase every time. Raising `--max-repairs` further is paying the
+  static toll repeatedly to reach a runtime endgame that needs ~2–3
+  diagnostics-fed slots.
+
+## The structural response: seeded continuations and the Linux handoff lane
+
+Two additions turn the recorded near-miss states into progress instead of
+re-rolls:
+
+1. **`--seed-packet`** on `run_executor_repair_loop.py`: iteration 0
+   certifies a saved packet byte-exact (no model call) and repairs continue
+   from it. A converged-but-short run resumes at its stall point with the
+   full repair budget aimed at the residual failures. Seeded summaries carry
+   `seeded`/`seed_packet_sha256` and are continuations, not pass@k evidence.
+   Validated in the wild: seeding run 5's iter7 packet reproduced its
+   certification state exactly (same 3 errors, same phpcbf non-fixable
+   verdict) before the first model repair.
+2. **The converged-artifact handoff lane**: `evals/handoff/<id>/`
+   (packet + provenance, sha256-bound) plus
+   `recertify_wordpress_executor_packet.py` and the
+   `converged-artifact-handoff` CI job, which re-runs the exact
+   `make_certify` composition inside the no-secrets Linux boundary where
+   `wp_cli_activation`, `plugin_check`, and `container_browser` actually
+   execute. This is the missing half of every macOS run's certification.
+
+## The seeded continuations (2026-08-25) — local phpcs_wpcs green, captured
+
+Three seeded continuations from run 5's iter7 packet (3 WPCS errors: two
+missing function docblocks, one comment-spacing) isolated and then broke the
+docblock blind spot. All on `llama3.3:70b`, same fixture, `--wpcs-autofix`;
+each seed reproduced its source state byte-exact before the first repair.
+
+1. **No hints** (`…-seeded-finish-…`, 3 slots): zero movement. The model
+   edited the packet every slot (all distinct digests) yet lines 14/25 stayed
+   `Missing doc comment` in every iteration while the third error drifted
+   around the growing file. Raw sniff messages do not move this class — nine
+   consecutive named repairs across runs failed it.
+2. **How-to-satisfy hints** (`…-seeded-hints-…`, 2 slots): the hint moved the
+   model — it began writing docblocks (with `@param` when needed) and cleared
+   the spacing error (3 → 5 → 2, the bump from incomplete new docblocks it
+   then fixed) — but placed the two stubborn docblocks **above the
+   `add_action()` registration calls**, so phpcs attributed them to the call
+   statement and the named functions stayed bare. The blind spot was a
+   placement misunderstanding, not a refusal.
+3. **Placement clause added to the hint** (`…-seeded-placement-…`, seeded
+   from continuation 2's iter2): **iter1 went macOS-green** — `phpcs_wpcs`
+   pass, 0 errors 0 warnings on the pinned toolchain, with only the
+   Linux-blocked oracles non-passing. One hinted slot, done. The leftover
+   slot (iter2) then *regressed* the packet at the static contract — with
+   only unfixable-blocked feedback left, continued repair is churn risk; a
+   future stop-on-local-green refinement would bank the artifact instead.
+
+The arc is the feedback-actionability thesis in miniature: message names the
+defect (no movement) → message explains the fix (wrong placement) → message
+pins the placement (green in one slot). Deterministic prompt text did all of
+it; the gates never changed.
+
+The converged iter1 packet is committed as
+`evals/handoff/abilities-llama70b-20260825/` (sha256-bound provenance, full
+lineage recorded) for the Linux lane's activation / Plugin Check / browser
+half. Local re-certification of the committed bytes reproduces the verdict
+exactly: static green, `phpcs_wpcs` pass, Linux oracles blocked.
