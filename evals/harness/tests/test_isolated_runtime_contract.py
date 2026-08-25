@@ -424,3 +424,38 @@ def test_block_persisted_consumer_requires_topology_posture_digest_and_cleanup()
     changed = copy.deepcopy(data); changed["block_runtime_artifact_gate"]["wrapper_checks"][1]["status"] = "fail"; mutations.append(changed)
     for changed in mutations:
         assert contract.persisted_runtime_errors(changed, **expected)
+
+
+def test_full_profile_persists_bounded_wpcs_diagnostics_on_failure():
+    report = " 13 | ERROR | Inline comments must end in full-stops\n 15 | ERROR | Missing doc comment for function acme()"
+    result = _adapt(
+        full_profile_requested=True,
+        wpcs_gate={"status": "fail", "pass": False, "checks": [
+            {"id": "phpcs_wpcs", "status": "fail", "required": True,
+             "detail": f"exit 1; stdout: {report}"},
+        ]},
+    )
+    entry = result["full_plugin_runtime_profile"]["checks"][0]
+    assert entry["id"] == "phpcs_wpcs" and entry["status"] == "fail"
+    assert "Missing doc comment for function acme()" in entry["detail"]
+
+
+def test_full_profile_detail_is_bounded_and_absent_on_pass():
+    huge = "x" * (contract.PERSISTED_CHECK_DETAIL_LIMIT * 2)
+    failing = _adapt(
+        full_profile_requested=True,
+        wpcs_gate={"status": "fail", "pass": False, "checks": [
+            {"id": "phpcs_wpcs", "status": "fail", "required": True, "detail": huge},
+        ]},
+    )
+    bounded = failing["full_plugin_runtime_profile"]["checks"][0]["detail"]
+    assert len(bounded) == contract.PERSISTED_CHECK_DETAIL_LIMIT
+
+    passing = _adapt(
+        full_profile_requested=True,
+        wpcs_gate={"status": "pass", "pass": True, "checks": [
+            {"id": "phpcs_wpcs", "status": "pass", "required": True, "detail": "exit 0"},
+        ]},
+        trusted_provisioning={"composer_install": {"returncode": 0}},
+    )
+    assert "detail" not in passing["full_plugin_runtime_profile"]["checks"][0]

@@ -1527,3 +1527,19 @@ def test_wp_env_required_tool_uses_explicit_environment_root(tmp_path, monkeypat
     assert result["runtime_roots"]["wp_env_root"] == str(env_root)
     assert seen["cwd"] == env_root.resolve()
     assert seen["command"][:3] == ["/usr/bin/npx", "--yes", "@wordpress/env"]
+
+
+def test_command_check_detail_limit_widens_captured_output(tmp_path):
+    import sys as _sys
+    command = [_sys.executable, "-c", "print('V' * 2000); raise SystemExit(1)"]
+
+    default = oracle.command_check("probe", command, tmp_path, 30)
+    widened = oracle.command_check("probe", command, tmp_path, 30, detail_limit=1500)
+
+    assert default.status == "fail" and widened.status == "fail"
+    assert default.detail.count("V") == 500
+    assert widened.detail.count("V") == 1500
+
+
+def test_phpcs_detail_limit_constant_is_wider_than_default():
+    assert oracle.PHPCS_DETAIL_LIMIT > 500
