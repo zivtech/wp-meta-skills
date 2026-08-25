@@ -143,7 +143,28 @@ readings:
   deterministic and feedback paths (autofix; persisting real violation lines
   into the repair prompt) remain the reliable levers.
 
-## Negative space
+## Run 4 (2026-08-25, diagnostics persistence live) — thesis validated
+
+`llama70b-abilities-diagnostics-20260825`, `--max-repairs 5`, `--wpcs-autofix`,
+with PR #20's diagnostics persistence (phpcs report into the runtime JSON,
+40-line prompt slice) live. Not green — the Linux-only gates stay blocked on
+macOS by design — but the feedback-actionability thesis lands:
+
+- **Three consecutive iterations at the runtime gate** (iters 3–5), vs one in
+  run 2 and zero in run 3. The static climb was also faster (packet contract
+  cleared by iter2 except `plugin_header`).
+- **Autofix fired live twice** (iters 3 and 4), eliminating the whitespace
+  class between model turns (12 warnings at iter3 → 0 from iter4 on).
+- **The model consumed the diagnostics**: WPCS errors went **65 → 62 → 2**
+  across iters 3→5 — a 97% reduction once the repair prompt carried actual
+  violation lines instead of a bare "phpcs_wpcs fail". The final 2 errors are
+  two missing function docblocks; phpcbf correctly found nothing auto-fixable
+  at iter5 (no autofix entry — the residue is non-fixable class), and the run
+  was out of repair slots.
+- Reading: with diagnostics + autofix, a local 70B closes to within one repair
+  slot of a clean `phpcs_wpcs` on the abilities fixture. The June plateau was
+  feedback starvation, as diagnosed — not model capability. (n=1 per
+  configuration; variance across runs 2–4 stays real.)
 
 - Nothing here claims skill-vs-baseline superiority; this is harness/contract
   repair plus a deterministic-assist measurement lane (consistent with the
