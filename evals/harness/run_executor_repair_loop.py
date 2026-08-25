@@ -524,6 +524,32 @@ def _run_provider(provider: str, prompt: str, model: str | None, effort: str | N
     raise ValueError(f"unknown provider: {provider}")
 
 
+# How-to-satisfy hints for WPCS findings that models repeatedly fail to act on
+# from the raw sniff message alone (the check_verification hint precedent:
+# deterministic prompt text, pass/fail logic untouched). Keyed by the exact
+# message substring phpcs emits; matched against the failure feedback only.
+WPCS_REPAIR_HINTS: tuple[tuple[str, str], ...] = (
+    ("Missing doc comment for function",
+     "Every function named in a 'Missing doc comment for function' finding needs its own "
+     "docblock immediately above its `function` line, shaped exactly like:\n"
+     "```\n/**\n * One-sentence summary of what the function does, ending with a period.\n */\n```\n"
+     "with no blank line between the docblock and the declaration. A file-level docblock "
+     "does not satisfy this; add one per named function."),
+    ("Empty line required before block comment",
+     "For each 'Empty line required before block comment' finding, insert exactly one "
+     "blank line between the preceding code line and the `/*` or `/**` comment opener."),
+)
+
+
+def wpcs_repair_hints(failures: str) -> str:
+    """Deterministic how-to-satisfy text for WPCS findings present in the feedback."""
+    hints = [hint for marker, hint in WPCS_REPAIR_HINTS if marker in failures]
+    if not hints:
+        return ""
+    return ("\n\n## How to satisfy the WPCS findings\n"
+            + "\n\n".join(hints))
+
+
 def _repair_body(failures: str, prior_text: str) -> str:
     return (
         "A WordPress release gate (Plugin Check / WPCS / wp-env activation) REJECTED your "
@@ -531,6 +557,7 @@ def _repair_body(failures: str, prior_text: str) -> str:
         "packet in the exact same format (first non-empty line must be '## Spec Conformance', "
         "same top-level headings in order, full materializable file contents, valid non-example.com "
         "URLs). Do not narrate.\n\n## Gate failures\n" + failures
+        + wpcs_repair_hints(failures)
         + "\n\n## Your previous packet\n\n" + prior_text
     )
 

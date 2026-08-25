@@ -845,3 +845,24 @@ def test_seeded_loop_repairs_from_the_seed(tmp_path):
     res = loop.orchestrate(gen, _stub_certify(pass_at=1), max_repairs=2)
     assert res["green"] is True and res["iterations_to_green"] == 1
     assert [r["iteration"] for r in rec] == [1]
+
+
+def test_wpcs_repair_hints_translate_docblock_and_spacing_findings():
+    failures = (
+        "- phpcs_wpcs (fail):\n"
+        "    14 | ERROR | Missing doc comment for function\n"
+        "    117 | ERROR | Empty line required before block comment\n"
+    )
+    hints = loop.wpcs_repair_hints(failures)
+    assert "## How to satisfy the WPCS findings" in hints
+    assert "docblock immediately above its `function` line" in hints
+    assert "one blank line between the preceding code line" in hints
+    body = loop._repair_body(failures, "PRIOR")
+    assert body.index("## Gate failures") < body.index(
+        "## How to satisfy the WPCS findings") < body.index("## Your previous packet")
+
+
+def test_wpcs_repair_hints_stay_silent_without_matching_findings():
+    assert loop.wpcs_repair_hints("- plugin_check (fail):\n    readme issue") == ""
+    body = loop._repair_body("- plugin_check (fail): readme issue", "PRIOR")
+    assert "How to satisfy the WPCS findings" not in body
