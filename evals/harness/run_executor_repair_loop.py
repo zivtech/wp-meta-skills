@@ -341,6 +341,18 @@ def _stage_failure(gate: str, detail: str, checks: list[dict[str, Any]] | None =
             "gate_vector": {gate: {"status": "fail", "checks": subordinate}}}
 
 
+def _surfaced_failure(gate: str, detail: str, checks: list[dict[str, Any]]) -> dict[str, Any]:
+    """A stage failure whose failing_gates also name the real non-passing checks.
+
+    A nonzero certifier/runtime return code otherwise collapses to a single
+    synthetic gate label, hiding e.g. a real phpcs_wpcs failure from both the
+    run history and the autofix trigger.
+    """
+    failure = _stage_failure(gate, detail, checks)
+    residual = [cid for cid in _nonpassing_check_ids(checks) if cid != gate]
+    return {**failure, "failing_gates": [gate, *residual]}
+
+
 def _isolated_runtime_command(
     adapter: RuntimeAdapter, artifact: Path, result_root: Path, run_id: str,
     evidence_id: str, expected_digest: str, timeout: int,
@@ -610,7 +622,7 @@ def make_certify(
             checks = _checks_with_status(static or {})
             checks.insert(0, {"id": "static_command", "status": "fail",
                               "detail": f"return code {static_proc.returncode}"})
-            return _stage_failure("static_command", f"return code {static_proc.returncode}", checks)
+            return _surfaced_failure("static_command", f"return code {static_proc.returncode}", checks)
         if static is None:
             return _stage_failure("static_evidence", "certification.json missing or malformed")
         candidates: list[Path] = []
@@ -675,13 +687,16 @@ def make_certify(
             }])
         if runtime_proc is None:
             return _stage_failure("runtime_timeout", "isolated runtime did not return")
+        for stream, content in (("stdout", runtime_proc.stdout), ("stderr", runtime_proc.stderr)):
+            if content:
+                (res / f"runtime-command.{stream}.txt").write_text(content, encoding="utf-8")
         rj = runtime_root / run_id / "runtime-smoke.json"
         data = _load_json_object(rj)
         if runtime_proc.returncode != 0:
             checks = _checks_with_status(data or {})
             checks.insert(0, {"id": "runtime_command", "status": "fail",
                               "detail": f"return code {runtime_proc.returncode}"})
-            return _stage_failure("runtime_command", f"return code {runtime_proc.returncode}", checks)
+            return _surfaced_failure("runtime_command", f"return code {runtime_proc.returncode}", checks)
         if data is None:
             return _stage_failure("runtime_result", "exact runtime result missing or malformed")
         return _isolated_runtime_verdict(

@@ -801,3 +801,25 @@ def test_autofix_runs_once_per_slot_and_only_after_fresh_certifications():
     assert res["green"] is False
     assert autofix_calls == [0, 1, 2]  # once per failing slot, never re-fixing its own output
     assert res["autofix_passes"] == 3
+
+
+def test_surfaced_failure_names_real_nonpassing_checks():
+    checks = [
+        {"id": "runtime_command", "status": "fail", "detail": "return code 2"},
+        {"id": "phpcs_wpcs", "status": "fail", "detail": ""},
+        {"id": "plugin_check", "status": "blocked", "detail": ""},
+        {"id": "activation", "status": "pass", "detail": ""},
+    ]
+    verdict = loop._surfaced_failure("runtime_command", "return code 2", checks)
+
+    assert verdict["failing_gates"] == ["runtime_command", "phpcs_wpcs", "plugin_check"]
+    assert verdict["passed"] is False
+    # The autofix trigger keys on phpcs_wpcs appearing in failing_gates.
+    assert "phpcs_wpcs" in verdict["failing_gates"]
+
+
+def test_surfaced_failure_without_subordinates_matches_stage_failure_shape():
+    verdict = loop._surfaced_failure("static_command", "return code 1", [
+        {"id": "static_command", "status": "fail", "detail": "return code 1"},
+    ])
+    assert verdict["failing_gates"] == ["static_command"]
