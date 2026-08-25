@@ -1,28 +1,90 @@
 {
-  "schema_version": 1,
-  "verified_at": "2026-08-10",
-  "images": {
-    "node": {"tag":"node:22-bookworm-slim","index":"sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436","amd64":"sha256:a17d50af28002a160548bd4225b3cfcb12c5efcb171f79e68758f2885fb1b066","arm64":"sha256:253da19867dd03e2f817f433d7782adefd2a2bac8729fcd4ebc6770665167a24","license":"MIT","purpose":"generated npm commands"},
-    "composer": {"tag":"composer:2.8","index":"sha256:5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c","amd64":"sha256:0d264a0f1e5be23ba363447768df7b30c33d542711ea12e37770ed7b13bf4eaa","arm64":"sha256:cc2fd435c5dd57485421bc19c3e9226c29417f8065c00dcef2b2e361090f3c2f","license":"MIT","purpose":"generated Composer commands"},
-    "python": {"tag":"python:3.13-slim-bookworm","index":"sha256:00faa2debb87529f9f0764e9491d8ba400a3678976616c3bd7cb193745ac20d1","amd64":"sha256:0f16c5d35fe6464ee471792ab3bb9116f911b65b3fbf10120c98d2bdc6332f48","arm64":"sha256:3b6bee0531ed64639c7846e5a083a3d13531ceb58326f52d63d436f4edabf50e","license":"PSF-2.0","purpose":"trusted proxy"},
-    "playwright": {"tag":"mcr.microsoft.com/playwright:v1.58.0-noble","index":"sha256:35c7d48b4ccaf3aca5018f5f1bf7f50c7da7d61d176c530741f4f2e9ca336c34","amd64":"sha256:e3dca7b3c921ce1ebf45a50a6ac77982532c987e5926eb06535b5f56b363b94f","arm64":"sha256:a77fdf84adbfc1f42cc07c5ef38e6efeb495d91f35022ec41b0f7f85545e81e9","license":"Apache-2.0","purpose":"isolated browser"},
-    "wordpress": {"tag":"wordpress:7.0.1-php8.3-apache","index":"sha256:d40b86dbdfcfad808a2029acf6543c670c4a61c29f70b9d24605e7d0b31ab83d","amd64":"sha256:8ac9547ff6da02ddd1d477b1e1e79fbe60af92d86af2d6ae043be3764d958f16","arm64":"sha256:e5260abaf84e9d4bae56adf1f54ab0b6228ae067f7e8c1f46896ecf0beb1150a","license":"GPL-2.0-or-later","purpose":"WordPress runtime"},
-    "wordpress_cli": {"tag":"wordpress:cli-2.12.0-php8.3","index":"sha256:2b5e9d4d3e51909dca1aaa4732e9f5e5bf0377c2114dbd8ff39f060bff202586","amd64":"sha256:51ff6b7643d9b4c29d74d83b2c3fe12e706812e7add075f189535f498dd5201d","arm64":"sha256:94645821f1d3032db91c4d09872af0b2506b08cdc600e9ace2b382644a6cdce0","license":"GPL-2.0-or-later","purpose":"WP-CLI source"},
-    "database": {"tag":"mariadb:11.8.5","index":"sha256:345fa26d595e8c7fe298e0c4098ed400356f502458769c8902229b3437d6da2b","amd64":"sha256:3a730f41f00d261df28a0bc1bc2845f9c0901c2e2f05e5005c7713cc43ebc1fe","arm64":"sha256:4ab5d5e770624a5fcaa5894208576ed5088f12482c1cce9b3ab419416a4b2c3c","license":"GPL-2.0-only","purpose":"seeded database"}
+ "schema_version": 1,
+ "verified_at": "2026-08-25",
+ "images": {
+  "node": {
+   "tag": "node:22-bookworm-slim",
+   "index": "sha256:e9bff3a454208b46a1f96da92878cc7f56a2a41ceac2216825be3177736896b5",
+   "amd64": "sha256:4d676821dff059fd00d277ee4261ef34ea712317fed0737c03941481b5760c96",
+   "arm64": "sha256:8d342e46d3b2883df69f797cb60fc71d8a0b65de65ddfbf4bf63fdc02049615f",
+   "license": "MIT",
+   "purpose": "generated npm commands"
   },
-  "wordpress_core":{"version":"7.0.1","url":"https://wordpress.org/wordpress-7.0.1.tar.gz","sha256":"dc10592da9b580c7525632850e0cced371b13081853ac29afe93b5d5bb00db98"},
-  "plugin_check":{"version":"2.0.0","url":"https://downloads.wordpress.org/plugin/plugin-check.2.0.0.zip","sha256":"d744ee1f93866527aedf7d0a73df40bd87018f02cd5465fa39230bf4c2b3a3fa","license":"GPL-2.0-or-later"},
-  "wp_cli_binary":{"version":"2.12.0","source":"https://github.com/wp-cli/wp-cli/releases/download/v2.12.0/wp-cli-2.12.0.phar","sha256":"ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c"},
-  "build_inputs": {
-    "runtime-images/wordpress/Dockerfile":"3263a8fa4e39434dfd681e9a3150f59257205489d68ed5f11cd85e61801c157c",
-    "runtime-images/wordpress/entrypoint.sh":"ffe844571f89bf8189dfc9d9aac7a0b7e4498e61c8b4e76e1c79ba5d834d2262",
-    "runtime-images/database/Dockerfile":"5cb0389069587863b53fb72ee1200ba2bfd042ba87902f834c2a8b3a78567de6",
-    "runtime-images/database/entrypoint.sh":"b4c411091e27d9272215eebd4cd66b8f797c5ba77dbb84569025c35af39193da",
-    "runtime-images/browser/Dockerfile":"dcf6455d0d9c6a99bd36df55430afa9ea56b17fa6987cbb869001841b2dab35f",
-    "runtime-images/browser/browser-policy.js":"dd921e3f43ad28af25931f2e5f47d2a5bf576a77c44802acffb9134735c40ca2",
-    "runtime-images/browser/gateway-policy.js":"eae600e11050979e14e7acdde769defd53cab1ee5be7a2385c0a36501020f97f",
-    "runtime-images/browser/request-policy.js":"068b0daa6235b17eceaa96037c2487b39a482a85d732c65c5669f92d8e4a186a",
-    "runtime-images/browser/package.json":"7f042cf3f2f762348f245ffdc6a643b9cd9b35fa44e90cad9574bd45c4872a9f",
-    "runtime-images/browser/package-lock.json":"6a426213612fe1ed9a6914c39cc5106b721d0ca21bbd301517c23ffd8d8dabb1"
+  "composer": {
+   "tag": "composer:2.8",
+   "index": "sha256:5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c",
+   "amd64": "sha256:0d264a0f1e5be23ba363447768df7b30c33d542711ea12e37770ed7b13bf4eaa",
+   "arm64": "sha256:cc2fd435c5dd57485421bc19c3e9226c29417f8065c00dcef2b2e361090f3c2f",
+   "license": "MIT",
+   "purpose": "generated Composer commands"
+  },
+  "python": {
+   "tag": "python:3.13-slim-bookworm",
+   "index": "sha256:00faa2debb87529f9f0764e9491d8ba400a3678976616c3bd7cb193745ac20d1",
+   "amd64": "sha256:0f16c5d35fe6464ee471792ab3bb9116f911b65b3fbf10120c98d2bdc6332f48",
+   "arm64": "sha256:3b6bee0531ed64639c7846e5a083a3d13531ceb58326f52d63d436f4edabf50e",
+   "license": "PSF-2.0",
+   "purpose": "trusted proxy"
+  },
+  "playwright": {
+   "tag": "mcr.microsoft.com/playwright:v1.58.0-noble",
+   "index": "sha256:35c7d48b4ccaf3aca5018f5f1bf7f50c7da7d61d176c530741f4f2e9ca336c34",
+   "amd64": "sha256:e3dca7b3c921ce1ebf45a50a6ac77982532c987e5926eb06535b5f56b363b94f",
+   "arm64": "sha256:a77fdf84adbfc1f42cc07c5ef38e6efeb495d91f35022ec41b0f7f85545e81e9",
+   "license": "Apache-2.0",
+   "purpose": "isolated browser"
+  },
+  "wordpress": {
+   "tag": "wordpress:7.0.1-php8.3-apache",
+   "index": "sha256:d40b86dbdfcfad808a2029acf6543c670c4a61c29f70b9d24605e7d0b31ab83d",
+   "amd64": "sha256:8ac9547ff6da02ddd1d477b1e1e79fbe60af92d86af2d6ae043be3764d958f16",
+   "arm64": "sha256:e5260abaf84e9d4bae56adf1f54ab0b6228ae067f7e8c1f46896ecf0beb1150a",
+   "license": "GPL-2.0-or-later",
+   "purpose": "WordPress runtime"
+  },
+  "wordpress_cli": {
+   "tag": "wordpress:cli-2.12.0-php8.3",
+   "index": "sha256:2b5e9d4d3e51909dca1aaa4732e9f5e5bf0377c2114dbd8ff39f060bff202586",
+   "amd64": "sha256:51ff6b7643d9b4c29d74d83b2c3fe12e706812e7add075f189535f498dd5201d",
+   "arm64": "sha256:94645821f1d3032db91c4d09872af0b2506b08cdc600e9ace2b382644a6cdce0",
+   "license": "GPL-2.0-or-later",
+   "purpose": "WP-CLI source"
+  },
+  "database": {
+   "tag": "mariadb:11.8.5",
+   "index": "sha256:345fa26d595e8c7fe298e0c4098ed400356f502458769c8902229b3437d6da2b",
+   "amd64": "sha256:3a730f41f00d261df28a0bc1bc2845f9c0901c2e2f05e5005c7713cc43ebc1fe",
+   "arm64": "sha256:4ab5d5e770624a5fcaa5894208576ed5088f12482c1cce9b3ab419416a4b2c3c",
+   "license": "GPL-2.0-only",
+   "purpose": "seeded database"
   }
+ },
+ "wordpress_core": {
+  "version": "7.0.1",
+  "url": "https://wordpress.org/wordpress-7.0.1.tar.gz",
+  "sha256": "dc10592da9b580c7525632850e0cced371b13081853ac29afe93b5d5bb00db98"
+ },
+ "plugin_check": {
+  "version": "2.0.0",
+  "url": "https://downloads.wordpress.org/plugin/plugin-check.2.0.0.zip",
+  "sha256": "d744ee1f93866527aedf7d0a73df40bd87018f02cd5465fa39230bf4c2b3a3fa",
+  "license": "GPL-2.0-or-later"
+ },
+ "wp_cli_binary": {
+  "version": "2.12.0",
+  "source": "https://github.com/wp-cli/wp-cli/releases/download/v2.12.0/wp-cli-2.12.0.phar",
+  "sha256": "ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c"
+ },
+ "build_inputs": {
+  "runtime-images/wordpress/Dockerfile": "3263a8fa4e39434dfd681e9a3150f59257205489d68ed5f11cd85e61801c157c",
+  "runtime-images/wordpress/entrypoint.sh": "ffe844571f89bf8189dfc9d9aac7a0b7e4498e61c8b4e76e1c79ba5d834d2262",
+  "runtime-images/database/Dockerfile": "5cb0389069587863b53fb72ee1200ba2bfd042ba87902f834c2a8b3a78567de6",
+  "runtime-images/database/entrypoint.sh": "b4c411091e27d9272215eebd4cd66b8f797c5ba77dbb84569025c35af39193da",
+  "runtime-images/browser/Dockerfile": "dcf6455d0d9c6a99bd36df55430afa9ea56b17fa6987cbb869001841b2dab35f",
+  "runtime-images/browser/browser-policy.js": "dd921e3f43ad28af25931f2e5f47d2a5bf576a77c44802acffb9134735c40ca2",
+  "runtime-images/browser/gateway-policy.js": "eae600e11050979e14e7acdde769defd53cab1ee5be7a2385c0a36501020f97f",
+  "runtime-images/browser/request-policy.js": "068b0daa6235b17eceaa96037c2487b39a482a85d732c65c5669f92d8e4a186a",
+  "runtime-images/browser/package.json": "7f042cf3f2f762348f245ffdc6a643b9cd9b35fa44e90cad9574bd45c4872a9f",
+  "runtime-images/browser/package-lock.json": "6a426213612fe1ed9a6914c39cc5106b721d0ca21bbd301517c23ffd8d8dabb1"
+ }
 }
