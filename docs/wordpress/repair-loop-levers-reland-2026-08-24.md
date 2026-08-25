@@ -179,3 +179,49 @@ macOS by design — but the feedback-actionability thesis lands:
   cross-model claims stay pinned to llama3.3:70b, the surviving recorded model.
 - Full-profile GREEN claims for generated artifacts belong to the Linux
   boundary lane (CI's no-secrets runtime job), not to macOS runs.
+
+## Run 5 (2026-08-25, max-repairs 7) — static variance eats the budget
+
+`llama70b-abilities-green7-20260825`, `--max-repairs 7`, `--wpcs-autofix`,
+`--timeout-sec 1800`, 8 generations, zero generation failures. Not green
+(macOS cannot be, by design), and the raised budget did **not** capture the
+local `phpcs_wpcs` clear — for a reason the run decomposes cleanly:
+
+- **Static churn consumed six slots (iters 0–5):** `verification_oracles`
+  (a missing WPCS reference term) through iter3, then `plugin_header` at
+  iters 4–5 — the header was genuinely absent (the model wrote a file
+  docblock but no `Plugin Name:` block), so the feedback was accurate; the
+  model simply took two slots to act on it.
+- **The runtime phase repeated run 4's mechanics in two slots:** iter6
+  reached the runtime gate; autofix fired live (2 files); iter7 ended at
+  **3 WPCS errors** (two missing function docblocks, one
+  empty-line-before-block-comment that phpcbf reported non-auto-fixable) —
+  out of slots.
+- Reading: run 4's "one more slot would plausibly clear it" was the right
+  endgame diagnosis but the wrong budget model. Static-phase slot
+  consumption varies wildly across runs (3, >2, 3, 6 slots on the identical
+  configuration); a fresh run re-rolls that variance in front of the
+  runtime phase every time. Raising `--max-repairs` further is paying the
+  static toll repeatedly to reach a runtime endgame that needs ~2–3
+  diagnostics-fed slots.
+
+## The structural response: seeded continuations and the Linux handoff lane
+
+Two additions turn the recorded near-miss states into progress instead of
+re-rolls:
+
+1. **`--seed-packet`** on `run_executor_repair_loop.py`: iteration 0
+   certifies a saved packet byte-exact (no model call) and repairs continue
+   from it. A converged-but-short run resumes at its stall point with the
+   full repair budget aimed at the residual failures. Seeded summaries carry
+   `seeded`/`seed_packet_sha256` and are continuations, not pass@k evidence.
+   Validated in the wild: seeding run 5's iter7 packet reproduced its
+   certification state exactly (same 3 errors, same phpcbf non-fixable
+   verdict) before the first model repair.
+2. **The converged-artifact handoff lane**: `evals/handoff/<id>/`
+   (packet + provenance, sha256-bound) plus
+   `recertify_wordpress_executor_packet.py` and the
+   `converged-artifact-handoff` CI job, which re-runs the exact
+   `make_certify` composition inside the no-secrets Linux boundary where
+   `wp_cli_activation`, `plugin_check`, and `container_browser` actually
+   execute. This is the missing half of every macOS run's certification.
