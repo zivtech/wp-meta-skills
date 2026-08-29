@@ -4,7 +4,9 @@ Survey date: 2026-06-16.
 
 This catalog records candidate upstream skill sources for WordPress V1 evaluation. It is not an adoption decision. Candidates must pass the evaluation and provenance gates before copied or adapted material enters production skill prompts.
 
-Screening result: `evals/results/wordpress-skill-candidate-eval/2026-06-16-candidate-screening.md`.
+Screening result: run `2026-06-16-candidate-screening`. Its archive is
+monorepo-internal and is not in this repository; the conclusions it reached
+are summarized below and in `negative-results.md`.
 
 Current status: candidate screening is complete enough to preserve reference-only comparators, and the candidate-discrimination arc is closed as directional-internal only. Absolute scoring failed discrimination, blind pairwise did not certify reliable separation from a strong few-shot prompt, and answer-key diagnostics localized the measurable gap to exact WordPress API naming. The full 27-fixture superiority benchmark and any external adopt/adapt/build claim remain blocked unless the measurement target changes.
 
