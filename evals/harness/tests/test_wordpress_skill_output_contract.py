@@ -10,6 +10,7 @@ import validate_wordpress_skill_output as oracle
 GOOD_PLANNER = """\
 ## Plugin Scope
 Build an editorial review plugin for an existing WordPress admin workflow.
+Delivery unit: client-custom-plugin
 
 ## Current-State Evidence
 The repo already uses `register_post_type()` and `register_post_meta()` with `show_in_rest`.
@@ -1295,3 +1296,143 @@ def test_cli_missing_security_gate_fails_cleanly(tmp_path, capsys):
     assert rc == 1
     assert payload["pass"] is False
     assert "security gate file not found" in payload["error"]
+
+
+def _planner_with_unit(unit: str, *extra: str) -> str:
+    """GOOD_PLANNER with a different delivery unit and optional extra records."""
+    replacement = "\n".join((f"Delivery unit: {unit}", *extra))
+    return GOOD_PLANNER.replace("Delivery unit: client-custom-plugin", replacement)
+
+
+@pytest.mark.parametrize(
+    "unit",
+    ["core-api-direct", "client-custom-plugin", "mu-plugin", "distributable-plugin",
+     "composer-package", "theme-integration"],
+)
+def test_every_delivery_unit_is_readable(unit):
+    result = oracle.validate_output("wordpress-plugin-planner", _planner_with_unit(unit))
+    checks = {c["id"]: c for c in result["checks"]}
+
+    assert checks["plugin_delivery_unit_contract"]["passed"] is True, checks
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "none", "not defined", "plugin", "a small plugin", "distributable plugin"],
+)
+def test_unreadable_delivery_unit_fails(value):
+    candidate = GOOD_PLANNER.replace(
+        "Delivery unit: client-custom-plugin",
+        f"Delivery unit: {value}" if value else "",
+    )
+    result = oracle.validate_output("wordpress-plugin-planner", candidate)
+    failed = {c["id"] for c in result["checks"] if not c["passed"]}
+
+    assert "plugin_delivery_unit_contract" in failed
+    assert "plugin_delivery_unit_justification" in failed
+
+
+def test_default_units_carry_no_extra_justification_burden():
+    """Choosing the conservative unit must not be penalized, or the gate is a tax."""
+    for unit in ("client-custom-plugin", "mu-plugin", "composer-package", "theme-integration"):
+        result = oracle.validate_output("wordpress-plugin-planner", _planner_with_unit(unit))
+        checks = {c["id"]: c for c in result["checks"]}
+        assert checks["plugin_delivery_unit_justification"]["passed"] is True, unit
+
+
+def test_distributable_plugin_requires_a_named_recurring_need():
+    bare = _planner_with_unit("distributable-plugin")
+    result = oracle.validate_output("wordpress-plugin-planner", bare)
+    failed = {c["id"] for c in result["checks"] if not c["passed"]}
+    assert "plugin_delivery_unit_justification" in failed
+    assert "plugin_delivery_unit_contract" not in failed
+
+
+@pytest.mark.parametrize(
+    "need",
+    [
+        "it would be reusable",
+        "this plugin will be useful for clients",
+        "generic reusable code for a client",
+    ],
+)
+def test_hand_waved_recurring_need_is_rejected(need):
+    candidate = _planner_with_unit("distributable-plugin", f"Recurring need: {need}")
+    result = oracle.validate_output("wordpress-plugin-planner", candidate)
+    failed = {c["id"] for c in result["checks"] if not c["passed"]}
+
+    assert "plugin_delivery_unit_justification" in failed
+
+
+def test_named_cross_client_need_satisfies_distribution():
+    candidate = _planner_with_unit(
+        "distributable-plugin",
+        "Recurring need: three newsroom retainers each require the same embargoed-publish "
+        "scheduling workflow across separate WordPress installs",
+    )
+    result = oracle.validate_output("wordpress-plugin-planner", candidate)
+    checks = {c["id"]: c for c in result["checks"]}
+
+    assert checks["plugin_delivery_unit_justification"]["passed"] is True, checks
+
+
+def test_core_api_direct_requires_naming_the_replacing_core_api():
+    bare = _planner_with_unit("core-api-direct")
+    result = oracle.validate_output("wordpress-plugin-planner", bare)
+    failed = {c["id"] for c in result["checks"] if not c["passed"]}
+
+    assert "plugin_delivery_unit_justification" in failed
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        "the built-in WordPress functionality",
+        "core APIs",
+        "use wordpress apis",
+        "a core hook",
+    ],
+)
+def test_vague_replacing_api_is_rejected(api):
+    candidate = _planner_with_unit("core-api-direct", f"Replacing API: {api}")
+    result = oracle.validate_output("wordpress-plugin-planner", candidate)
+    failed = {c["id"] for c in result["checks"] if not c["passed"]}
+
+    assert "plugin_delivery_unit_justification" in failed
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        "register_post_meta() with show_in_rest covers the whole requirement",
+        "register_block_bindings_source() removes the need for a plugin here",
+        "WP_Query already supports this",
+    ],
+)
+def test_exact_core_api_satisfies_core_api_direct(api):
+    candidate = _planner_with_unit("core-api-direct", f"Replacing API: {api}")
+    result = oracle.validate_output("wordpress-plugin-planner", candidate)
+    checks = {c["id"]: c for c in result["checks"]}
+
+    assert checks["plugin_delivery_unit_justification"]["passed"] is True, checks
+
+
+def test_delivery_unit_record_must_live_in_plugin_scope():
+    """A record floating in another section does not satisfy the contract."""
+    candidate = GOOD_PLANNER.replace("Delivery unit: client-custom-plugin\n", "")
+    candidate = candidate.replace(
+        "## Executor Handoff", "## Executor Handoff\nDelivery unit: client-custom-plugin", 1
+    )
+    result = oracle.validate_output("wordpress-plugin-planner", candidate)
+    failed = {c["id"] for c in result["checks"] if not c["passed"]}
+
+    assert "plugin_delivery_unit_contract" in failed
+
+
+def test_delivery_unit_gate_does_not_apply_to_other_skills():
+    """Only the plugin planner is held to it; the block planner must be untouched."""
+    result = oracle.validate_output("wordpress-planner.block", GOOD_BLOCK_PLANNER)
+    ids = {c["id"] for c in result["checks"]}
+
+    assert not {"plugin_delivery_unit_contract", "plugin_delivery_unit_justification"} & ids
+    assert result["pass"] is True
