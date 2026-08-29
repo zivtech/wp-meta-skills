@@ -296,3 +296,38 @@ def test_block_editor_surfaces_classify(surface, category):
     validator = load_validator()
 
     assert validator.classify_surface(surface) == category
+
+
+def test_registry_boundary_states_the_third_party_rule():
+    """The boundary is where someone widening the registry will be reading.
+
+    The recurring error this guards against: a rubric names a symbol that only
+    exists in a third-party implementation of a WordPress API, the classifier
+    correctly rejects it, and the tempting fix is to add it here. That converts
+    a category error into a permanent false claim about what WordPress provides.
+    The classifier already enforces this by construction; the boundary says so
+    where the mistake would be made.
+    """
+    validator = load_validator()
+    boundary = json.loads(validator.REGISTRY_PATH.read_text(encoding="utf-8"))["boundary"]
+
+    assert "third-party implementation" in boundary
+    assert "must not be added here" in boundary
+
+
+def test_third_party_implementation_symbols_do_not_classify():
+    """Names belonging to a library built on WordPress APIs are not surfaces."""
+    validator = load_validator()
+
+    for symbol in (
+        "registerBlockExtension",   # @10up/block-components, not core
+        "registerProvider",         # AI Client registry method, not a WordPress symbol
+        "defaultRegistry",
+        "ProviderAvailabilityInterface",
+    ):
+        assert validator.classify_surface(symbol) is None, symbol
+
+    # The official surfaces those are reached through DO classify, which is the
+    # point: name the WordPress API, not the implementation detail on top of it.
+    assert validator.classify_surface("WordPress\\AiClient\\AiClient") == "core_class"
+    assert validator.classify_surface("wp_ai_client_prompt") == "core_function"
