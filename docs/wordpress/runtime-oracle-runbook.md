@@ -321,8 +321,8 @@ This proves plugin activation, `wp-env`, block metadata parsing, and runtime
 block registration for that fixture or generated block plugin. It does not prove
 editor insertion, block deprecation behavior, browser rendering, frontend
 interactivity, WPCS, Plugin Check, or release readiness unless those checks are
-also required and pass. The first local proof is recorded at
-`evals/results/wordpress-skill-candidate-eval/wp-env-block-runtime-smoke-20260620/`.
+also required and pass. The first local proof was run `wp-env-block-runtime-smoke-20260620`. Its
+archive is monorepo-internal and is not in this repository.
 
 For a narrow editor-side block registry smoke, add `--editor-smoke`. The harness
 logs into wp-admin with Playwright, opens the post editor, verifies the editor
@@ -342,9 +342,9 @@ python3 evals/harness/run_wordpress_runtime_smoke.py \
 This proves the disposable block fixture is visible to both server-side block
 registration and the editor-side block registry. It does not prove block
 insertion, save serialization, frontend rendering, deprecation behavior,
-interactivity, WPCS, Plugin Check, or release readiness. The first local proof is
-recorded at
-`evals/results/wordpress-skill-candidate-eval/wp-env-block-editor-smoke-20260620/`.
+interactivity, WPCS, Plugin Check, or release readiness. The first local proof was run
+`wp-env-block-editor-smoke-20260620`. Its archive is monorepo-internal and is
+not in this repository.
 
 For an end-to-end disposable block editor/render smoke, use
 `--editor-insert-render-smoke`. The harness inserts the block through the editor
@@ -366,8 +366,9 @@ python3 evals/harness/run_wordpress_runtime_smoke.py \
 This proves insertion, save/publish, and frontend server-rendered output for the
 disposable dynamic block fixture. It does not prove deprecation migration,
 Interactivity API behavior, cross-browser behavior, WPCS, Plugin Check, or
-release readiness. The first local proof is recorded at
-`evals/results/wordpress-skill-candidate-eval/wp-env-block-editor-insert-render-smoke-20260620/`.
+release readiness. The first local proof was run
+`wp-env-block-editor-insert-render-smoke-20260620`. Its archive is
+monorepo-internal and is not in this repository.
 
 For a generated block executor artifact, keep the packet block-only and let the
 runtime harness synthesize the disposable wrapper plugin. First materialize and
@@ -423,10 +424,11 @@ The build-command gate and emitted-artifact gate are independent required rows;
 neither substitutes for the other. It does not prove PHPUnit, deprecation migration,
 Interactivity API behavior, cross-browser behavior, MCP Adapter exposure, AI
 Client provider-call behavior, or release readiness unless those gates are also
-run and pass. The first local proofs are recorded at
-`evals/results/wordpress-skill-candidate-eval/generated-block-artifact-cert-20260620/`
-and
-`evals/results/wordpress-skill-candidate-eval/generated-block-full-profile-20260620/`.
+run and pass. The first local proofs were run
+`generated-block-artifact-cert-20260620`, whose archive is monorepo-internal
+and not in this repository, and run `generated-block-full-profile-20260620`,
+whose scorecard and `runtime-smoke.json` are bundled here at
+`evidence/wordpress-skill-candidate-eval/generated-block-full-profile-20260620/`.
 
 The pre-build static block contract is intentionally narrower than runtime
 registration proof. It parses at most 128 `block.json` files and 8 MiB of block

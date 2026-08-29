@@ -104,8 +104,11 @@ def _valid_repo(tmp_path: Path) -> Path:
     _write(root, "evidence/proof.md")
     # Policy documents joined ACTIVE_CONTROL_DOCS on 2026-08-29, so the fixture
     # repository has to carry them for the stale-phrase scan to run at all.
+    _write(root, "docs/wordpress/candidate-catalog.md")
     _write(root, "docs/wordpress/license-reuse-policy.md")
+    _write(root, "docs/wordpress/negative-results.md")
     _write(root, "docs/wordpress/reuse-ledger.md")
+    _write(root, "docs/wordpress/runtime-oracle-runbook.md")
     assert _git(root, "add", "-A").returncode == 0
     return root
 
@@ -336,7 +339,13 @@ def test_untracked_validator_input_is_not_a_fallback(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "document",
-    ["docs/wordpress/license-reuse-policy.md", "docs/wordpress/reuse-ledger.md"],
+    [
+        "docs/wordpress/candidate-catalog.md",
+        "docs/wordpress/license-reuse-policy.md",
+        "docs/wordpress/negative-results.md",
+        "docs/wordpress/reuse-ledger.md",
+        "docs/wordpress/runtime-oracle-runbook.md",
+    ],
 )
 def test_policy_documents_are_covered_by_the_stale_phrase_scan(
     tmp_path: Path, document: str
@@ -364,7 +373,44 @@ def test_policy_documents_are_required_to_exist() -> None:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 
-    assert "docs/wordpress/license-reuse-policy.md" in module.ACTIVE_CONTROL_DOCS
-    assert "docs/wordpress/reuse-ledger.md" in module.ACTIVE_CONTROL_DOCS
+    for document in (
+        "docs/wordpress/candidate-catalog.md",
+        "docs/wordpress/license-reuse-policy.md",
+        "docs/wordpress/negative-results.md",
+        "docs/wordpress/reuse-ledger.md",
+        "docs/wordpress/runtime-oracle-runbook.md",
+    ):
+        assert document in module.ACTIVE_CONTROL_DOCS
     for document in module.ACTIVE_CONTROL_DOCS:
         assert (ROOT / document).is_file(), f"{document} is scanned but missing"
+
+
+def test_workflow_paths_filter_and_scan_coverage_agree() -> None:
+    """Every policy document that triggers CI must also be inspected by it.
+
+    This is the structural fix for the hole that started this: a docs-only PR
+    matched nothing in the workflow's `paths:` filter, so the gate governing
+    those files never ran. Adding paths without adding coverage would have
+    replaced a gate that never fires with one that fires and looks at nothing.
+    Pinning the two lists to each other means neither half can drift alone.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("public_docs", VALIDATOR)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    workflow = (ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+    triggered = {
+        line.strip().removeprefix('- "').removesuffix('"')
+        for line in workflow.splitlines()
+        if line.strip().startswith('- "docs/wordpress/')
+    }
+    scanned = {d for d in module.ACTIVE_CONTROL_DOCS if d.startswith("docs/wordpress/")}
+
+    assert triggered, "expected the workflow to name policy documents"
+    assert triggered == scanned, (
+        "workflow paths filter and ACTIVE_CONTROL_DOCS disagree; "
+        f"triggered-only={sorted(triggered - scanned)} scanned-only={sorted(scanned - triggered)}"
+    )

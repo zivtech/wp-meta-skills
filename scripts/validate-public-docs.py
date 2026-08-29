@@ -32,17 +32,18 @@ ACTIVE_CONTROL_DOCS = (
     "EVIDENCE.md", "PUBLICATION-CHECKLIST.md", "CUTOVER.md",
     "PACKAGE-BUILD.md", "PROVENANCE.md", HARNESS_DOC,
     # Added 2026-08-29 with the workflow paths filter. Triggering CI on a
-    # document nothing inspects is theatre, so the two policy docs that are
-    # clean today join the stale-phrase scan and stay clean.
+    # document nothing inspects is theatre, so every policy document named in
+    # that filter is scanned here.
     #
-    # candidate-catalog.md and runtime-oracle-runbook.md are deliberately NOT
-    # here yet: between them they carry six citations to gitignored
-    # `evals/results/` paths, five of which resolve to nothing anywhere in the
-    # tree. That is real rot of the same class the evidence log's P5 row had,
-    # and re-pointing it is a content decision about historical evidence, not a
-    # CI change. Add them once those citations are resolved.
+    # candidate-catalog.md and runtime-oracle-runbook.md joined once their six
+    # citations to gitignored `evals/results/` paths were resolved -- five of
+    # those six pointed at nothing anywhere in the tree, the same defect class
+    # as the evidence log's P5 row.
+    "docs/wordpress/candidate-catalog.md",
     "docs/wordpress/license-reuse-policy.md",
+    "docs/wordpress/negative-results.md",
     "docs/wordpress/reuse-ledger.md",
+    "docs/wordpress/runtime-oracle-runbook.md",
 )
 STALE_PATTERNS = (
     r"wordpress-skills/docs/standalone", r"evals/results/wordpress-",
