@@ -153,3 +153,53 @@ def test_required_sections_are_enforced():
 
     assert validator.validate_structure("# Log\n\nno sections here")
     assert not validator.validate_structure(LOG.read_text(encoding="utf-8"))
+
+
+def test_gitignored_paths_are_rejected_even_though_they_exist_locally():
+    """The defect that reached a pushed branch: on-disk is not in-repository.
+
+    `evals/results/` is gitignored. A row citing a run archive there passed the
+    first version of this gate locally and failed in CI, because CI only has
+    tracked files. The gate checks git-tracked status now, so a local run agrees
+    with a fresh clone.
+    """
+    validator = load_validator()
+    tracked = validator._tracked_paths()
+    if tracked is None:
+        pytest.skip("not a git checkout; the tracked-path check cannot be exercised")
+
+    gitignored = ROOT / "evals" / "results"
+    if not gitignored.is_dir():
+        pytest.skip("no local evals/results tree to exercise the check against")
+
+    assert not validator._in_repository("evals/results")
+    assert validator._check_cited_path("N9", "`evals/results`", "analysis")
+    assert validator._check_archive("N9", "`evals/results`")
+
+    # A tracked directory still resolves, so the check is not simply refusing
+    # every directory citation.
+    assert validator._in_repository("evals/harness")
+    assert not validator._check_archive("N9", "`evals/harness`")
+
+
+def test_local_only_is_a_declared_state_not_a_loophole():
+    validator = load_validator()
+
+    assert not validator._check_archive("P5", "local-only")
+    assert validator._check_archive("P5", "local only")
+    assert validator._check_archive("P5", "somewhere on a laptop")
+
+
+def test_every_archive_path_cited_in_the_log_is_tracked():
+    validator = load_validator()
+    if validator._tracked_paths() is None:
+        pytest.skip("not a git checkout")
+    text = LOG.read_text(encoding="utf-8")
+
+    rows = (
+        validator._table_rows(text, validator.NULL_TABLE_HEADER)
+        + validator._table_rows(text, validator.POSITIVE_TABLE_HEADER)
+    )
+    for cells in rows:
+        archive = cells[6] if len(cells) == 8 else cells[5]
+        assert not validator._check_archive(cells[0], archive), cells[0]

@@ -38,17 +38,25 @@ distinction is a required column, not a footnote, and the gate enforces it.
 | `analysis` | Path to the committed document in this repository that states the finding. Every row must have one. A finding with no committed analysis is **dropped from this log, not softened into prose.** |
 | `archive: in-repo` | The raw run directory is committed here and can be re-read. |
 | `archive: monorepo-internal` | The analysis is public; the raw run directory lives in the private `zivtech-meta-skills` monorepo and is **not** in this repository. The finding is *recorded*, not independently reproducible from this tree. |
+| `archive: local-only` | Weaker still. The raw run directory is neither committed here nor in the monorepo — it is under gitignored `evals/results/` on whichever machine produced it, and one `git clean` from gone. |
 | `re-run` | The harness that produced the finding, if it is in this repository. A finding can be re-runnable without its original archive being present — the experiment can be repeated, just not replayed. |
 
 **The split is uncomfortable and is stated here rather than left to be
-discovered.** Every one of the five positive rows has its raw archive bundled in
-this repository. Not one of the eight null rows does. That is not a decision
-anyone made on the record — it fell out of which runs were packaged for the
-public release — but the shape it produces is a repository whose wins are
+discovered.** Four of the five positive rows bundle their raw archive in this
+repository. Not one of the eight null rows does. That is not a decision anyone
+made on the record — it fell out of which runs were packaged for the public
+release — but the shape it produces is a repository whose wins are
 independently checkable and whose nulls have to be taken on our word. It is
 tracked as open work in `v1-completion-todo.md` under "Publish or re-point the
 evidence archives", and until it closes, the nulls below are the weaker half of
 this log in exactly the way that most flatters us.
+
+The fifth positive row is weaker than any null. P5's archive is `local-only`: it
+sits under gitignored `evals/results/` on one laptop. That was found by this
+log's own gate failing in CI after passing locally — the first draft asserted
+the path was in the repository, because it was on the machine that wrote it.
+The gate now checks git-tracked status rather than filesystem existence, so a
+local run agrees with a fresh clone.
 
 ---
 
@@ -80,7 +88,7 @@ whether the measurement culture is real.
 | P2 | A generated block survives WordPress' deprecation path | One legacy serialized fixture migrated through the deprecation path into current saved markup and correct frontend output | Licenses: "we can prove a saved-content migration rather than assert it." Does **not** license a claim about arbitrary third-party legacy markup. | `docs/wordpress/v1-completion-todo.md` | `evidence/wordpress-skill-candidate-eval/generated-block-deprecation-full-profile-20260621/scorecard.md` |
 | P3 | A generated plugin's ability is discoverable and executable through the WordPress MCP Adapter | Installed the adapter, listed the default server, called `tools/list` through `wp mcp-adapter serve`, discovered the generated MCP-public ability, and executed it via `mcp-adapter-execute-ability` — plus WPCS/PHPCS and Plugin Check | Licenses: "the modern agent surface is proven end-to-end for generated code." Does **not** license claims about adapter stability — the adapter emitted upstream PHP deprecation notices, recorded as adapter/runtime risk rather than generated-plugin failure. | `docs/wordpress/v1-completion-todo.md` | `evidence/wordpress-skill-candidate-eval/generated-mcp-adapter-full-profile-20260621/scorecard.md` |
 | P4 | A generated AI Client provider registers and answers a real prompt call | Activated a deterministic no-auth provider in WordPress `7.0`, verified `wp_ai_client_prompt()` and the default registry, confirmed provider and connector registration, invoked the generated helper, and matched exact expected output | Licenses: "the AI Client provider boundary is proven for a deterministic provider." Does **not** license any claim about credentialed third-party provider behavior, which remains explicit negative space. | `docs/wordpress/v1-completion-todo.md` | `evidence/wordpress-skill-candidate-eval/generated-ai-client-provider-full-profile-20260621/scorecard.md` |
-| P5 | A local open-weights model (llama-70b) converges to a clean artifact through the repair loop | Iterative repair against persisted PHPCS diagnostics and WPCS repair hints, reaching zero errors on every macOS-reachable gate, then handed to the no-secrets Linux CI lane for the gates a laptop cannot run | Licenses: "the deterministic feedback loop carries a local model to a clean artifact." Does **not** license a full-profile pass claim — the Linux-only gates are handed off precisely because they were not run locally. | `docs/wordpress/repair-loop-levers-reland-2026-08-24.md` | `evals/results/llama70b-abilities-green7-20260825/` |
+| P5 | A local open-weights model (llama-70b) converges to a clean artifact through the repair loop | Iterative repair against persisted PHPCS diagnostics and WPCS repair hints, reaching zero errors on every macOS-reachable gate, then handed to the no-secrets Linux CI lane for the gates a laptop cannot run | Licenses: "the deterministic feedback loop carries a local model to a clean artifact." Does **not** license a full-profile pass claim — the Linux-only gates are handed off precisely because they were not run locally. Read this row with the most caution of any here: its iteration archive is under gitignored `evals/results/` and exists only on the machine that ran it. The converged packet it produced *is* tracked, at `evals/handoff/abilities-llama70b-20260825/`, but that is the output, not the run record. | `docs/wordpress/repair-loop-levers-reland-2026-08-24.md` | local-only |
 
 ---
 
@@ -104,8 +112,9 @@ is not a boundary.
   the questions a buyer actually has, and this log does not answer them.
 - **No null result's raw archive is in this repository.** All eight null rows
   are `monorepo-internal`: you are reading our analysis of our data, not our
-  data. All five positive rows bundle their archive. Read the nulls accordingly
-  — they are the rows you cannot currently check for yourself.
+  data. Four of five positive rows bundle their archive; the fifth is
+  `local-only`, which is weaker than either. Read those nine rows accordingly —
+  they are the ones you cannot currently check for yourself.
 
 ## Related
 

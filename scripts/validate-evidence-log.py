@@ -22,7 +22,9 @@ back into marketing.
 
 from __future__ import annotations
 
+import functools
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,7 +39,8 @@ POSITIVE_TABLE_HEADER = "| # | What was proven |"
 
 ARCHIVE_IN_REPO = "in-repo"
 ARCHIVE_MONOREPO = "monorepo-internal"
-ARCHIVE_STATES = (ARCHIVE_IN_REPO, ARCHIVE_MONOREPO)
+ARCHIVE_LOCAL_ONLY = "local-only"
+ARCHIVE_STATES = (ARCHIVE_IN_REPO, ARCHIVE_MONOREPO, ARCHIVE_LOCAL_ONLY)
 
 # A row may decline a harness, but only in words that make the absence visible.
 NO_RERUN_PHRASES = ("not applicable", "none")
@@ -103,6 +106,44 @@ def _safe_repo_path(value: str) -> Path | None:
     return candidate
 
 
+@functools.lru_cache(maxsize=1)
+def _tracked_paths() -> frozenset[str] | None:
+    """Every git-tracked path, or None when this is not a usable git checkout.
+
+    Existing on disk is NOT the same as being in the repository. `evals/results/`
+    is gitignored, so a run archive there passes a local check and vanishes in
+    CI -- which is exactly how a dangling citation reached a pushed branch once.
+    Checking tracked status makes a local run agree with a fresh clone.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return frozenset(
+        entry for entry in completed.stdout.decode("utf-8", "replace").split("\0") if entry
+    )
+
+
+def _in_repository(value: str) -> bool:
+    """True when the path is tracked, or is a directory containing tracked files."""
+    tracked = _tracked_paths()
+    if tracked is None:
+        # No git available: fall back to the filesystem, which is weaker. The
+        # caller's message says so rather than implying a repository check ran.
+        return (ROOT / value).exists()
+    normalized = value.rstrip("/")
+    if normalized in tracked:
+        return True
+    prefix = normalized + "/"
+    return any(entry.startswith(prefix) for entry in tracked)
+
+
 def _check_cited_path(row_id: str, cell: str, label: str) -> list[Issue]:
     raw = _first_path(cell)
     if raw is None:
@@ -110,11 +151,17 @@ def _check_cited_path(row_id: str, cell: str, label: str) -> list[Issue]:
     resolved = _safe_repo_path(raw)
     if resolved is None:
         return [Issue(row_id, f"{label} path `{raw}` escapes the repository")]
-    if not resolved.exists():
+    if not _in_repository(raw):
+        detail = (
+            "is not tracked in this repository"
+            if resolved.exists()
+            else "does not exist"
+        )
         return [Issue(
             row_id,
-            f"{label} path `{raw}` does not exist. Re-point it or drop the row;"
-            " do not soften it into prose.",
+            f"{label} path `{raw}` {detail}. Re-point it or drop the row;"
+            " do not soften it into prose."
+            + ("" if _tracked_paths() is not None else " (git unavailable: filesystem check only)"),
         )]
     return []
 
@@ -137,10 +184,11 @@ def _check_archive(row_id: str, cell: str) -> list[Issue]:
         resolved = _safe_repo_path(path)
         if resolved is None:
             return [Issue(row_id, f"archive path `{path}` escapes the repository")]
-        if not resolved.exists():
-            return [Issue(row_id, f"archive claims in-repo path `{path}`, which does not exist")]
+        if not _in_repository(path):
+            detail = "is not tracked in this repository" if resolved.exists() else "does not exist"
+            return [Issue(row_id, f"archive claims in-repo path `{path}`, which {detail}")]
         return []
-    if value == ARCHIVE_MONOREPO:
+    if value in (ARCHIVE_MONOREPO, ARCHIVE_LOCAL_ONLY):
         return []
     if value == ARCHIVE_IN_REPO:
         return [Issue(row_id, "archive says `in-repo` without naming the path")]
