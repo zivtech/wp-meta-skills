@@ -296,3 +296,71 @@ def test_block_editor_surfaces_classify(surface, category):
     validator = load_validator()
 
     assert validator.classify_surface(surface) == category
+
+
+def test_registry_boundary_states_the_third_party_rule():
+    """The boundary is where someone widening the registry will be reading.
+
+    The recurring error this guards against: a rubric names a symbol that only
+    exists in a third-party implementation of a WordPress API, the classifier
+    correctly rejects it, and the tempting fix is to add it here. That converts
+    a category error into a permanent false claim about what WordPress provides.
+    The classifier already enforces this by construction; the boundary says so
+    where the mistake would be made.
+    """
+    validator = load_validator()
+    boundary = json.loads(validator.REGISTRY_PATH.read_text(encoding="utf-8"))["boundary"]
+
+    assert "third-party implementation" in boundary
+    assert "must not be added here" in boundary
+
+
+def test_third_party_implementation_symbols_do_not_classify():
+    """A helper API from a library built on WordPress hooks is not a surface.
+
+    An earlier version of this test listed `registerProvider`, `defaultRegistry`,
+    and `ProviderAvailabilityInterface` here as third-party examples. That was
+    wrong: all three live in the `WordPress\\AiClient\\` namespace and are
+    official surfaces, now registered. The rule is about provenance, not about
+    a name looking un-WordPress-like, and picking examples on shape rather than
+    on namespace is exactly the confusion it exists to prevent.
+    """
+    validator = load_validator()
+
+    for symbol in (
+        "registerBlockExtension",  # a block-extension helper library's own API
+        "useBlockPropsExtended",
+        "wp_invented_magic",
+    ):
+        assert validator.classify_surface(symbol) is None, symbol
+
+    # The official surfaces a wrapper is reached through DO classify, which is
+    # the point: name the WordPress API, not the layer built on top of it.
+    assert validator.classify_surface("WordPress\\AiClient\\AiClient") == "core_class"
+    assert validator.classify_surface("wp_ai_client_prompt") == "core_function"
+
+
+@pytest.mark.parametrize(
+    "surface",
+    [
+        "AiClient::defaultRegistry",
+        "registerProvider",
+        "ProviderInterface",
+        "ProviderAvailabilityInterface",
+        "ModelMetadataDirectoryInterface",
+        "TextGenerationModelInterface",
+        "using_model_preference",
+        "generate_text",
+    ],
+)
+def test_ai_client_provider_registration_surfaces_classify(surface):
+    """The provider-registration contract must be nameable by a plan or rubric.
+
+    Ground truth is WordPress/ai-provider-for-openai, the WordPress project's
+    own reference implementation, cross-checked against the generated no-auth
+    provider fixture. Every one of these is in the `WordPress\\AiClient\\`
+    namespace, so they are official surfaces rather than one vendor's dialect.
+    """
+    validator = load_validator()
+
+    assert validator.classify_surface(surface) == "reviewed_composed"

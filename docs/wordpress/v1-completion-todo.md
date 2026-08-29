@@ -73,6 +73,13 @@ This checklist tracks what remains before the WordPress skill suite can be treat
   - Reopen only for cheaper-model lift, output-contract conformance, variance reduction, or executor/oracle-backed code generation.
 
 - [ ] Upgrade per-skill eval evidence beyond smoke where risk warrants it.
+  - **A second advisory PHPCS profile was investigated and closed 2026-08-29.**
+    The available stricter rulesets contradict WPCS rather than extending it,
+    and the WordPress-family alternative is blocked on a toolchain version floor
+    whose upgrade would break comparability with every recorded WPCS result.
+    Measurement and reasoning: `wpcs-second-profile-measurement-2026-08-29.md`,
+    recorded as N9 in `negative-results.md`. Do not reopen without either a
+    genuine WPCS superset or a budgeted re-baselining.
   - **Still open as of 2026-08-28**, but substantially advanced since this file
     was last written. Landed since 2026-06-21: the deterministic executor repair
     loop and its `--seed-packet` continuation mode, persisted PHPCS diagnostics

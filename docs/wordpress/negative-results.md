@@ -43,7 +43,7 @@ distinction is a required column, not a footnote, and the gate enforces it.
 
 **The split is uncomfortable and is stated here rather than left to be
 discovered.** Four of the five positive rows bundle their raw archive in this
-repository. Not one of the eight null rows does. That is not a decision anyone
+repository. Not one of the nine null rows does. That is not a decision anyone
 made on the record — it fell out of which runs were packaged for the public
 release — but the shape it produces is a repository whose wins are
 independently checkable and whose nulls have to be taken on our word. It is
@@ -72,6 +72,7 @@ local run agrees with a fresh clone.
 | N6 | Whether machine-optimizing the persona against the deterministic gate beats a hand-written seed | Held-out gate-pass after GEPA optimization | No held-out gain (Δ = 0.0). The optimization loop worked — it improved the training fixture with no human reading the oracle — but no candidate beat the seed on held-out, and one regressed. | Licenses: the conclusion that the **repair loop, not the persona, is the lever** — including when the persona is machine-optimized rather than hand-written. Does **not** license a claim that prompt optimization never works; this is n=1 fixture on one holdout. | `docs/wordpress/gepa-executor-spike-2026-06-22.md` | monorepo-internal | `evals/harness/run_gepa_executor_optimization.py` |
 | N7 | Whether the skill persona beats a stronger frontier baseline on deterministic executor gates | Gate-pass on the hardest modern-surface fixture (`abilities-ai-surface-v1`) | Equivalent. `sonnet` + skill and `gpt-5.5` baseline follow an identical trajectory: both substantively correct zero-shot, both failing only on distribution-metadata nits, both fully green in one repair iteration. | Licenses: "the executable gate plus repair loop is the model-agnostic lever, and a cheaper model reaches the same gate outcome." Does **not** license a superiority claim in either direction — it is a tie, on one fixture, single-shot. | `docs/wordpress/executor-gate-pass-experiment-2026-06-22.md` | monorepo-internal | `evals/harness/run_executor_repair_loop.py` |
 | N8 | The 27-fixture candidate superiority benchmark | Frontier-model review-quality superiority | Never run. Recorded as blocked and deliberately kept blocked. | Licenses: nothing about the suite's quality — that is the point. It is listed because a benchmark designed, costed, and then **not** run for lack of a defensible measurement target is evidence about how this project operates. Does **not** license the inverse reading either: the benchmark was not abandoned because we expected to lose it, and its absence is not a result. Reopening it requires a changed target, not a bigger budget. | `docs/wordpress/v1-completion-todo.md` | monorepo-internal | not applicable — never executed |
+| N9 | Whether a stricter third-party PHPCS ruleset can serve as an advisory second profile, testing whether `WPCS_REPAIR_HINTS` generalize or were overfit | Violation counts on five certified plugin artifacts, pinned toolchain, changing only `--standard` | Premise disproved. All five artifacts are clean under `WordPress` and carry 460 violations under `Universal,NormalizedArrays,Modernize`. 397 are stylistic disagreements, and the array-brace sniffs **contradict** WPCS outright — `NormalizedArrays` forbids the space `WordPress.Arrays.ArrayDeclarationSpacing` requires. | Licenses: closing the second-profile item, and the conclusion that a general-PHP ruleset cannot serve as an advisory profile for WordPress code. Does **not** license any claim that the repair hints generalize *or* that they are overfit — the instrument chosen to answer that turned out incapable of answering it, so the question is untouched. | `docs/wordpress/wpcs-second-profile-measurement-2026-08-29.md` | local-only | `evals/harness/certify_wordpress_executor_artifact.py` |
 
 ---
 
@@ -110,11 +111,14 @@ is not a boundary.
 - **Nothing here measures delivery outcomes.** No row connects to client
   satisfaction, project velocity, defect rates in production, or cost. Those are
   the questions a buyer actually has, and this log does not answer them.
-- **No null result's raw archive is in this repository.** All eight null rows
-  are `monorepo-internal`: you are reading our analysis of our data, not our
-  data. Four of five positive rows bundle their archive; the fifth is
-  `local-only`, which is weaker than either. Read those nine rows accordingly —
-  they are the ones you cannot currently check for yourself.
+- **No null result's raw archive is in this repository.** Eight of the nine
+  null rows are `monorepo-internal` and the ninth is `local-only`: you are
+  reading our analysis of our data, not our data. Four of five positive rows
+  bundle their archive; the fifth is `local-only` too. Read those ten rows
+  accordingly — they are the ones you cannot currently check for yourself. N9 is
+  the mildest case: its scan is regenerated by a documented command in seconds
+  rather than retrieved from an archive, which is why nothing was written to
+  gitignored `evals/results/` to be cited later and found missing.
 
 ## Related
 
