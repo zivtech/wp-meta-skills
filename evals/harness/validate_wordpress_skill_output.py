@@ -250,6 +250,43 @@ PROBER_HEADINGS = {
     ],
 }
 
+# An auditor observes a running site it does not control. Its findings rest on
+# public HTTP routes and core file surfaces rather than on implementation
+# symbols, so the shared registry cannot score it: widening that registry to
+# admit routes would loosen the exact-surface floor for every planner and critic
+# too, which its own boundary note forbids. The auditor is scored against this
+# list instead, kept local to the role that needs it.
+AUDITOR_OBSERVED_SURFACES = (
+    "/wp-json/",
+    "/wp-json/wp/v2/types",
+    "/wp-json/wp/v2/taxonomies",
+    "/wp-json/wp/v2/users",
+    "/wp-content/plugins/",
+    "/wp-content/themes/",
+    "/wp-includes/",
+    "/wp-sitemap.xml",
+    "style.css",
+    "readme.txt",
+    "readme.html",
+    "xmlrpc.php",
+    "wp-login.php",
+    "api.wordpress.org/plugins/info/1.2/",
+    "api.wordpress.org/core/version-check/1.7/",
+)
+
+# An auditor reports on a site it may not own; its report is the only artifact
+# it writes. Registered here for the same reason the prober is: the one skill
+# without an output contract oracle is where the last defect reached review.
+AUDITOR_HEADINGS = {
+    "wordpress-site-audit": [
+        "Access Tier And Authorization",
+        "Stack",
+        "Findings",
+        "Evidence",
+        "Not Checked",
+    ],
+}
+
 CONTRACTS: dict[str, dict[str, Any]] = {}
 for skill_name, headings in PLANNER_HEADINGS.items():
     CONTRACTS[skill_name] = {"role": "planner", "headings": headings, "min_surfaces": 2, "needs_verdict": False}
@@ -259,6 +296,14 @@ for skill_name, headings in CRITIC_HEADINGS.items():
     CONTRACTS[skill_name] = {"role": "critic", "headings": headings, "min_surfaces": 2, "needs_verdict": True}
 for skill_name, headings in PROBER_HEADINGS.items():
     CONTRACTS[skill_name] = {"role": "prober", "headings": headings, "min_surfaces": 2, "needs_verdict": False}
+for skill_name, headings in AUDITOR_HEADINGS.items():
+    CONTRACTS[skill_name] = {
+        "role": "auditor",
+        "headings": headings,
+        "min_surfaces": 3,
+        "needs_verdict": False,
+        "observed_surfaces": AUDITOR_OBSERVED_SURFACES,
+    }
 
 ALIASES = {
     "wordpress-planner.block": "wordpress-block-planner",
@@ -1003,20 +1048,37 @@ def check_verdict(text: str, contract: dict[str, Any]) -> Check:
     )
 
 
+def _observed_surface_matches(text: str, contract: dict[str, Any]) -> tuple[str, ...]:
+    """Return the role-local observed surfaces a report actually names.
+
+    Empty for every role but the auditor, which is scored against its own list
+    rather than the shared implementation-symbol registry.
+    """
+    lowered = text.lower()
+    return tuple(
+        surface for surface in contract.get("observed_surfaces", ()) if surface.lower() in lowered
+    )
+
+
 def check_exact_surfaces(text: str, contract: dict[str, Any]) -> Check:
     matched = find_surface_matches(text)
+    observed = _observed_surface_matches(text, contract)
     note_count, valid_notes = _non_applicability(text)
     min_surfaces = int(contract["min_surfaces"])
-    passed = len(matched) >= min_surfaces and valid_notes
-    evidence = ", ".join(f"{item.category}:{item.text}" for item in matched)
-    detail = f"matched {len(matched)} exact WordPress surfaces"
+    total = len(matched) + len(observed)
+    passed = total >= min_surfaces and valid_notes
+    evidence = ", ".join(
+        [f"{item.category}:{item.text}" for item in matched]
+        + [f"observed:{surface}" for surface in observed]
+    )
+    detail = f"matched {total} exact WordPress surfaces"
     if evidence:
         detail += f" ({evidence})"
     if note_count and valid_notes:
         detail += "; scoped non-applicability includes subproblem, reason, and oracle/owner"
     elif note_count:
         detail += "; invalid non-applicability (requires named subproblem, reason, and oracle/owner)"
-    if len(matched) < min_surfaces:
+    if total < min_surfaces:
         detail += f"; expected at least {min_surfaces}"
     return Check("exact_wordpress_surfaces", passed, 3, detail)
 

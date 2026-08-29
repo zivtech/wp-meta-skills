@@ -40,6 +40,13 @@
       "skills": [
         "wordpress-environment-probe"
       ]
+    },
+    {
+      "title": "Audit",
+      "description": "WordPress auditor skills that observe a running site the agent does not control and report only what its public surfaces prove.",
+      "skills": [
+        "wordpress-site-audit"
+      ]
     }
   ]
 }

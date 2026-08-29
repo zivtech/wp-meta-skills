@@ -70,7 +70,7 @@ REQUIRED_CONTRACT_TOKENS = (
     "Playwright",
 )
 
-EXPECTED_WORDPRESS_PROMPTS = 15
+EXPECTED_WORDPRESS_PROMPTS = 16
 
 # Probers measure the environment rather than name WordPress implementation
 # surfaces, so the 35-token allowlist above does not apply to them. They are
@@ -85,6 +85,23 @@ REQUIRED_PROBER_CONTRACT_TOKENS = (
     "UNKNOWN",
     "--allow-eval",
     "--capability-manifest",
+)
+
+# Auditors observe a running site over HTTP rather than name WordPress
+# implementation surfaces, so the 35-token allowlist above does not apply to
+# them either. Their exact surfaces are the public routes and directory APIs an
+# audit actually fetches, which is what this list pins. Same subtractive shape
+# as PROBER_PROMPTS: see validate_auditor_contract.
+AUDITOR_PROMPTS = frozenset({"wordpress-site-audit"})
+REQUIRED_AUDITOR_CONTRACT_TOKENS = (
+    "url_effective",
+    "/wp-json/",
+    "/wp-json/wp/v2/types",
+    "style.css",
+    "readme.txt",
+    "api.wordpress.org/plugins/info/1.2/",
+    "api.wordpress.org/core/version-check/1.7/",
+    "NOT CHECKED",
 )
 
 # Per-prompt contract tokens, applied ON TOP OF REQUIRED_CONTRACT_TOKENS.
@@ -342,6 +359,30 @@ def validate_prober_contract(path: Path) -> list[Issue]:
     return issues
 
 
+def validate_auditor_contract(path: Path) -> list[Issue]:
+    """Validate an auditor's contract.
+
+    An auditor observes a running site over HTTP; it names public routes and
+    directory APIs rather than WordPress implementation surfaces, so the
+    35-token allowlist does not apply. It must still declare the contract
+    heading, name the routes its findings rest on, keep the canonical-resolution
+    proof that a redirect would otherwise silence, keep the not-checked ledger
+    token that stops absence of evidence reading as a pass, and carry the
+    no-exact-API fallback language so the section is never silently empty.
+    """
+    text = path.read_text(encoding="utf-8")
+    issues: list[Issue] = []
+    if not CONTRACT_HEADING_RE.search(text):
+        issues.append(Issue(path, "missing Exact API and Verification Contract heading"))
+        return issues
+    for token in REQUIRED_AUDITOR_CONTRACT_TOKENS:
+        if token not in text:
+            issues.append(Issue(path, f"auditor contract missing required token `{token}`"))
+    if "If no exact WordPress API applies" not in text:
+        issues.append(Issue(path, "contract missing no-exact-API fallback language"))
+    return issues
+
+
 def validate_prompt_contract(path: Path) -> list[Issue]:
     """Validate a prompt against the global contract plus its own extra tokens.
 
@@ -456,6 +497,14 @@ def validate_prompt_contract_mapping(
                     " probers are held to validate_prober_contract instead",
                 )
             )
+        if identity in AUDITOR_PROMPTS:
+            issues.append(
+                Issue(
+                    REGISTRY_PATH,
+                    f"PROMPT_CONTRACT_TOKENS names auditor prompt `{identity}`;"
+                    " auditors are held to validate_auditor_contract instead",
+                )
+            )
         if not tokens:
             issues.append(
                 Issue(REGISTRY_PATH, f"PROMPT_CONTRACT_TOKENS entry `{identity}` is empty")
@@ -498,6 +547,9 @@ def validate_all() -> list[Issue]:
     for path in agent_files + skill_files:
         if _prompt_identity(path) in PROBER_PROMPTS:
             issues.extend(validate_prober_contract(path))
+            continue
+        if _prompt_identity(path) in AUDITOR_PROMPTS:
+            issues.extend(validate_auditor_contract(path))
             continue
         issues.extend(validate_prompt_contract(path))
     for token in REQUIRED_CONTRACT_TOKENS:

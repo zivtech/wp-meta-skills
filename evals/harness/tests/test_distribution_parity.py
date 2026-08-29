@@ -119,9 +119,9 @@ def test_live_distribution_is_connected_and_exact() -> None:
     result = _run(PROJECT_ROOT)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "15 skill pairs" in result.stdout
-    assert "15 agent pairs" in result.stdout
-    assert "15 skills.sh entries" in result.stdout
+    assert "16 skill pairs" in result.stdout
+    assert "16 agent pairs" in result.stdout
+    assert "16 skills.sh entries" in result.stdout
 
 
 @pytest.mark.parametrize("surface", [".claude/skills", ".agents/skills"])
@@ -409,7 +409,7 @@ def test_manifest_generation_is_deterministic_and_verifies(tmp_path: Path) -> No
 
     assert first.returncode == second.returncode == verified.returncode == 0
     assert first_bytes == second_bytes
-    assert len(first_bytes.splitlines()) == 61
+    assert len(first_bytes.splitlines()) == 65
 
 
 def test_manifest_verifies_in_relocated_checkout(tmp_path: Path) -> None:

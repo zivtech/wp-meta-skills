@@ -39,6 +39,7 @@ SKILL_TO_AGENT = {
     "wordpress-performance-critic": "wordpress-performance-critic",
     "wordpress-theme-critic": "wordpress-theme-critic",
     "wordpress-environment-probe": "wordpress-environment-probe",
+    "wordpress-site-audit": "wordpress-site-audit",
 }
 EXECUTOR_SKILLS = frozenset(
     {
@@ -84,6 +85,9 @@ GROUP_FOR_TYPE = {
     "critic": "Review",
     # A prober measures the environment and writes no artifact but its own manifest.
     "prober": "Environment",
+    # An auditor observes a running site it does not control and writes only a report;
+    # a critic reviews an artifact we own, which is why this is not "Review".
+    "auditor": "Audit",
 }
 EXPECTED_GROUP_COUNT = len(set(GROUP_FOR_TYPE.values()))
 DISTRIBUTED_SURFACES_PER_SKILL = 4  # .agents skill, .claude skill, .claude agent, .codex agent
