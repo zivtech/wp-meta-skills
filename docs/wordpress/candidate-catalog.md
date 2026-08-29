@@ -35,6 +35,27 @@ Current status: candidate screening is complete enough to preserve reference-onl
 | [respira-press/agent-skills-wordpress](https://github.com/respira-press/agent-skills-wordpress) | `e39a5c788e5a39d05157f804c8fd0c5a4f5e07a2` | MIT | 35 site-audit, migration, builder-conversion, onboarding, WooCommerce, SEO/AEO, image, and reporting skills | Migration, site audit, and page-builder comparator |
 | [jorgerosal/wordpress-skills](https://github.com/jorgerosal/wordpress-skills) | `8c964424d05ba34b3ea5641f7181d4c13829e06f` | MIT | 18 skills including accessibility, ACF/content modeling, admin UI, blocks, CI/CD, headless/WPGraphQL, migrations, performance, PHPStan, Playground, plugins, REST, security, site audit, testing, themes, WooCommerce, WP-CLI | Broad community comparator |
 
+## Non-Skill Sources (surveyed 2026-08-28)
+
+This catalog's table is for **skill** repositories, judged on prompt inventory
+and on whether their text could ever be adapted. A separate survey on 2026-08-28
+covered sources that are not skill collections: published engineering doctrine,
+PHPCS rulesets, unit-test mocking libraries, project scaffolding, local-
+environment agent tooling, and shipped AI-provider plugins consulted as
+ground truth for exact registration names.
+
+Those are judged on different criteria — is this a doctrine reference, a
+pinnable gate, or a source of exact API names — so they are deliberately kept
+out of the table above, where the columns would mean something different.
+
+**The survey took no text from any of them.** Exact WordPress API names were
+confirmed against developer.wordpress.org, which are public facts rather than
+any project's expression. Nothing surveyed entered a production prompt, so no
+reuse-ledger rows were required; see `reuse-ledger.md` for the standing record
+of that, and `license-reuse-policy.md` for the weak-license-evidence rule the
+survey produced.
+
+
 ## Evaluation Lanes
 
 1. Raw upstream candidate output.
