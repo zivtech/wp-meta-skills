@@ -1,6 +1,17 @@
 # WordPress V1 Completion Todo
 
-Updated: 2026-06-21.
+Updated: 2026-08-28. Previously 2026-06-21.
+
+> **Reconciliation note, 2026-08-28.** This file sat eight weeks stale while it
+> was being treated as live state. It still listed the standalone public release
+> as open; the release shipped 2026-07-06 (`6de8aa9`), and a plan drafted against
+> this checklist inherited that error and built a publish-vs-hold decision on a
+> world that no longer existed. Every unchecked item was walked against
+> `gh repo view` and `git log origin/main` on 2026-08-28. Two were closed, one was
+> reclassified as a standing constraint with no completion state, one was split
+> because the release shipped without the evidence-archive half, and two remain
+> genuinely open and are stamped as reconfirmed. **Before citing this file as
+> current state, check the date at the top of it.**
 
 This checklist tracks what remains before the WordPress skill suite can be treated as finished inside `zivtech-meta-skills`, and what must happen before splitting it into a standalone public `wp-meta-skills` repo.
 
@@ -53,11 +64,22 @@ This checklist tracks what remains before the WordPress skill suite can be treat
   - Required because the absolute-score pilot saturated and failed separation.
   - Outcome: directional-internal only. Same-family rubric-anchored judging improved agreement, but cross-family judging confirmed moderate reliability and no robust separation from `baseline-few-shot`.
 
-- [ ] Keep the 27-fixture candidate benchmark blocked unless the measurement target changes.
+- **[STANDING CONSTRAINT — not a task]** Keep the 27-fixture candidate benchmark
+  blocked unless the measurement target changes.
+  - Reclassified 2026-08-28. This was carried as an unchecked box, which read as
+    unfinished work; it is a permanent policy that is satisfied by *not* acting.
+    It has no completion state and should never be checked off.
   - Do not run it for a frontier-model review-quality superiority claim.
   - Reopen only for cheaper-model lift, output-contract conformance, variance reduction, or executor/oracle-backed code generation.
 
 - [ ] Upgrade per-skill eval evidence beyond smoke where risk warrants it.
+  - **Still open as of 2026-08-28**, but substantially advanced since this file
+    was last written. Landed since 2026-06-21: the deterministic executor repair
+    loop and its `--seed-packet` continuation mode, persisted PHPCS diagnostics
+    in runtime evidence and repair prompts, `WPCS_REPAIR_HINTS` including the
+    docblock-placement clause, the environment-probe golden/live recorded lanes
+    with live Scenario C in CI, and the converged-artifact Linux handoff lane.
+    See `repair-loop-levers-reland-2026-08-24.md` for the run-by-run record.
   - At minimum, each V1 skill needs smoke-tier evidence or an explicit experimental label.
   - Plugin and block executor paths now have oracle-backed runtime evidence for
     the named generated-artifact lanes. That does not upgrade every high-risk
@@ -160,7 +182,16 @@ This checklist tracks what remains before the WordPress skill suite can be treat
   - Result: directional null. `answerkey-haiku-adversarial-fast-20260620` showed no broad per-task review-quality lift (`zivtech - zero-shot = -0.006`, `zivtech - few-shot = 0.039`; both CIs straddle zero).
   - Boundary: this was one fast run, not a universal cheaper-model theorem; it weakens the cheap-model review-quality proposition and pushes value discovery toward contracts, variance, and runtime executor oracles.
 
-  - [ ] Redesign the next eval around the skill suite's plausible value.
+  - [x] Redesign the next eval around the skill suite's plausible value.
+    **Answered 2026-08-28 by what actually got built, not by a separate design
+    exercise.** The target moved off frontier-model review quality and onto
+    deterministic executor gates: packet oracle, materialization bridge, static
+    artifact oracle, combined certification, and the repair-prompt loop. Each
+    sub-item below is that redesign, shipped. The measured outcome is recorded in
+    `wp-executor-gate-pass-skill-equals-baseline` terms — `sonnet` + skill ties
+    `gpt-5.5` on the deterministic gates — which is a null on superiority and a
+    positive on the harness being able to tell.
+    Checked here as *designed and executed*, not as *the suite is proven better*.
   - [x] Deterministic contract adherence gate for exact API naming and prompt/rubric drift.
   - [x] Model-output contract adherence: required headings, critic verdict shape, negative-space statements, exact WordPress surfaces, and verification-oracle specificity via `evals/harness/validate_wordpress_skill_output.py`.
   - Consistency: lower variance across runs and authors.
@@ -174,7 +205,7 @@ This checklist tracks what remains before the WordPress skill suite can be treat
   - [x] ChatGPT-level baseline lane for invoke-based WordPress smoke suites: `evals/harness/invoke.py` can route condition names beginning `baseline-*` through isolated local Codex CLI, and the WordPress planner/critic/executor smoke `eval.yaml` files now declare `baseline_provider: codex`, `baseline_model_policy: newest-chatgpt-level-at-run-time`, `baseline_model: gpt-5.5`, and `baseline_effort: medium`.
   - [x] Plugin executor ChatGPT baseline smoke: `wordpress-plugin-executor-chatgpt-baseline-isolated-smoke-20260620c` resolved to `gpt-5.5` with `model_policy: newest-chatgpt-level-at-run-time` and passed packet, materialization, current static artifact including `php_wpcs_shape_heuristics`, and `php-lint` gates.
   - [x] Candidate-comparison pilot ChatGPT baseline migration: `evals/harness/run_wordpress_candidate_pilot.py`, `run_pairwise_pilot.py`, and `answer_key_score.py --generate` now route `baseline-*` generation through isolated local Codex (`gpt-5.5` by default) while keeping skill/upstream lanes on explicit isolated Claude prompt surfaces. Boundary: old candidate artifacts remain historical, and a fresh candidate-comparison run is required before claiming new ChatGPT-baseline results.
-  - [ ] Fresh candidate-comparison evidence after ChatGPT baseline migration: rerun the selected candidate/pairwise/answer-key path only for a changed measurement target such as output-contract conformance, variance, or oracle-backed code generation. Do not reopen frontier-model review-quality superiority as the target.
+  - [ ] **Still open, reconfirmed 2026-08-28.** Fresh candidate-comparison evidence after ChatGPT baseline migration: rerun the selected candidate/pairwise/answer-key path only for a changed measurement target such as output-contract conformance, variance, or oracle-backed code generation. Do not reopen frontier-model review-quality superiority as the target.
   - [x] Plugin executor static golden-packet certification: `evals/results/wordpress-skill-candidate-eval/plugin-executor-static-cert-20260620/scorecard.md`.
   - [x] Historical Claude live plugin executor-output certification: `evals/results/wordpress-plugin-executor-live-cert-20260620c/raw/wordpress-plugin-executor/skill/smoke-wordpress-v1.md` passed saved-output contract and `evals/results/wordpress-skill-candidate-eval/plugin-executor-live-cert-20260620/scorecard.md` passed packet, materialization, static artifact, and `php-lint` gates after configuring the suite for `sonnet` plus `low` effort. This is not the current baseline default.
   - [x] Repeated live executor-output certification: three live plugin outputs passed the certifier (`20260620c`, `20260620d`, `20260620f`). One intermediate output (`20260620e`) failed correctly on missing negative-space language and non-literal file-map paths; the executor contract and fixture were tightened before rerun.
@@ -395,16 +426,29 @@ This checklist tracks what remains before the WordPress skill suite can be treat
     owner approval, PR merge, public visibility approval, and final standalone
     Actions pass.
 
-- [ ] Publish `wp-meta-skills` as its own public repo.
-  - Requires maintainer approval of the standalone metadata and clean-import
-    strategy.
-  - Requires maintainer approval of `CUTOVER.md` so future WordPress skill work
-    has one source of truth after release.
-  - Private staging repo exists and validates; this item requires approval to
-    make the repo public or create the public release surface from it.
-  - Public-release checklist:
-    public issue tracker.
-  - Approval issue assignees: `grndlvl`, `misterjones`, and `pmzivtech`.
-  - Requires publishing selected full result archives or converting evidence
-    paths to public artifact URLs, unless those archives stay explicitly out of
-    scope for the first public draft.
+- [x] Publish `wp-meta-skills` as its own public repo. **Shipped 2026-07-06.**
+  - Release commit: `6de8aa9 chore: initial public release`.
+  - `github.com/zivtech/wp-meta-skills` created 2026-07-06, visibility `PUBLIC`.
+  - Approval issue #1 (`Public release validation and skills.sh registration`)
+    closed 2026-07-06; follow-ups #2 and #3 closed the same day.
+  - Maintainer approval of the standalone metadata, clean-import strategy, and
+    `CUTOVER.md` was obtained before release; `CUTOVER.md` is now the source of
+    truth for WordPress skill work.
+  - **Carried forward, not resolved by the release:** full result archives were
+    not published. Evidence paths in the public tree still point at
+    monorepo-internal run directories that do not exist here. Closing that gap is
+    tracked below under "Publish or re-point the evidence archives".
+
+- [ ] Publish or re-point the evidence archives.
+  - Split out of the release item on 2026-08-28, because the release shipped
+    without it rather than with it.
+  - Committed, public, and citable today: `gepa-executor-spike-2026-06-22.md`,
+    `api-naming-coverage-closeout-2026-06-22.md`,
+    `executor-gate-pass-experiment-2026-06-22.md`.
+  - Dangling: `pairwise-cert-2-xfamily`, `answerkey-diag-adversarial`,
+    `wordpress-candidate-pilot-20260616-live`, and
+    `answerkey-haiku-adversarial-fast-20260620` are monorepo-internal. The
+    findings they back are summarized in `skill-improvement-research-2026-06-20.md`
+    and `skill-improvement-research-2026-06-22.md`, which are public.
+  - Either publish the archives or mark each affected finding `recorded` rather
+    than `reproducible`. Do not cite a path this repo does not contain.
