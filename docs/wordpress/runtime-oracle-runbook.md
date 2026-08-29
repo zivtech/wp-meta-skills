@@ -623,6 +623,20 @@ The capability manifest uses the same discipline with a wider enum: `AVAILABLE`,
 
 Do not use a static artifact pass as evidence for WPCS, Plugin Check, wp-env, PHPUnit, block validation, editor smoke, or frontend smoke claims. Those require the runtime profile or a stronger environment-specific command recorded alongside the artifact.
 
+The AI Client, Abilities, MCP Adapter, and legacy editor oracles are **not
+reachable through the isolated runtime path** as of 2026-08-29. Requesting
+`--ai-client-smoke`, `--ability-name`, `--mcp-adapter-smoke`, `--editor-smoke`,
+`--interactivity-smoke`, or `--block-deprecation-smoke` raises `unpinned optional
+runtime support is blocked` and returns `status: blocked`, which is the correct
+answer rather than a defect: those oracles are not among the pinned optional
+supports the isolated path will admit, and the CI Docker generated-runtime job
+does not exercise them either. The `eval.yaml` commands that name them are
+therefore historical records of how the June 2026 proofs were produced, not
+commands that reproduce those proofs today. Unit coverage exists against mocked
+gates; end-to-end coverage does not. Treat any claim resting on those oracles as
+`recorded` rather than currently reproducible, and do not read a `blocked`
+result as a failure of the artifact under test.
+
 A transport is not an evidence source. Where an agent-facing MCP or CLI tool
 surface sits over a local WordPress environment, the capability manifest remains
 authoritative. Such a surface may carry a command to the environment; it
