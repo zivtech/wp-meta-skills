@@ -364,3 +364,72 @@ def test_ai_client_provider_registration_surfaces_classify(surface):
     validator = load_validator()
 
     assert validator.classify_surface(surface) == "reviewed_composed"
+
+
+def _auditor_prompt_paths(validator):
+    return [
+        path
+        for path in validator.wordpress_agent_files() + validator.wordpress_skill_files()
+        if validator._prompt_identity(path) in validator.AUDITOR_PROMPTS
+    ]
+
+
+def test_auditor_carve_out_is_load_bearing_not_decorative():
+    """Prove the auditor subtraction does real work.
+
+    An auditor observes a running site over HTTP, so it names public routes
+    rather than implementation symbols. If the carve-out were removed it would
+    be held to the 35-token allowlist and fail. Asserting only that the suite is
+    green would not distinguish a live carve-out from a prompt that happens to
+    satisfy both contracts.
+    """
+    validator = load_validator()
+
+    paths = _auditor_prompt_paths(validator)
+    assert len(paths) == 2, "expected one skill wrapper and one agent file per auditor"
+
+    for path in paths:
+        assert not validator.validate_auditor_contract(path), path
+        assert validator.validate_prompt_contract(path), (
+            f"{path} satisfies the global allowlist, so the auditor carve-out proves nothing"
+        )
+
+
+@pytest.mark.parametrize("token", ["url_effective", "NOT CHECKED"])
+def test_auditor_contract_requires_its_own_tokens(tmp_path, token):
+    """A missing auditor token must fail rather than fall through to silence.
+
+    `url_effective` is the canonical-resolution proof whose absence made a live
+    run report zero findings against a real WordPress site; `NOT CHECKED` is the
+    token that stops an unrun check reading as a pass. Both are load-bearing.
+    """
+    validator = load_validator()
+
+    source = _auditor_prompt_paths(validator)[0]
+    stripped = tmp_path / source.name
+    stripped.write_text(source.read_text(encoding="utf-8").replace(token, ""), encoding="utf-8")
+
+    issues = validator.validate_auditor_contract(stripped)
+    assert [i for i in issues if token in i.message], f"removing `{token}` raised {issues}"
+
+
+def test_prompt_contract_tokens_may_not_name_an_auditor():
+    """Auditors are held to validate_auditor_contract, so mapping one is a bug.
+
+    Without this guard a per-prompt requirement added to an auditor would be
+    silently unreachable: validate_all routes auditors away from
+    validate_prompt_contract before the mapping is ever consulted.
+    """
+    validator = load_validator()
+
+    identity = sorted(validator.AUDITOR_PROMPTS)[0]
+    paths = validator.wordpress_agent_files() + validator.wordpress_skill_files()
+    # load_validator returns a freshly executed module, so this mutation is
+    # local to this test rather than shared with the rest of the suite.
+    validator.PROMPT_CONTRACT_TOKENS = {
+        **validator.PROMPT_CONTRACT_TOKENS,
+        identity: ("register_post_type",),
+    }
+
+    issues = validator.validate_prompt_contract_mapping(paths)
+    assert [i for i in issues if "auditor prompt" in i.message], issues

@@ -18,6 +18,7 @@ scope and proof boundaries are documented in [EVIDENCE.md](EVIDENCE.md).
   themes, and migrations.
 - Executors for plugins, blocks, themes, and WordPress Playground Blueprints.
 - General, theme, security, and performance critics.
+- A site auditor that reads a running WordPress site's public surfaces and reports what they prove, with an explicit ledger of what was never checked.
 - A repair-loop workflow that can send deterministic gate failures back to a
   selected model and stop when the artifact passes or the repair budget ends.
 - Static and runtime gates for packet conformance, WordPress API existence,
