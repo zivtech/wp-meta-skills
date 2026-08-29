@@ -15,6 +15,33 @@ Active policy: direct copied or closely adapted third-party prompt text remains 
 | Migration/page-builder coverage | respira-press/agent-skills-wordpress | `e39a5c788e5a39d05157f804c8fd0c5a4f5e07a2` | MIT | Reference only | Broad site migration and page-builder skill inventory |
 | Broad community comparison | jorgerosal/wordpress-skills | `8c964424d05ba34b3ea5641f7181d4c13829e06f` | MIT | Reference only | Broad WordPress skill inventory across ACF, security, CI/CD, REST, and WooCommerce |
 
+## Zero-Reuse Survey Record (2026-08-28)
+
+A survey of non-skill sources — engineering doctrine, PHPCS rulesets, mocking
+libraries, project scaffolding, local-environment agent tooling, and shipped
+AI-provider plugins — produced **no rows in this ledger, because no text was
+reused.**
+
+That is the entry. A ledger records adaptation; the honest record of a survey
+that adapted nothing is a statement that it adapted nothing, not a set of rows
+implying otherwise.
+
+What the survey did produce:
+
+- Exact WordPress and Gutenberg core API names added to the block and theme
+  planner contracts. Those are public facts documented at
+  developer.wordpress.org, not any project's expression, so no ledger obligation
+  attaches to them.
+- The weak-license-evidence rule now in `license-reuse-policy.md`, after four
+  surveyed sources turned out to declare a license only in a package manifest,
+  only on a website, or in a LICENSE text no classifier could match.
+- Two candidate inputs for later work (a third-party PHPCS ruleset as a second
+  advisory profile, and shipped provider plugins as registration-name ground
+  truth). Neither has been adopted. **If either is adopted in a way that adapts
+  its text rather than reading its API names, a full ledger row becomes
+  mandatory** — source, commit, license, local file, reuse class, and rationale,
+  per the Operational Rules.
+
 ## Tooling Dependencies (fetched at install time, never vendored)
 
 The API-existence lint (`evals/harness/wp_api_lint.py`) shells out to a

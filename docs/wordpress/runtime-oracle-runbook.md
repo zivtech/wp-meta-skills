@@ -621,6 +621,12 @@ The capability manifest uses the same discipline with a wider enum: `AVAILABLE`,
 
 Do not use a static artifact pass as evidence for WPCS, Plugin Check, wp-env, PHPUnit, block validation, editor smoke, or frontend smoke claims. Those require the runtime profile or a stronger environment-specific command recorded alongside the artifact.
 
+A transport is not an evidence source. Where an agent-facing MCP or CLI tool
+surface sits over a local WordPress environment, the capability manifest remains
+authoritative. Such a surface may carry a command to the environment; it
+certifies nothing, and a capability it reports is `UNKNOWN` until a gate in this
+runbook measures it.
+
 ## Current Primary References
 
 - WordPress Plugin Check documents `wp plugin check` for WP-CLI checks: <https://wordpress.org/plugins/plugin-check/>

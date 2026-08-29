@@ -33,6 +33,29 @@ This remains intentionally conservative even after the standalone GPL-3.0 relice
 | CC-BY | Reference/eval comparator by default. Direct reuse is blocked unless attribution, notice placement, and compatibility are explicitly resolved. | May be adapted only with attribution mechanics documented before release. |
 | Unknown/no standard license | Reference/eval comparator only. Do not copy or closely adapt. | Same until license is verified. |
 
+### Weak License Evidence (added 2026-08-28)
+
+The `Unknown/no standard license` row above was written as if "unknown" were one
+condition. A survey of non-skill sources on 2026-08-28 found three distinct
+shapes of weak evidence, none of which is a LICENSE file, and all of which
+resolve to that same conservative row:
+
+| Evidence shape | Example | Handling |
+|---|---|---|
+| A package manifest declares a license, but the repository ships no LICENSE file | `license` field in `package.json` or `composer.json` | Unknown. A manifest field is a declaration by one contributor in one file, not a license grant. |
+| A project website or documentation site states a license, but the repository ships no LICENSE file | A footer line on a docs site | Unknown. The site and the code can diverge, and the site is not part of the distribution. |
+| A LICENSE file exists but its text does not match a known license, so classifiers report `NOASSERTION` | Standard license terms under a custom preamble | Unknown **until read and classified by a person.** The terms may well be permissive; the point is that nobody has checked. |
+
+Record the evidence shape alongside the verdict, not just the word "unknown", so
+a later reader can tell a missing file from an unread one — those need different
+work to resolve.
+
+**This is deliberately stricter than the stated labels.** A repository whose
+`package.json` says `GPL-2.0-or-later` is probably GPL-2.0-or-later. Treating it
+as unknown costs nothing while the source is reference-only, and the cost only
+arrives if someone wants to adapt its text — which is exactly when the question
+deserves a real answer rather than an inherited assumption.
+
 ## Operational Rules
 
 - Keep reference-only candidates out of production prompt wording.
