@@ -102,6 +102,10 @@ def _valid_repo(tmp_path: Path) -> Path:
     _write(root, "evals/harness/tool.py")
     _write(root, "evals/harness/helper.py")
     _write(root, "evidence/proof.md")
+    # Policy documents joined ACTIVE_CONTROL_DOCS on 2026-08-29, so the fixture
+    # repository has to carry them for the stale-phrase scan to run at all.
+    _write(root, "docs/wordpress/license-reuse-policy.md")
+    _write(root, "docs/wordpress/reuse-ledger.md")
     assert _git(root, "add", "-A").returncode == 0
     return root
 
@@ -328,3 +332,39 @@ def test_untracked_validator_input_is_not_a_fallback(tmp_path: Path) -> None:
     assert os.path.isfile(untracked)
     _replace(root, "EVIDENCE.md", "evidence/*.md", "evidence/*.json")
     _assert_failure(root, "matched no tracked")
+
+
+@pytest.mark.parametrize(
+    "document",
+    ["docs/wordpress/license-reuse-policy.md", "docs/wordpress/reuse-ledger.md"],
+)
+def test_policy_documents_are_covered_by_the_stale_phrase_scan(
+    tmp_path: Path, document: str
+) -> None:
+    """Adding a path to the workflow filter is theatre if nothing inspects it.
+
+    These two joined ACTIVE_CONTROL_DOCS alongside the `paths:` change so the
+    trigger and the check land together. Without this test, a later tidy-up of
+    that tuple would silently make the CI trigger decorative again.
+    """
+    root = _valid_repo(tmp_path)
+    path = root / document
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write("evals/results/wordpress-skill-candidate-eval/gone/\n")
+    assert _git(root, "add", document).returncode == 0
+    _assert_failure(root, "stale active-control phrase", document)
+
+
+def test_policy_documents_are_required_to_exist() -> None:
+    """The scan cannot pass by silently skipping a document that is absent."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("public_docs", VALIDATOR)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    assert "docs/wordpress/license-reuse-policy.md" in module.ACTIVE_CONTROL_DOCS
+    assert "docs/wordpress/reuse-ledger.md" in module.ACTIVE_CONTROL_DOCS
+    for document in module.ACTIVE_CONTROL_DOCS:
+        assert (ROOT / document).is_file(), f"{document} is scanned but missing"
