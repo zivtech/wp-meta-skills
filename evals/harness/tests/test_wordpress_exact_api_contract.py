@@ -172,3 +172,127 @@ def test_registry_requires_boundary_and_provenance_metadata(tmp_path, field):
 
     with pytest.raises(ValueError, match=field):
         validator.load_surface_registry(path)
+
+
+def _prompt_paths(identity: str) -> list[Path]:
+    """Return the agent file and skill wrapper for a prompt identity."""
+    surface = wordpress_surface_root()
+    return [
+        p
+        for p in (
+            surface / ".claude" / "agents" / f"{identity}.md",
+            surface / ".claude" / "skills" / identity / "SKILL.md",
+        )
+        if p.is_file()
+    ]
+
+
+def test_prompt_specific_tokens_are_required_where_mapped():
+    """The block and theme planners must carry their own extra surfaces."""
+    validator = load_validator()
+
+    for identity, tokens in validator.PROMPT_CONTRACT_TOKENS.items():
+        paths = _prompt_paths(identity)
+        assert paths, f"PROMPT_CONTRACT_TOKENS names a prompt with no files: {identity}"
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            missing = [token for token in tokens if token not in text]
+            assert not missing, f"{path} is missing {missing}"
+
+
+def test_prompt_specific_tokens_do_not_leak_into_unmapped_prompts():
+    """The whole point of the per-prompt layer: it must not dilute the rest.
+
+    A prompt absent from PROMPT_CONTRACT_TOKENS is held to the global list
+    alone. Without this, the block editor's SlotFill and format-registration
+    APIs would become a requirement on the migration planner and the security
+    critic, which is the dilution the design exists to avoid.
+    """
+    validator = load_validator()
+
+    mapped = set(validator.PROMPT_CONTRACT_TOKENS)
+    unmapped = [
+        path
+        for path in validator.wordpress_agent_files() + validator.wordpress_skill_files()
+        if validator._prompt_identity(path) not in mapped
+        and validator._prompt_identity(path) not in validator.PROBER_PROMPTS
+    ]
+    assert len(unmapped) >= 10, "expected most prompts to be unmapped"
+
+    for path in unmapped:
+        issues = validator.validate_prompt_contract(path)
+        leaked = [i for i in issues if "prompt-specific" in i.message]
+        assert not leaked, f"{path} was held to a prompt-specific token: {leaked}"
+
+
+def test_prompt_specific_requirement_is_live_not_decorative(monkeypatch):
+    """Prove the mechanism fires: map an unmapped prompt, watch it fail."""
+    validator = load_validator()
+
+    victim = next(
+        path
+        for path in validator.wordpress_skill_files()
+        if validator._prompt_identity(path) not in validator.PROMPT_CONTRACT_TOKENS
+        and validator._prompt_identity(path) not in validator.PROBER_PROMPTS
+    )
+    identity = validator._prompt_identity(victim)
+
+    assert not [
+        i for i in validator.validate_prompt_contract(victim) if "prompt-specific" in i.message
+    ]
+
+    monkeypatch.setitem(
+        validator.PROMPT_CONTRACT_TOKENS, identity, ("PluginDocumentSettingPanel",)
+    )
+    issues = [
+        i for i in validator.validate_prompt_contract(victim) if "prompt-specific" in i.message
+    ]
+    assert len(issues) == 1, f"expected the mapped token to be required on {identity}"
+    assert "PluginDocumentSettingPanel" in issues[0].message
+
+
+@pytest.mark.parametrize(
+    ("identity", "tokens", "expected"),
+    [
+        ("wordpress-planner.no-such-skill", ("theme.json",), "unknown prompt"),
+        ("wordpress-planner.block", ("block editor best practices",), "not an exact surface"),
+        ("wordpress-environment-probe", ("theme.json",), "prober prompt"),
+        ("wordpress-planner.block", (), "is empty"),
+    ],
+)
+def test_prompt_contract_mapping_rejects_bad_entries(monkeypatch, identity, tokens, expected):
+    """A typo or a generic label must fail the gate, not silently disable it."""
+    validator = load_validator()
+
+    monkeypatch.setattr(validator, "PROMPT_CONTRACT_TOKENS", {identity: tokens})
+    paths = validator.wordpress_agent_files() + validator.wordpress_skill_files()
+    issues = validator.validate_prompt_contract_mapping(paths)
+
+    assert any(expected in issue.message for issue in issues), [i.message for i in issues]
+
+
+@pytest.mark.parametrize(
+    ("surface", "category"),
+    [
+        ("allowed_block_types_all", "hook"),
+        ("render_block_*", "hook"),
+        ("render_block_navigation", "hook"),
+        ("@wordpress/rich-text", "package"),
+        ("@wordpress/plugins", "package"),
+        ("@wordpress/hooks", "package"),
+        ("templateLock", "reviewed_composed"),
+        ("registerFormatType", "reviewed_composed"),
+        ("registerPlugin", "reviewed_composed"),
+        ("PluginDocumentSettingPanel", "reviewed_composed"),
+        ("PluginSidebar", "reviewed_composed"),
+        ("fontFamilies", "reviewed_composed"),
+        ("fontFace", "reviewed_composed"),
+        ("blocks.registerBlockType", "reviewed_composed"),
+        ("editor.BlockEdit", "reviewed_composed"),
+        ("core/navigation", "reviewed_composed"),
+    ],
+)
+def test_block_editor_surfaces_classify(surface, category):
+    validator = load_validator()
+
+    assert validator.classify_surface(surface) == category
