@@ -637,6 +637,16 @@ gates; end-to-end coverage does not. Treat any claim resting on those oracles as
 `recorded` rather than currently reproducible, and do not read a `blocked`
 result as a failure of the artifact under test.
 
+The pinned PHPCS standard is `WordPress`, and there is deliberately no
+`--phpcs-standard` selector. A 2026-08-29 measurement over five certified
+artifacts found that the available stricter rulesets are not supersets of WPCS
+but contrary standards — `NormalizedArrays` forbids the array-brace space that
+`WordPress.Arrays.ArrayDeclarationSpacing` requires, so an artifact clean under
+one is permanently dirty under the other. Do not read a general-PHP ruleset's
+violation count on WordPress code as a quality signal. The full result and the
+blocked WordPress-family alternative are in
+`wpcs-second-profile-measurement-2026-08-29.md`.
+
 A transport is not an evidence source. Where an agent-facing MCP or CLI tool
 surface sits over a local WordPress environment, the capability manifest remains
 authoritative. Such a surface may carry a command to the environment; it
