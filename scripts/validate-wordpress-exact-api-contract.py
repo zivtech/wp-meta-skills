@@ -87,6 +87,48 @@ REQUIRED_PROBER_CONTRACT_TOKENS = (
     "--capability-manifest",
 )
 
+# Per-prompt contract tokens, applied ON TOP OF REQUIRED_CONTRACT_TOKENS.
+#
+# The global allowlist is the floor every WordPress prompt must clear. Some
+# surfaces are only meaningful to one or two prompts: requiring the block
+# editor's SlotFill and format-registration APIs from the migration planner or
+# the security critic would dilute their contracts rather than tighten them.
+# Adding them here keeps the requirement where it is load-bearing.
+#
+# Precedent: PROBER_PROMPTS / validate_prober_contract, which subtracts from the
+# global list for the same reason in the opposite direction.
+#
+# Keys are prompt identities as returned by _prompt_identity, so each prompt
+# needs BOTH its skill-wrapper directory name and its agent file stem. validate_all
+# enforces that every key matches a real prompt and that every token classifies
+# as an exact surface, so a typo or a generic label fails the gate instead of
+# silently disabling the requirement.
+_BLOCK_EDITOR_SURFACE_TOKENS = (
+    "register_block_bindings_source",
+    "allowed_block_types_all",
+    "templateLock",
+    "registerFormatType",
+    "@wordpress/rich-text",
+    "registerPlugin",
+    "@wordpress/plugins",
+    "PluginDocumentSettingPanel",
+    "@wordpress/hooks",
+    "blocks.registerBlockType",
+    "editor.BlockEdit",
+)
+_THEME_SURFACE_TOKENS = (
+    "fontFamilies",
+    "fontFace",
+    "core/navigation",
+    "render_block",
+)
+PROMPT_CONTRACT_TOKENS: dict[str, tuple[str, ...]] = {
+    "wordpress-planner.block": _BLOCK_EDITOR_SURFACE_TOKENS,
+    "wordpress-block-planner": _BLOCK_EDITOR_SURFACE_TOKENS,
+    "wordpress-planner.theme": _THEME_SURFACE_TOKENS,
+    "wordpress-theme-planner": _THEME_SURFACE_TOKENS,
+}
+
 CATEGORY_NAMES = {
     "hooks": "hook",
     "argument_keys": "argument_key",
@@ -301,6 +343,14 @@ def validate_prober_contract(path: Path) -> list[Issue]:
 
 
 def validate_prompt_contract(path: Path) -> list[Issue]:
+    """Validate a prompt against the global contract plus its own extra tokens.
+
+    Every prompt clears REQUIRED_CONTRACT_TOKENS. A prompt named in
+    PROMPT_CONTRACT_TOKENS additionally clears the surfaces specific to it; a
+    prompt absent from that mapping is held to the global list alone, which is
+    what keeps the block-editor surfaces out of the thirteen contracts that have
+    no use for them.
+    """
     text = path.read_text(encoding="utf-8")
     issues: list[Issue] = []
     if not CONTRACT_HEADING_RE.search(text):
@@ -309,6 +359,11 @@ def validate_prompt_contract(path: Path) -> list[Issue]:
     for token in REQUIRED_CONTRACT_TOKENS:
         if token not in text:
             issues.append(Issue(path, f"contract missing required token `{token}`"))
+    for token in PROMPT_CONTRACT_TOKENS.get(_prompt_identity(path), ()):
+        if token not in text:
+            issues.append(
+                Issue(path, f"contract missing prompt-specific required token `{token}`")
+            )
     if "If no exact WordPress API applies" not in text:
         issues.append(Issue(path, "contract missing no-exact-API fallback language"))
     return issues
@@ -371,6 +426,51 @@ def inventory_rubric_surfaces() -> list[InventoryItem]:
     return inventory_contract_surfaces()
 
 
+def validate_prompt_contract_mapping(
+    prompt_paths: list[Path],
+    registry: SurfaceRegistry | None = None,
+    symbols: dict[str, Any] | None = None,
+) -> list[Issue]:
+    """Validate PROMPT_CONTRACT_TOKENS itself.
+
+    A per-prompt requirement fails open in two ways this gate must not allow:
+    a misspelled prompt identity silently requires nothing, and a generic label
+    smuggled in as a token requires the very drift the contract exists to stop.
+    Both are checked here rather than trusted.
+    """
+    issues: list[Issue] = []
+    identities = {_prompt_identity(path) for path in prompt_paths}
+    for identity, tokens in sorted(PROMPT_CONTRACT_TOKENS.items()):
+        if identity not in identities:
+            issues.append(
+                Issue(
+                    REGISTRY_PATH,
+                    f"PROMPT_CONTRACT_TOKENS names unknown prompt `{identity}`",
+                )
+            )
+        if identity in PROBER_PROMPTS:
+            issues.append(
+                Issue(
+                    REGISTRY_PATH,
+                    f"PROMPT_CONTRACT_TOKENS names prober prompt `{identity}`;"
+                    " probers are held to validate_prober_contract instead",
+                )
+            )
+        if not tokens:
+            issues.append(
+                Issue(REGISTRY_PATH, f"PROMPT_CONTRACT_TOKENS entry `{identity}` is empty")
+            )
+        for token in tokens:
+            if classify_surface(token, registry, symbols) is None:
+                issues.append(
+                    Issue(
+                        REGISTRY_PATH,
+                        f"prompt-specific token `{token}` for `{identity}` is not an exact surface",
+                    )
+                )
+    return issues
+
+
 def validate_all() -> list[Issue]:
     issues: list[Issue] = []
     try:
@@ -394,6 +494,7 @@ def validate_all() -> list[Issue]:
                 f"expected {EXPECTED_WORDPRESS_PROMPTS} WordPress skill wrappers, found {len(skill_files)}",
             )
         )
+    issues.extend(validate_prompt_contract_mapping(agent_files + skill_files, registry, symbols))
     for path in agent_files + skill_files:
         if _prompt_identity(path) in PROBER_PROMPTS:
             issues.extend(validate_prober_contract(path))

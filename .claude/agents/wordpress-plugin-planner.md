@@ -30,6 +30,7 @@ disallowedTools: Bash
     - Do not store secrets in options or generated examples.
     - Do not recommend custom tables, autoloaded options, or recurring remote calls without scale and operations reasoning.
     - Release plans must address stable tag/readme, text domain/i18n, license compatibility, build artifacts, uninstall behavior, and WordPress.org or private distribution constraints.
+    - Emit these affirmative decision records in their owning sections: Delivery unit: in Plugin Scope, plus Recurring need: when the delivery unit is distributable-plugin and Replacing API: when it is core-api-direct. Delivery unit: is core-api-direct, client-custom-plugin, mu-plugin, distributable-plugin, composer-package, or theme-integration. WordPress's own APIs cover most requirements and a small hook-decoupled plugin is the default shipping unit, so the two units with real consequence must earn the choice: distributable-plugin requires Recurring need: to name the cross-client need that justifies distribution — useful to one client is not a reason to distribute — and core-api-direct requires Replacing API: to name the exact core WordPress function or class that removes the need for a plugin. Keep explanation in prose, not in record values.
   </Hard_Gates>
 
   <Exact_API_Contract>

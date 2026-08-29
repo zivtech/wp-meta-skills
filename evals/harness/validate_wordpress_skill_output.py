@@ -801,6 +801,91 @@ def check_block_plan_contract(text: str) -> list[Check]:
     return checks
 
 
+DELIVERY_UNITS = frozenset({
+    "core-api-direct",
+    "client-custom-plugin",
+    "mu-plugin",
+    "distributable-plugin",
+    "composer-package",
+    "theme-integration",
+})
+# Units whose choice the plan has to earn. The middle options are the default
+# and carry no extra burden; distributing and going plugin-free do.
+_JUSTIFIED_UNITS = {
+    "distributable-plugin": "Recurring need",
+    "core-api-direct": "Replacing API",
+}
+_GENERIC_NEED_WORDS = frozenset({
+    "a", "an", "and", "be", "client", "clients", "code", "for", "generic",
+    "is", "it", "need", "needed", "plugin", "reusable", "the", "this",
+    "to", "useful", "we", "will", "would",
+})
+
+
+def check_plugin_plan_contract(text: str) -> list[Check]:
+    """Require a delivery-unit decision, and make the two expensive units earn it.
+
+    WordPress's own APIs cover most of what a plan needs, and a small
+    hook-decoupled plugin is the standard shipping unit; distribution is a
+    separate, higher bar. That doctrine is only worth encoding if it is
+    checkable, so the unit is a record rather than prose, and the two units that
+    carry real consequence must name their justification.
+    """
+    sections = markdown_sections(text)
+    scope = sections.get("Plugin Scope", "")
+
+    raw_unit = _decision_value(scope, "Delivery unit")
+    unit = raw_unit.strip().lower() if raw_unit else None
+    unit_ok = unit in DELIVERY_UNITS
+    checks = [Check(
+        "plugin_delivery_unit_contract",
+        unit_ok,
+        3,
+        f"Plugin Scope declares delivery unit `{unit}`"
+        if unit_ok else
+        "Plugin Scope needs one `Delivery unit:` record valued "
+        + "|".join(sorted(DELIVERY_UNITS)),
+    )]
+
+    label = _JUSTIFIED_UNITS.get(unit or "")
+    if label is None:
+        checks.append(Check(
+            "plugin_delivery_unit_justification",
+            unit_ok,
+            3,
+            f"delivery unit `{unit}` carries no additional justification requirement"
+            if unit_ok else "delivery unit is unreadable, so its justification cannot be judged",
+        ))
+        return checks
+
+    value = _literal_text_decision(scope, label)
+    if unit == "distributable-plugin":
+        words = [w for w in re.findall(r"[a-z0-9-]+", (value or "").lower())]
+        distinct = {w for w in words if w not in _GENERIC_NEED_WORDS}
+        justified = len(words) >= 6 and len(distinct) >= 4
+        detail_ok = "distribution is justified by a named recurring cross-client need"
+        detail_bad = (
+            "`Delivery unit: distributable-plugin` requires `Recurring need:` naming the "
+            "cross-client need that justifies distribution; useful to one client is not one"
+        )
+    else:
+        matched = find_surface_matches(value or "")
+        justified = any(m.category in {"core_function", "core_class"} for m in matched)
+        named = ", ".join(sorted({m.name for m in matched})) or "nothing"
+        detail_ok = f"the core API replacing the plugin is named ({named})"
+        detail_bad = (
+            "`Delivery unit: core-api-direct` requires `Replacing API:` naming the exact "
+            f"core WordPress function or class that removes the need for a plugin; matched {named}"
+        )
+    checks.append(Check(
+        "plugin_delivery_unit_justification",
+        bool(justified),
+        3,
+        detail_ok if justified else detail_bad,
+    ))
+    return checks
+
+
 def _claims_gutenberg_migration(sections: dict[str, str]) -> bool:
     scope = sections.get("Migration Scope", "")
     target = sections.get("Target Mapping", "")
@@ -1431,6 +1516,8 @@ def validate_output(
     ]
     if skill == "wordpress-block-planner":
         checks.extend(check_block_plan_contract(authoritative))
+    if skill == "wordpress-plugin-planner":
+        checks.extend(check_plugin_plan_contract(authoritative))
     if skill == "wordpress-migration-planner":
         checks.extend(check_gutenberg_migration_contract(authoritative))
     if skill == "wordpress-security-critic" and security_gate is not None:

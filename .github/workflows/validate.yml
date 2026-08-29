@@ -14,6 +14,8 @@ on:
       - ".github/workflows/validate.yml"
       - ".python-version"
       - "CONTRIBUTING.md"
+      - "EVIDENCE.md"
+      - "docs/wordpress/negative-results.md"
       - "MANIFEST.sha256"
       - "SECURITY.md"
       - "install.sh"
@@ -616,6 +618,11 @@ jobs:
 
       - name: Validate public documentation references and controls
         run: uv run --locked --extra test python scripts/validate-public-docs.py
+
+      - name: Validate the evidence log
+        # The log of what we tested — nulls included — is itself gated, so it
+        # cannot decay into prose that reads like evidence while citing nothing.
+        run: uv run --locked --extra test python scripts/validate-evidence-log.py
 
       - name: Run WordPress harness tests
         run: |

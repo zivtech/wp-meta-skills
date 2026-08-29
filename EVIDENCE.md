@@ -14,6 +14,20 @@ records, runtime-smoke records, and saved-output diagnostics. The evidence is
 narrow and historical. Full result archives and original private packaging
 inputs are not bundled.
 
+## Evidence Log — Including What Failed
+
+`docs/wordpress/negative-results.md` is the full record of what this project
+measured, nulls included: eight null or negative results and five positive
+deterministic proofs, each with what its result does *and does not* license, and
+each pointing at a committed artifact. It is gated by
+`scripts/validate-evidence-log.py`, which rejects a row whose cited path does not
+exist and a claim that states only what it supports.
+
+Read it before the table below. The table records what was proven; the log
+records what was tested, which is the wider and more honest set — and it names
+the asymmetry that every positive archive is bundled here while no null archive
+is.
+
 ## Current Proof Surfaces
 
 | Claim area | Source evidence | Proven | Not proven |
