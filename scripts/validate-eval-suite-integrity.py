@@ -49,25 +49,37 @@ EVAL_PROFILE_KEYS = {
     "executor-full": _fields("skill fixtures rubrics baselines evaluation invocation output_contract_oracle oracle materializer certifier artifact_oracle"),
     "executor-static": _fields("skill fixtures rubrics baselines evaluation invocation output_contract_oracle artifact_oracle"),
     "candidate-comparison": _fields("skill fixtures rubrics context_documents baselines invocation candidate_lanes statistical_design alternate_measurement_targets"),
+    "tool-value-ab": _fields("skill subject arms fixtures oracle lanes statistical_design"),
 }
 EVAL_MAPPING_SECTIONS = frozenset({
     "skill", "fixtures", "rubrics", "baselines", "evaluation", "invocation",
     "output_contract_oracle", "oracle", "materializer", "certifier",
     "artifact_oracle", "statistical_design", "alternate_measurement_targets",
+    "subject", "arms", "lanes",
 })
 EVAL_LIST_SECTIONS = frozenset({"context_documents", "candidate_lanes"})
-EVAL_STRING_LIST_PATHS = frozenset({"baselines.conditions", "statistical_design.pilot_fixture_ids"})
+EVAL_STRING_LIST_PATHS = frozenset({
+    "baselines.conditions", "statistical_design.pilot_fixture_ids",
+    "subject.tools_in_scope", "subject.tools_out_of_scope", "arms.list",
+    "lanes.H.ci_gates", "lanes.L.parity.tools",
+})
 EVAL_MAPPING_PATHS = EVAL_MAPPING_SECTIONS | frozenset({
     "statistical_design.judging", "statistical_design.full_run_plan",
     "alternate_measurement_targets.output_contract_adherence",
+    "arms.contrasts", "arms.contrasts.primary", "arms.contrasts.co_primary",
+    "arms.contrasts.attribution", "lanes.H", "lanes.L", "lanes.L.parity",
+    "statistical_design.stages", "statistical_design.success_criterion",
 })
 EVAL_BOOLEAN_FIELDS = frozenset({
     "pilot_required", "randomize_condition_order", "rubric_blinding",
+    "llm_judge", "wall_clock_binding", "egress",
 })
 EVAL_NUMERIC_FIELDS = frozenset({
     "pilot_required_delta", "pilot_runs_per_condition", "bootstrap_replications",
     "runs_per_condition", "minimum_publishable_n", "temperature", "max_tokens",
-    "count",
+    "count", "alpha", "delta_gte", "p_lt", "continue_if_delta_gt",
+    "stage_1_reps", "stage_2_reps", "planned_count", "built_count",
+    "max_turns", "wall_clock_safety_cap_minutes", "reps",
 })
 
 METADATA_PROFILE_KEYS = {
@@ -78,6 +90,13 @@ METADATA_PROFILE_KEYS = {
         _fields("name suite skill_under_test skill_type difficulty_tier provenance risk_class expected_wordpress_surfaces expected_verification_surfaces must_detect negative_space"),
     ),
     "candidate-comparison": (_fields("name suite domain difficulty_tier provenance primary_skill_targets expected_behavior source_notes scenario_summary"),),
+    "tool-value-fixture": (
+        _fields(
+            "name suite status expected_lift mechanism tools_expected_in_T golden "
+            "seed trigger prompt symptom_wording haystack allowed_changes "
+            "cheats_must_fail reference_fixes_must_pass predictions"
+        ),
+    ),
 }
 METADATA_SCALAR_FIELDS = frozenset({
     "name", "skill", "fixture_type", "risk_tier", "suite", "skill_under_test",
@@ -87,8 +106,13 @@ METADATA_SCALAR_FIELDS = frozenset({
 EXPECTATION_FIELDS = frozenset({
     "expected_outputs", "expected_behavior", "expected_wordpress_apis",
     "expected_wordpress_surfaces", "expected_verification_surfaces", "must_detect",
-    "negative_space", "primary_skill_targets",
+    "negative_space", "primary_skill_targets", "cheats_must_fail",
+    "reference_fixes_must_pass",
 })
+
+# tool-value-ab profile: fixtures are directories, not files (design §9.2 item 3).
+DIRECTORY_FIXTURE_REQUIRED_FILES = ("prompt.md", "metadata.yaml", "oracle.spec.yaml")
+DIRECTORY_FIXTURE_BUILT_FILES = ("seed.sh", "trigger.sh", "oracle.py", "reference-fix.sh")
 
 RUBRIC_PROFILE_KEYS = {
     "weighted": _fields("fixture skill_under_test max_score criteria"),
@@ -120,6 +144,7 @@ class EvalConfig:
     fixture_pattern: str
     metadata_suffix: str
     rubric_directory: str
+    directory_fixtures: bool = False
 
 
 class DuplicateKeyError(yaml.YAMLError):
@@ -395,6 +420,7 @@ def validate_eval_config(
     matches = match_eval_profiles(document)
     if len(matches) != 1:
         issues.append(_schema_issue(suite, "schema_eval_profile", path, "eval document must match exactly one named profile"))
+    directory_fixtures = matches == ["tool-value-ab"]
     issues.extend(_validate_common_eval_maps(document, suite, path))
     partial, fixture_issues = _validate_fixture_config(document.get("fixtures"), suite, path)
     issues.extend(fixture_issues)
@@ -409,11 +435,11 @@ def validate_eval_config(
         rubric_directory = _safe_directory(rubrics.get("directory"))
         if rubric_directory is None or not _nonempty_string(rubrics.get("scoring_method")):
             issues.append(_schema_issue(suite, "schema_eval_rubrics", path, "rubrics values are invalid"))
-    if issues or partial is None or rubric_directory is None:
+    if issues or partial is None or (not directory_fixtures and rubric_directory is None):
         return None, issues
     return EvalConfig(
         partial.fixture_directory, partial.fixture_count, partial.fixture_pattern,
-        partial.metadata_suffix, rubric_directory,
+        partial.metadata_suffix, rubric_directory or "", directory_fixtures,
     ), []
 
 
@@ -659,6 +685,149 @@ def _validate_owned_documents(
     return issues
 
 
+def _regular_dirs(directory: Path) -> tuple[list[Path], list[Path]]:
+    entries: list[Path] = []
+    rejected: list[Path] = []
+    for path in sorted(directory.iterdir()):
+        try:
+            mode = path.lstat().st_mode
+        except OSError:
+            rejected.append(path)
+            continue
+        (entries if stat.S_ISDIR(mode) else rejected).append(path)
+    return entries, rejected
+
+
+def _forbidden_tokens_from_document(document: dict) -> tuple[str, ...]:
+    oracle_section = document.get("oracle")
+    if not isinstance(oracle_section, dict):
+        return ()
+    raw = oracle_section.get("prompt_forbidden_tokens")
+    if not isinstance(raw, str):
+        return ()
+    return tuple(sorted({token.strip() for token in raw.split(",") if token.strip()}))
+
+
+def _forbidden_token_pattern(token: str) -> re.Pattern[str]:
+    return re.compile(r"\b" + re.escape(token) + r"\b", re.IGNORECASE)
+
+
+def _check_prompt_forbidden_tokens(
+    suite: str, path: Path, text: str, tokens: tuple[str, ...],
+) -> list[Issue]:
+    hits = [token for token in tokens if _forbidden_token_pattern(token).search(text)]
+    if not hits:
+        return []
+    message = f"forbidden token(s) in prompt: {', '.join(hits)}"
+    return [Issue(suite, "prompt_forbidden_token", path, message)]
+
+
+def _check_directory_fixture_text(
+    suite: str, path: Path, kind: str, extra_markers: tuple[str, ...],
+) -> tuple[str | None, list[Issue]]:
+    try:
+        encoded = _read_bounded_regular(path)
+    except OSError:
+        return None, [Issue(suite, f"invalid_{kind}", path, "document is unreadable")]
+    if len(encoded) > MAX_YAML_BYTES:
+        message = f"document exceeds the {MAX_YAML_BYTES}-byte limit"
+        return None, [Issue(suite, f"invalid_{kind}", path, message)]
+    try:
+        text = encoded.decode("utf-8")
+    except UnicodeError:
+        return None, [Issue(suite, f"invalid_{kind}", path, "document is not valid UTF-8")]
+    markers = PLACEHOLDER_MARKERS + tuple(extra_markers)
+    hits = [marker for marker in markers if marker in text]
+    if not hits:
+        return text, []
+    message = f"placeholder marker(s): {', '.join(hits)}"
+    return text, [Issue(suite, f"placeholder_{kind}", path, message)]
+
+
+def _regular_file(path: Path) -> bool:
+    try:
+        mode = path.lstat().st_mode
+    except OSError:
+        return False
+    return stat.S_ISREG(mode)
+
+
+def _check_one_directory_fixture(
+    suite: str, fixture_dir: Path, forbidden_tokens: tuple[str, ...],
+) -> tuple[list[Issue], bool]:
+    """Validate one tool-value-ab fixture directory (design §9.2 item 3)."""
+    issues: list[Issue] = []
+    fixture = fixture_dir.name
+    present: dict[str, Path] = {}
+    for name in DIRECTORY_FIXTURE_REQUIRED_FILES:
+        candidate = fixture_dir / name
+        if _regular_file(candidate):
+            present[name] = candidate
+        else:
+            issues.append(Issue(suite, "missing_fixture_file", candidate, f"fixture is missing required file {name}"))
+    is_built = False
+    if "metadata.yaml" in present:
+        metadata_path = present["metadata.yaml"]
+        document, doc_issues = read_yaml_document(metadata_path, suite, "metadata")
+        issues.extend(doc_issues)
+        if not doc_issues:
+            issues.extend(validate_metadata(document, suite, fixture, metadata_path))
+            status = document.get("status") if isinstance(document, dict) else None
+            if status not in ("built", "spec_only"):
+                issues.append(_schema_issue(suite, "schema_metadata_status", metadata_path, "status must be built or spec_only"))
+            is_built = status == "built"
+            extra = ("PENDING",) if is_built else ()
+            _, marker_issues = _check_directory_fixture_text(suite, metadata_path, "metadata", extra)
+            issues.extend(marker_issues)
+    extra = ("PENDING",) if is_built else ()
+    if "prompt.md" in present:
+        text, marker_issues = _check_directory_fixture_text(suite, present["prompt.md"], "prompt", extra)
+        issues.extend(marker_issues)
+        if text is not None:
+            issues.extend(_check_prompt_forbidden_tokens(suite, present["prompt.md"], text, forbidden_tokens))
+    if "oracle.spec.yaml" in present:
+        spec_document, spec_issues = read_yaml_document(present["oracle.spec.yaml"], suite, "oracle_spec")
+        issues.extend(spec_issues)
+        if not spec_issues:
+            _, marker_issues = _check_directory_fixture_text(suite, present["oracle.spec.yaml"], "oracle_spec", extra)
+            issues.extend(marker_issues)
+    if is_built:
+        for name in DIRECTORY_FIXTURE_BUILT_FILES:
+            candidate = fixture_dir / name
+            if not _regular_file(candidate):
+                issues.append(Issue(suite, "missing_fixture_file", candidate, f"built fixture is missing required file {name}"))
+        cheats_dir = fixture_dir / "cheats"
+        cheat_files: list[Path] = []
+        if cheats_dir.is_dir():
+            cheat_files, _rejected_cheats = _regular_paths(cheats_dir, "*")
+        if not cheat_files:
+            issues.append(Issue(suite, "missing_fixture_file", cheats_dir, "built fixture must have at least one file under cheats/"))
+    return issues, is_built
+
+
+def _check_directory_fixtures(
+    suite: str, document: dict, config: EvalConfig, fixture_dir: Path, config_path: Path,
+) -> list[Issue]:
+    issues: list[Issue] = []
+    entries, rejected = _regular_dirs(fixture_dir)
+    for rejected_path in rejected:
+        issues.append(_schema_issue(suite, "schema_inventory_member", rejected_path, "fixture inventory member must be a real directory"))
+    if config.fixture_count != len(entries):
+        issues.append(Issue(suite, "fixture_count_mismatch", config_path, f"declares {config.fixture_count} fixture(s), found {len(entries)}"))
+    forbidden_tokens = _forbidden_tokens_from_document(document)
+    built_count = 0
+    for fixture_path in entries:
+        fixture_issues, is_built = _check_one_directory_fixture(suite, fixture_path, forbidden_tokens)
+        issues.extend(fixture_issues)
+        built_count += int(is_built)
+    statistical_design = document.get("statistical_design")
+    declared_built = statistical_design.get("built_count") if isinstance(statistical_design, dict) else None
+    if isinstance(declared_built, (int, float)) and declared_built != built_count:
+        message = f"declares built_count={declared_built}, found {built_count} status=built fixture(s)"
+        issues.append(Issue(suite, "built_count_mismatch", config_path, message))
+    return issues
+
+
 def check_suite(suite_dir: Path) -> list[Issue]:
     suite = suite_dir.name
     config_path = suite_dir / "eval.yaml"
@@ -669,11 +838,15 @@ def check_suite(suite_dir: Path) -> list[Issue]:
     if schema_issues or config is None:
         return schema_issues
     fixture_dir = _resolve_configured_directory(suite_dir, config.fixture_directory)
-    rubric_dir = _resolve_configured_directory(suite_dir, config.rubric_directory)
-    if fixture_dir is None or rubric_dir is None:
+    if fixture_dir is None:
         return [_schema_issue(suite, "schema_eval_directory", config_path, "configured directory escapes or is a symlink")]
     if not fixture_dir.is_dir():
         return [Issue(suite, "missing_fixture_dir", fixture_dir, "configured fixtures directory does not exist")]
+    if config.directory_fixtures:
+        return _check_directory_fixtures(suite, document, config, fixture_dir, config_path)  # type: ignore[arg-type]
+    rubric_dir = _resolve_configured_directory(suite_dir, config.rubric_directory)
+    if rubric_dir is None:
+        return [_schema_issue(suite, "schema_eval_directory", config_path, "configured directory escapes or is a symlink")]
     if not rubric_dir.is_dir():
         return [Issue(suite, "missing_rubric_dir", rubric_dir, "configured rubrics directory does not exist")]
     fixtures, rejected_fixtures = _regular_paths(fixture_dir, config.fixture_pattern)

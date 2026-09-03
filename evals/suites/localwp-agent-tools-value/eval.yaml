@@ -1,0 +1,134 @@
+# SCAFFOLD (v2) — profile `tool-value-ab` is not yet registered in
+# scripts/validate-eval-suite-integrity.py. This file exists so a premature
+# commit fails the validator loudly ("eval document must match exactly one
+# named profile") rather than on a missing eval.yaml. The key set and shapes
+# below are the ones the profile in design §9.2 admits.
+# Design: docs/wordpress/localwp-agent-tools-eval-design-2026-09-02.md (v2)
+skill:
+  name: localwp-agent-tools-value
+  type: tool-value-ab
+  description: Oracle-gated A/B of Claude Code on seeded-fault WordPress sites with and without the localwp-agent-tools MCP add-on; primary contrast T-vs-C1 (named tools beyond WP-CLI), co-primary T-vs-C0 (provisioning).
+
+subject:
+  name: localwp-agent-tools
+  kind: mcp-addon
+  repo: /Users/AlexUA_1/claude/localwp-agent-tools
+  ref: internal-fork
+  commit: 78c87ea
+  status: design_only_not_run
+  tools_in_scope:
+    - wp_cli
+    - read_error_log
+    - read_access_log
+    - wp_debug_toggle
+    - read_wp_config
+    - edit_wp_config
+    - get_site_info
+    - site_health_check
+  tools_out_of_scope:
+    - site_start
+    - site_stop
+    - site_restart
+    - site_status
+    - list_sites
+
+arms:
+  directory: ./arms
+  list:
+    - T
+    - C0
+    - C1
+    - C1-ctx
+  contrasts:
+    primary:
+      name: T-vs-C1
+      claim: tool-quality
+      mechanism: M2 plus the context file's tool-steering sentences
+      alpha: 0.025
+    co_primary:
+      name: T-vs-C0
+      claim: provisioning
+      mechanism: M1 plus M2 plus M3
+      alpha: 0.025
+    attribution:
+      name: C1-ctx-vs-C1
+      trigger: primary criterion met (p < 0.025 and delta >= 0.20 on T-vs-C1)
+      context_variant: tool-stripped
+      isolates: M3 informational content
+  exploratory: C1-vs-C0 (M1 alone), uncorrected, never in a claim
+  headline_template: |
+    Zero-config WP-CLI provisioning (T–C0):  Δ = __  [95% CI __, __]  p = __  (α = 0.025)  criterion met: yes|no
+    Named tools beyond WP-CLI (T–C1):        Δ = __  [95% CI __, __]  p = __  (α = 0.025)  criterion met: yes|no
+  headline_rule: both lines always, this order, nothing above them, no word Local without parity artifact
+
+fixtures:
+  directory: ./fixtures
+  count: 4
+  pattern: "*"
+  metadata_suffix: ".yaml"
+
+oracle:
+  type: deterministic_end_state
+  outcome_enum: pass|fail|timeout|error
+  llm_judge: false
+  primary_budget: pass within 60 turns
+  max_turns: 60
+  wall_clock_binding: false
+  wall_clock_safety_cap_minutes: 45
+  wall_cap_outcome: error (reported separately, never folded into timeout)
+  log_offset: post_agent
+  wp_config_comparison: semantic (parsed define map with WP_DEBUG/WP_DEBUG_LOG/SCRIPT_DEBUG absent≡false, plus non-define residue)
+  changed_file_exclusions: wp-content/uploads/**, *.bak, wp-content/debug.log
+  dynamic_probe: required per fixture; runs after the collateral snapshot
+  prompt_forbidden_tokens: log, logs, config, wp-config, wp-cli, plugin, plugins, php, mcp, tool, tools, debug, define, constant, cron, nginx, mysql, database, table, cache, drop-in
+
+lanes:
+  H:
+    kind: headless-native-stack
+    ci_gates:
+      - fixture_validity
+      - mcp_tool_contract_smoke
+      - self_parity
+    agent_runs: operator-run
+    egress: off
+  L:
+    kind: real-local
+    role: parity-only
+    agent_runs: descriptive-optional (fixture 1, R=3, counts only, never pooled)
+    parity:
+      method: deterministic-tool-output-equivalence
+      reps: 1
+      report: parity/parity-report.json
+      gate: status equivalent unlocks the word Local in claims; divergent names the tool
+      tools:
+        - tools/list
+        - read_error_log
+        - read_access_log
+        - read_wp_config
+        - wp_cli
+        - get_site_info
+        - site_health_check
+        - wp_debug_toggle
+        - edit_wp_config
+
+statistical_design:
+  estimand: fixture-weighted mean difference in pass rate, one per contrast
+  primary_test: within-fixture label-permutation (exact hypergeometric per fixture)
+  interval: cluster-bootstrap-over-fixtures, B=2000, percentile 95
+  effect_size: delta and Cohen h
+  multiplicity: Bonferroni over two co-primaries
+  planned_count: 13
+  built_count: 0
+  stages:
+    stage_1_reps: 6
+    stage_2_reps: 10
+    continue_rule: p >= alpha and delta > 0.15 on either contrast; extends every arm
+    continue_if_delta_gt: 0.15
+  success_criterion:
+    p_lt: 0.025
+    delta_gte: 0.20
+  realized_alpha_simulation: statistical/simulate_two_stage_alpha.py seed 20260902 F=13 -> 0.0189 (p-criterion), 0.0030 (success criterion) at nominal 0.025
+  pass_at_turn: pass@t = passed and ended at end_turn <= t; report t in 10,20,30,40,60; descriptive
+  saturation_rule: fixture saturated if all arms >= 5/6 at stage 1; suite saturated if >= 8 of 13; report as a result, do not redesign
+  secondary_efficiency: median end_turn among passes, T vs C1, van Elteren by fixture; cannot support debug-better
+  expected_lift_author: independent of fixture author; fixture author values are provisional

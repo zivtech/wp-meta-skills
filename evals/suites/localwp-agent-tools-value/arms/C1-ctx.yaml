@@ -1,0 +1,20 @@
+# Arm C1-ctx — conditional attribution arm (replaces v1's T-ctx; design §4.1, finding 7 deviation).
+# Runs only if T-vs-C1 meets the success criterion. C1-ctx - C1 estimates the informational
+# content of the context file (M3); T - C1-ctx estimates M2 plus the context file's tool-steering
+# sentences, which are inseparable from M2 because they are how the product gets its tools used.
+arm: C1-ctx
+mcp:
+  enabled: false
+  config_file: empty
+  precheck: no .mcp.json present in the site dir
+context_file:
+  path: CLAUDE.md
+  variant: tool-stripped
+  transform: stripToolReferences(generateProjectContext(siteName))
+  transform_rule: drop every line containing MCP, tool, `wp_cli`, or `get_site_info`; collapse blank runs
+  expected_residue: title line; "This is a WordPress site managed by Local" sentence; the whole File Structure section; the auto-generated notice
+  sha256_recorded: true
+wp_on_path: true
+shim: same as C1
+network_egress: off
+trigger: primary criterion met on T-vs-C1 (p < 0.025 and delta >= 0.20); also run if a large positive T-vs-C1 delta appears on fixture 7 or 8 (M3 confound alarm)

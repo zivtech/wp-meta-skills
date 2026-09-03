@@ -1,0 +1,17 @@
+# Arm T — treatment. Represents a Local user who clicked Enable.
+arm: T
+mcp:
+  enabled: true
+  server: local-wp
+  config_file: .mcp.json            # produced by the fork's buildMcpServerEntry('claude', port, siteId, token)
+  strict: true                       # --strict-mcp-config
+  precheck: tools/list must return exactly 13 names before the agent starts
+context_file:
+  path: CLAUDE.md
+  variant: full                      # byte-exact generateProjectContext(siteName) from the fork (headless-mcp.ts --print-context)
+  sha256_recorded: true
+wp_on_path: false
+network_egress: off
+notes: >
+  wp_cli blocks eval/eval-file/shell/db drop|reset|import/site empty|delete and has a 60 s
+  timeout; these are properties of the product and are reported, not corrected.

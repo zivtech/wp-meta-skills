@@ -1,0 +1,108 @@
+name: dead-object-cache-dropin-tool-hangs
+suite: localwp-agent-tools-value
+status: spec_only
+
+expected_lift:
+  T_vs_C1: ADVERSARIAL     # site_health_check names the wrong subsystem
+  T_vs_C0: ADVERSARIAL
+mechanism: >
+  A stale wp-content/object-cache.php drop-in (left by a previous host) tries
+  tcp://127.0.0.1:6379 on wp_cache_init(), is refused, and retries with backoff
+  5+10+20+40 s before falling back to the in-memory cache. It logs nothing. Drop-ins
+  load from wp-settings.php regardless of --skip-plugins, so every WP-CLI
+  invocation in every arm pays 75 s: wp_cli (60 s cap) times out; get_site_info
+  (15 s) says "unable to retrieve (WP-CLI error)"; site_health_check (15 s) says
+  "Database connectivity: error — Connection failed" — pointing the T agent at the
+  database. C1's shim also waits 75 s but returns. C0 has no wp and goes to the
+  filesystem, where `ls wp-content/` shows the drop-in. Every arm pays the wait;
+  only T is told, by a purpose-built tool, that it is the database.
+tools_expected_in_T:
+  site_health_check: {min: 0, max: 2}
+  get_site_info: {min: 0, max: 1}
+  wp_cli: {min: 0, max: 3}
+  read_error_log: {min: 0, max: 2}
+
+golden:
+  wordpress_version: PINNED_AT_BUILD
+  php_version: "8.3.x"
+  timezone: UTC
+  permalinks: "/%postname%/"
+  wp_config_constants:
+    WP_DEBUG: false
+    WP_DEBUG_LOG: false
+    SCRIPT_DEBUG: false
+    WP_ENVIRONMENT_TYPE: local
+    WP_HTTP_BLOCK_EXTERNAL: true
+    AUTOMATIC_UPDATER_DISABLED: true
+  blogname: "Acme Community"                     # homepage marker for the functionality check
+  plugins_active: [acme-seo, acme-forms, acme-related, acme-meta, acme-reports]
+  no_plugin_owns_the_dropin: true                # so "deactivate a plugin" is never the fix
+  stack_pins_relied_on:
+    nginx_fastcgi_read_timeout_seconds: 60       # produces the 504; Local's value is open (design §13.5)
+    php_max_execution_time_counts_sleep: false   # Linux: sleep()/socket waits do not count, so no PHP fatal
+  digests:
+    public_tar_zst: PENDING_BUILD
+    db_sql: PENDING_BUILD
+
+seed:
+  file: wp-content/object-cache.php
+  change: install the fixture-authored drop-in (GPL, ~80 lines) with host 127.0.0.1:6379, connect timeout 2 s, backoff 5,10,20,40 s, silent fallback to WP_Object_Cache
+  effect: every request and every WP-CLI run takes ~75 s to bootstrap; nginx returns 504 at 60 s
+  logs_nothing: true
+  no_disable_constant: true                     # a wp-config constant would be a legit fix and would change the allowed set
+trigger:
+  request: GET / with a 90 s client timeout
+  assert: status 504 after >= 55 s
+  record: trigger_log_offset
+
+prompt:
+  sha256: PENDING_FREEZE_BEFORE_FIRST_RUN
+  forbidden_tokens_checked: false
+symptom_wording:
+  status: pending_stack_observation
+  derivation: >
+    "About a minute then 504" is true only if fastcgi_read_timeout (60 s) is shorter
+    than the drop-in's 75 s backoff. If Local's nginx timeout is longer the Local
+    symptom is "very slow, then loads" and the wording must change (design §13.5).
+    The phrase "moved from our old host" is user context, not a culprit name; it is
+    recorded here because a reviewer may call it a hint.
+
+haystack:
+  plugins_total: 5
+  pre_registered: true
+  pilot_may_change: false
+
+allowed_changes:
+  files: ["app/public/wp-content/object-cache.php", "app/public/wp-content/object-cache.php.*"]
+  file_may_be_deleted: ["app/public/wp-content/object-cache.php"]
+  renamed_copies_must_not_be_loadable: true      # any new file must not be named object-cache.php
+  changed_file_exclusions: ["app/public/wp-content/uploads/**", "*.bak", "app/public/wp-content/debug.log"]
+  conf_tree_must_be_unchanged: ["conf/**"]       # raising the nginx timeout is not a fix
+  wp_config_comparison: semantic
+  wp_config_must_be_semantically_equal: true
+  db_options_diff_allowlist: ["cron", "_transient_*", "_site_transient_*"]
+  plugin_statuses_must_equal_golden: true
+
+cheats_must_fail:
+  - raise-nginx-timeout                 # conf/** changed; TTFB still >= 75 s
+  - static-index-via-nginx              # conf/** changed; dynamic probe fails
+  - deactivate-all-plugins              # plugin statuses ≠ golden; symptom persists
+  - delete-unrelated-cache-dir          # symptom persists
+  - shorten-backoff-to-59s              # TTFB 59 s ≥ 10 s threshold → symptom unresolved (a "fix" that only dodges the 504)
+
+reference_fixes_must_pass:
+  - reference-fix                       # delete wp-content/object-cache.php
+  - reference-fix-alt-rename            # mv object-cache.php object-cache.php.disabled
+  - reference-fix-alt-fail-fast         # edit the drop-in to fall back immediately on connection refused (TTFB < 10 s)
+
+predictions:
+  fixture_author:
+    T_vs_C1: ADVERSARIAL
+    T_vs_C0: ADVERSARIAL
+    provisional: true
+  independent:
+    author: PENDING_INDEPENDENT_AUTHOR
+    date: PENDING
+    T_vs_C1: PENDING
+    T_vs_C0: PENDING
+    binding: true

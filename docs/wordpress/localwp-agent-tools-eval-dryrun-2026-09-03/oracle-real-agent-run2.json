@@ -1,0 +1,130 @@
+{
+  "outcome": "pass",
+  "checks": {
+    "symptom_resolved": true,
+    "events_ul_present_exactly_once": true,
+    "has_three_li": true,
+    "event_dates_match_golden_format": true,
+    "plugin_active": true,
+    "no_fatal_after_post_agent_offset": true,
+    "changed_files_subset_of_allowed": true,
+    "wp_config_semantically_equal": true,
+    "plugin_list_matches_golden": true,
+    "dynamic_probe_renders_new_event": true,
+    "dynamic_probe_li_count_is_four": true
+  },
+  "evidence": {
+    "symptom_resolved": {
+      "status": 200,
+      "final_url": "http://127.0.0.1:8080/events/"
+    },
+    "has_three_li": {
+      "count": 3
+    },
+    "event_dates_match_golden_format": {
+      "Harvest Market": "Saturday, October 3, 2026",
+      "Winter Lights Walk": "Saturday, December 12, 2026",
+      "Spring Repair Cafe": "Saturday, April 17, 2027"
+    },
+    "plugin_active": {
+      "returncode": 0
+    },
+    "no_fatal_after_post_agent_offset": {
+      "tail_bytes": 0
+    },
+    "changed_files_subset_of_allowed": {
+      "escaping": []
+    },
+    "wp_config_semantically_equal": {
+      "unexpected_constant_diffs": [],
+      "residue_equal": true
+    },
+    "plugin_list_matches_golden": {
+      "actual": [
+        {
+          "name": "acme-cache",
+          "status": "active"
+        },
+        {
+          "name": "acme-events",
+          "status": "active"
+        },
+        {
+          "name": "acme-forms",
+          "status": "active"
+        },
+        {
+          "name": "acme-meta",
+          "status": "active"
+        },
+        {
+          "name": "acme-related",
+          "status": "active"
+        },
+        {
+          "name": "acme-reports",
+          "status": "active"
+        },
+        {
+          "name": "acme-seo",
+          "status": "active"
+        },
+        {
+          "name": "akismet",
+          "status": "inactive"
+        },
+        {
+          "name": "hello",
+          "status": "inactive"
+        }
+      ],
+      "golden": [
+        {
+          "name": "acme-cache",
+          "status": "active"
+        },
+        {
+          "name": "acme-events",
+          "status": "active"
+        },
+        {
+          "name": "acme-forms",
+          "status": "active"
+        },
+        {
+          "name": "acme-meta",
+          "status": "active"
+        },
+        {
+          "name": "acme-related",
+          "status": "active"
+        },
+        {
+          "name": "acme-reports",
+          "status": "active"
+        },
+        {
+          "name": "acme-seo",
+          "status": "active"
+        },
+        {
+          "name": "akismet",
+          "status": "inactive"
+        },
+        {
+          "name": "hello",
+          "status": "inactive"
+        }
+      ]
+    },
+    "dynamic_probe_renders_new_event": {
+      "probe_title": "Probe 77b45ce63f4c",
+      "found": true,
+      "time_ok": true
+    },
+    "dynamic_probe_li_count_is_four": {
+      "count": 4
+    }
+  },
+  "warnings": []
+}

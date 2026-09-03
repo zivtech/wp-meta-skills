@@ -1,0 +1,104 @@
+name: fatal-undefined-function-page-scoped
+suite: localwp-agent-tools-value
+status: spec_only
+
+expected_lift:
+  T_vs_C1: MEDIUM          # primary contrast (tool-quality claim)
+  T_vs_C0: HIGH            # co-primary (provisioning claim)
+mechanism: >
+  read_error_log returns the fatal's file:line in one call. C1 can tail
+  logs/php/error.log once it thinks to and has wp for plugin listing. C0 must
+  discover logs/php/ or bisect seven plugins.
+tools_expected_in_T:
+  read_error_log: {min: 1}
+  wp_cli: {min: 0, max: 3}
+  get_site_info: {min: 0, max: 1}
+
+golden:
+  wordpress_version: PINNED_AT_BUILD
+  php_version: "8.3.x"
+  timezone: UTC
+  permalinks: "/%postname%/"
+  wp_config_constants:              # design §2.4 (finding 5): the three debug constants are explicit
+    WP_DEBUG: false
+    WP_DEBUG_LOG: false
+    SCRIPT_DEBUG: false
+    WP_ENVIRONMENT_TYPE: local      # mirrors Local — verify (§13.4)
+    WP_HTTP_BLOCK_EXTERNAL: true    # egress is off in every arm
+    AUTOMATIC_UPDATER_DISABLED: true
+  plugins_active: [acme-events, acme-seo, acme-forms, acme-related, acme-reports, acme-meta, acme-cache]
+  events:                           # formatted with acme_format_date(), format 'l, F j, Y', UTC
+    - {title: "Harvest Market",     date: "2026-10-03", formatted: "Saturday, October 3, 2026"}
+    - {title: "Winter Lights Walk", date: "2026-12-12", formatted: "Saturday, December 12, 2026"}
+    - {title: "Spring Repair Cafe", date: "2027-04-17", formatted: "Saturday, April 17, 2027"}
+  digests:
+    public_tar_zst: PENDING_BUILD
+    db_sql: PENDING_BUILD
+
+seed:
+  file: wp-content/plugins/acme-events/acme-events.php
+  change: wrap `require_once __DIR__ . '/includes/formatting.php';` in `if ( is_admin() )`
+  fatal_site: wp-content/plugins/acme-events/templates/events-list.php
+  fatal_line: 17
+  fatal_regex: 'Fatal error.*Call to undefined function acme_format_date'
+trigger:
+  request: GET /events/
+  assert_log_gained: 1
+  record: trigger_log_offset        # descriptive only; the gating offset is post_agent_log_offset
+
+prompt:
+  sha256: PENDING_FREEZE_BEFORE_FIRST_RUN
+  forbidden_tokens_checked: false
+symptom_wording:
+  status: pending_stack_observation
+  derivation: >
+    Stock WordPress installs WP_Fatal_Error_Handler; with display_errors=Off and
+    WP_DEBUG false a plugin fatal renders "There has been a critical error on this
+    website." — not a blank page — under either display_errors setting. Before the
+    prompt hash is frozen, render the faulted page on the Lane H stack and match the
+    wording (status code and whether the header shows depend on output_buffering,
+    design §13.9). If Local ships display_errors=On (design §13.1) the file:line is
+    visible in the browser and the lift prediction must be redone.
+
+haystack:
+  plugins_total: 7
+  pre_registered: true
+  pilot_may_change: false           # finding 10: bigger haystack hurts C0 only
+
+allowed_changes:
+  files: ["app/public/wp-content/plugins/acme-events/**"]
+  changed_file_exclusions: ["app/public/wp-content/uploads/**", "*.bak", "app/public/wp-content/debug.log"]
+  wp_config_comparison: semantic    # finding 5; absent≡false for WP_DEBUG, WP_DEBUG_LOG, SCRIPT_DEBUG
+  wp_config_must_be_semantically_equal: true
+  db_options_diff_allowlist: ["cron", "_transient_*", "_site_transient_*"]
+  plugin_statuses_must_equal_golden: true
+  correctness_bar_note: an agent may toggle debug on to diagnose but must restore it; leaving WP_DEBUG true is collateral
+
+cheats_must_fail:
+  - deactivate
+  - delete-template
+  - stub-function-in-theme
+  - stub-in-plugin-dir             # finding 4: allowed dir, wrong <time> text
+  - hardcode-template              # finding 4: passes static checks, fails the nonce probe
+  - comment-out-call
+  - fix-but-leave-debug-on
+  - mask-with-debug-display-off
+
+reference_fixes_must_pass:
+  - reference-fix
+  - reference-fix-alt-template-require
+  - reference-fix-alt-guard
+  - reference-fix-alt-reimplement
+  - reference-fix-alt-after-debug-toggle   # proves the semantic comparison admits the tool's designed path
+
+predictions:
+  fixture_author:
+    T_vs_C1: MEDIUM
+    T_vs_C0: HIGH
+    provisional: true
+  independent:
+    author: PENDING_INDEPENDENT_AUTHOR
+    date: PENDING
+    T_vs_C1: PENDING
+    T_vs_C0: PENDING
+    binding: true

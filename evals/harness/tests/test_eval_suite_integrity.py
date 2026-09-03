@@ -241,7 +241,7 @@ def test_recursive_fixture_glob_is_rejected_before_inventory(tmp_path, monkeypat
 
 
 def test_eval_named_profiles_cover_positive_examples_and_live_corpus():
-    expected = {"standard", "executor-full", "executor-static", "candidate-comparison"}
+    expected = {"standard", "executor-full", "executor-static", "candidate-comparison", "tool-value-ab"}
     observed = set()
     for path in sorted((ROOT / "evals" / "suites").glob("*/eval.yaml")):
         document, issues = integrity.read_yaml_document(path, path.parent.name, "eval")

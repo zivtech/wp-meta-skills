@@ -1,0 +1,48 @@
+# Specification for oracle.py. Not the implementation.
+# Site state only; never the transcript. WP-CLI via the lane's SiteBackend, never via the MCP server.
+outcome: pass iff every check below is true; else fail. Runner supplies timeout/error.
+
+inputs_from_runner:
+  post_agent_log_offset: byte length of logs/php/error.log after the agent exited
+  golden_digest: for the changed-file hash diff
+
+phases:
+  1_symptom_resolved:
+    - http_get: {path: /contact/, max_redirects: 3, same_host_final: true, expect_status: 200}
+
+  2_functionality_preserved:
+    - body_regex_count: {pattern: '<form class="acme-form"', expect: 1}
+    - body_regex: 'name="acme_name"'
+    - body_regex: 'name="acme_email"'
+    - body_regex: 'name="acme_forms_nonce"\s+value="[0-9a-f]{10}"'       # a real wp_create_nonce(), not static text
+    - body_regex: '<h2 class="acme-form-title">Get in touch</h2>'
+    - wp_cli: {args: "plugin is-active acme-forms", expect_exit: 0}
+
+  3_no_collateral_snapshot:
+    - error_log_after_offset: {offset_from: post_agent_log_offset, forbid_regex: '(Fatal error|Parse error)'}
+    - changed_files_subset_of: allowed_changes.files
+        # SHA-256 vs golden over app/public/** excluding uploads/**, *.bak, wp-content/debug.log
+    - files_hash_identical_to_golden: app/public/wp-content/plugins/acme-cache/**    # touching the herring is collateral
+    - wp_config_semantic_equal:
+        parser: same regex as src/tools/config.ts parseDefineConstants
+        normalize_absent_as_false: [WP_DEBUG, WP_DEBUG_LOG, SCRIPT_DEBUG]
+        constants_map_must_equal_golden: true
+        non_define_residue_must_equal_golden: true
+    - wp_cli_json_equals_golden: {args: "plugin list --format=json", fields: [name, status]}
+    - db_options_diff_subset_of: ["cron", "_transient_*", "_site_transient_*"]
+
+  4_dynamic_probe:                                                         # defeats hard-coded form markup
+    - nonce: 12 hex chars from os.urandom
+    - wp_cli: {args: "option update acme_forms_title \"Probe {nonce}\""}
+    - http_get: {path: /contact/, expect_status: 200}
+    - body_regex: '<h2 class="acme-form-title">Probe {nonce}</h2>'
+    - body_regex: 'name="acme_forms_nonce"\s+value="[0-9a-f]{10}"'
+
+  5_cleanup:
+    - wp_cli: {args: "option update acme_forms_title \"Get in touch\""}
+    - note: cleanup failures are warnings, never change the outcome
+
+evidence_emitted:
+  - each check's boolean plus observed values
+  - descriptive: which log file was newer at post_agent time (mtime order), and fatals_during_run — both tell the transcript auditor whether the trap was still armed when the agent finished
+  - grading.json per design §6 (schema localwp-tool-value-grading/2)

@@ -1,0 +1,30 @@
+# Arm C1 — capability-matched control. Represents a Local user who opened the site shell.
+# PRIMARY contrast partner for T (tool-quality claim).
+arm: C1
+mcp:
+  enabled: false
+  config_file: empty
+  precheck: no .mcp.json present in the site dir
+context_file:
+  path: CLAUDE.md
+  variant: none
+wp_on_path: true
+network_egress: off
+shim:
+  path: /usr/local/bin/wp
+  mode: "0755"
+  mirrors: src/tools/wpcli.ts runWpCli()   # finding 6
+  behaviour:
+    - export PHPRC=$SITE_PHP_INI_DIR
+    - export MYSQL_UNIX_PORT=$SITE_DB_SOCKET
+    - export MYSQL_PWD=$SITE_DB_PASSWORD
+    - prepend $SITE_MYSQL_BIN_DIR to PATH
+    - append --path=$SITE_WP_PATH unless an argument is --path or starts with --path=
+    - exec $SITE_PHP_BIN -d mysqli.default_socket=$SITE_DB_SOCKET -d pdo_mysql.default_socket=$SITE_DB_SOCKET $SITE_WP_CLI_PHAR "$@"
+  retained_asymmetries_reported_not_corrected:
+    - no 60 s timeout
+    - no 10 MB buffer cap
+    - no blocked command list (wp eval works)
+  omitted_as_inert: DB_HOST DB_USER DB_PASSWORD DB_NAME MYSQL_HOST MYSQL_TCP_PORT
+  precheck: from cwd /srv/sites/<name>, `wp core version` must succeed before the agent starts
+open_question: whether Local's site shell supplies --path equivalence (design §13.3); if not, C1 is slightly stronger than a site-shell user, biasing T-vs-C1 toward zero

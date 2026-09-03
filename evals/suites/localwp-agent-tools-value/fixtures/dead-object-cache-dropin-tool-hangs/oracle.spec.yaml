@@ -1,0 +1,49 @@
+# Specification for oracle.py. Not the implementation.
+# Site state only; never the transcript. Every oracle WP-CLI call carries a 30 s bound;
+# a bound hit is recorded as that check failing (the fault makes WP-CLI take 75 s, so a
+# still-faulted site fails phase 1 before WP-CLI is reached, and a fixed site answers in < 2 s).
+outcome: pass iff every check below is true; else fail. Runner supplies timeout/error.
+
+inputs_from_runner:
+  post_agent_log_offset: byte length of logs/php/error.log after the agent exited
+  golden_digest: covers app/public/** and conf/**
+
+phases:
+  1_symptom_resolved:
+    - http_get: {path: /, max_redirects: 3, same_host_final: true, expect_status: 200, max_ttfb_seconds: 10}
+        # healthy ≈ 0.1 s; faulted 75 s (504 at 60 s). The 10 s threshold is not a flaky
+        # timing oracle in the sense fixture 5 avoids: the two states are 750× apart.
+    - http_get: {path: /wp-login.php, max_redirects: 0, expect_status: 200, max_ttfb_seconds: 10}
+
+  2_functionality_preserved:
+    - body_regex: '<h1 class="site-title">\s*<a[^>]*>Acme Community</a>'     # golden blogname rendered by the theme
+    - wp_cli: {args: "core is-installed", expect_exit: 0, timeout_seconds: 30}
+    - wp_cli_json_equals_golden: {args: "plugin list --format=json", fields: [name, status], timeout_seconds: 30}
+
+  3_no_collateral_snapshot:
+    - error_log_after_offset: {offset_from: post_agent_log_offset, forbid_regex: '(Fatal error|Parse error)'}
+    - changed_files_subset_of: allowed_changes.files
+        # deletion of object-cache.php is allowed; any NEW file must match object-cache.php.* and must not be
+        # named object-cache.php; anything else under app/public/** is collateral
+    - conf_tree_unchanged: conf/**                                              # nginx/php/mysql conf byte-identical to golden
+    - wp_config_semantic_equal:
+        parser: same regex as src/tools/config.ts parseDefineConstants
+        normalize_absent_as_false: [WP_DEBUG, WP_DEBUG_LOG, SCRIPT_DEBUG]
+        constants_map_must_equal_golden: true
+        non_define_residue_must_equal_golden: true
+    - db_options_diff_subset_of: ["cron", "_transient_*", "_site_transient_*"]
+
+  4_dynamic_probe:                                                              # fresh content must be served fast — no static page, no stale cache
+    - nonce: 12 hex chars from os.urandom
+    - wp_cli: {args: "post create --post_status=publish --post_title=\"Probe {nonce}\" --post_name=probe-{nonce} --porcelain", capture: probe_id, timeout_seconds: 30}
+    - http_get: {path: "/probe-{nonce}/", expect_status: 200, max_ttfb_seconds: 10}
+    - body_regex: 'Probe {nonce}'
+
+  5_cleanup:
+    - wp_cli: {args: "post delete {probe_id} --force", timeout_seconds: 30}
+    - note: cleanup failures are warnings, never change the outcome
+
+evidence_emitted:
+  - each check's boolean plus observed values (status, TTFB seconds, changed-file list incl. deletions, conf diff, semantic diff)
+  - descriptive tags from the changed-file scan: dropin_deleted | dropin_renamed | dropin_edited | dropin_untouched
+  - grading.json per design §6 (schema localwp-tool-value-grading/2)

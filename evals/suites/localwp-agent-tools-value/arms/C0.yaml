@@ -1,0 +1,18 @@
+# Arm C0 — naive control. Represents a Local user without the add-on and without the site shell.
+arm: C0
+mcp:
+  enabled: false
+  config_file: empty                 # --mcp-config <empty.json> --strict-mcp-config
+  precheck: no .mcp.json present in the site dir
+context_file:
+  path: CLAUDE.md
+  variant: none
+wp_on_path: false
+network_egress: off
+pins:                                # design §4.1, finding 8 — each with its stated bias direction
+  wp_cli_phar: /srv/local-app/extraResources/bin/wp-cli/wp-cli.phar   # on disk, mode 0644, NOT on PATH (paths.ts findWpCli candidate 1)
+  mysql_client: /srv/local-app/lightning-services/mysql-<ver>/bin/linux/bin/mysql   # on disk, NOT on PATH
+  mariadb_listeners: socket /srv/run/<siteId>/mysql/mysqld.sock and 127.0.0.1:10003 (Local-shaped; verify §13.6)
+  db_credentials: root/root as written into wp-config.php (mirrors Local)
+  php_on_path: true                  # any Mac developer has php; it is the socket, not php, that hurts
+  golden_wp_http_block_external: true

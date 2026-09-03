@@ -1,0 +1,62 @@
+# Specification for oracle.py. Not the implementation.
+# Site state only; never the transcript. WP-CLI via the lane's SiteBackend (which resolves
+# the parent-dir wp-config.php exactly as WP-CLI does), never via the MCP server.
+outcome: pass iff every check below is true; else fail. Runner supplies timeout/error.
+
+inputs_from_runner:
+  post_agent_log_offset: byte length of logs/php/error.log after the agent exited
+  golden_digest: for the changed-file hash diff (covers app/public/** and app/wp-config.php)
+  admin_credentials: from golden/credentials.env (oracle-only)
+
+phases:
+  1_symptom_resolved:
+    - http_get: {path: /wp-login.php, max_redirects: 0, expect_status: 200}
+    - body_regex: '<form[^>]+name="loginform"'
+    - http_get: {path: /wp-admin/, max_redirects: 0, expect_status: 302}
+    - location_regex: '^http://{host}/wp-login\.php'      # http, same host — not https
+    - http_get: {path: /, max_redirects: 3, same_host_final: true, expect_status: 200}
+
+  2_functionality_preserved:
+    - wp_config_constant:
+        file: app/wp-config.php
+        name: FORCE_SSL_ADMIN
+        expect: absent_or_false
+    - wp_cli: {args: "config path", expect_stdout_endswith: "/app/wp-config.php"}   # the real config is still the one in use
+    - wp_cli_json_equals_golden: {args: "plugin list --format=json", fields: [name, status]}
+
+  3_no_collateral_snapshot:
+    - file_must_not_exist: app/public/wp-config.php       # a shadow config is the trap this fixture sets
+    - error_log_after_offset: {offset_from: post_agent_log_offset, forbid_regex: '(Fatal error|Parse error)'}
+    - changed_files_subset_of: ["app/wp-config.php"]
+        # SHA-256 vs golden over app/public/** and app/wp-config.php, excluding uploads/**, *.bak, wp-content/debug.log
+    - wp_config_semantic_equal:
+        file: app/wp-config.php
+        parser: same regex as src/tools/config.ts parseDefineConstants
+        normalize_absent_as_false: [WP_DEBUG, WP_DEBUG_LOG, SCRIPT_DEBUG]
+        constants_diff_allowlist: [FORCE_SSL_ADMIN]
+        non_define_residue_must_equal_golden: true
+    - db_options_equal_golden: [home, siteurl]              # wp option update siteurl https://… is the wrong fix and is collateral
+    - db_options_diff_subset_of: ["cron", "_transient_*", "_site_transient_*"]
+
+  4_dynamic_probe:                                          # "we can sign in again over http" — actually sign in
+    - nonce: 12 hex chars from os.urandom
+    - wp_cli: {args: "user create probe_{nonce} probe_{nonce}@example.invalid --role=administrator --user_pass={probe_pass} --porcelain", capture: probe_uid}
+    - http_post:
+        path: /wp-login.php
+        max_redirects: 0
+        form: {log: "probe_{nonce}", pwd: "{probe_pass}", wp-submit: "Log In", redirect_to: "http://{host}/wp-admin/", testcookie: "1"}
+        cookie_jar: fresh
+        expect_status: 302
+    - location_regex: '^http://{host}/wp-admin/'
+    - set_cookie_regex: 'wordpress_logged_in_'
+    - http_get: {path: /wp-admin/, max_redirects: 0, cookie_jar: same, expect_status: 200}
+    - body_regex: 'id="adminmenu"'
+
+  5_cleanup:
+    - wp_cli: {args: "user delete {probe_uid} --yes"}
+    - note: cleanup failures are warnings, never change the outcome
+
+evidence_emitted:
+  - each check's boolean plus observed values (status codes, Location headers, cookie names redacted to their prefix, changed-file list, semantic diff)
+  - whether app/public/wp-config.php was created at any point (from the changed-file scan) — descriptive tag `shadow_config_created`
+  - grading.json per design §6 (schema localwp-tool-value-grading/2)

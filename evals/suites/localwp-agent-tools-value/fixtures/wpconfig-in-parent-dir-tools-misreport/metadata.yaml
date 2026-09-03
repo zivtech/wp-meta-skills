@@ -1,0 +1,102 @@
+name: wpconfig-in-parent-dir-tools-misreport
+suite: localwp-agent-tools-value
+status: spec_only
+
+expected_lift:
+  T_vs_C1: ADVERSARIAL     # primary contrast: the config tools point at a phantom missing file
+  T_vs_C0: LOW
+mechanism: >
+  wp-config.php lives at app/wp-config.php, one level above the WordPress root — a
+  placement WordPress and WP-CLI both support. src/tools/config.ts and logs.ts build
+  the path as path.join(config.wpPath, 'wp-config.php'), so read_wp_config,
+  edit_wp_config and wp_debug_toggle all answer "wp-config.php not found at:
+  …/app/public/wp-config.php", get_site_info omits wpDebug, and site_health_check
+  reports "wp-config.php: error — Not found". wp_cli (and C1's wp config get) work
+  because WP-CLI resolves the parent directory. A T agent steered by its tool list
+  is told the config is missing; creating one in app/public shadows the real file
+  and breaks the site. C0 has grep -r FORCE_SSL_ADMIN.
+tools_expected_in_T:
+  read_wp_config: {min: 0, max: 2}
+  site_health_check: {min: 0, max: 1}
+  wp_cli: {min: 0, max: 4}
+
+golden:
+  wordpress_version: PINNED_AT_BUILD
+  php_version: "8.3.x"
+  timezone: UTC
+  permalinks: "/%postname%/"
+  wp_config_location: app/wp-config.php        # NOT app/public/wp-config.php; app/public/wp-config.php must not exist
+  wp_config_constants:
+    WP_DEBUG: false
+    WP_DEBUG_LOG: false
+    SCRIPT_DEBUG: false
+    WP_ENVIRONMENT_TYPE: local
+    WP_HTTP_BLOCK_EXTERNAL: true
+    AUTOMATIC_UPDATER_DISABLED: true
+  plugins_active: [acme-seo, acme-forms, acme-related, acme-meta]
+  tls_served: false                             # Lane H nginx listens on 80 only; Local's router may serve 443 (design §13.8)
+  admin_user: acme_admin                        # password recorded in golden/credentials.env for the oracle's sign-in probe
+  digests:
+    public_tar_zst: PENDING_BUILD
+    wp_config_parent: PENDING_BUILD
+    db_sql: PENDING_BUILD
+
+seed:
+  file: app/wp-config.php
+  change: insert `define( 'FORCE_SSL_ADMIN', true );` before "That's all, stop editing!"
+  effect: wp-login.php and wp-admin redirect to https://<host>/… which nothing serves
+  nothing_else_changes: true
+trigger:
+  request: GET /wp-login.php (follow 0 redirects)
+  assert: status 302 and Location starts with https://
+  record: trigger_log_offset
+
+prompt:
+  sha256: PENDING_FREEZE_BEFORE_FIRST_RUN
+  forbidden_tokens_checked: false
+symptom_wording:
+  status: pending_stack_observation
+  derivation: >
+    With no TLS listener the https:// redirect target is "connection refused";
+    behind Local's router it may be a certificate warning instead (design §13.8).
+    The prompt says "can't load", which covers both; confirm on the stack before
+    freezing, and record what Local shows when the parity machine is available.
+
+haystack:
+  plugins_total: 4
+  pre_registered: true
+  pilot_may_change: false
+
+allowed_changes:
+  files: ["app/wp-config.php"]
+  file_must_not_exist: ["app/public/wp-config.php"]
+  changed_file_exclusions: ["app/public/wp-content/uploads/**", "*.bak", "app/public/wp-content/debug.log"]
+  wp_config_comparison: semantic
+  wp_config_semantic_diff_allowlist: ["FORCE_SSL_ADMIN"]   # may be removed or set false; nothing else may change
+  db_options_must_equal_golden: ["home", "siteurl"]
+  db_options_diff_allowlist: ["cron", "_transient_*", "_site_transient_*"]
+  plugin_statuses_must_equal_golden: true
+
+cheats_must_fail:
+  - create-shadow-config-in-public        # wp config create / copy into app/public → file_must_not_exist
+  - option-update-siteurl-https           # wp option update siteurl https://… → options collateral, symptom persists
+  - patch-core-wp-login                   # edit wp-login.php to skip the redirect → changed files escape allowlist
+  - deactivate-all-plugins                # irrelevant and collateral
+  - define-force-ssl-admin-false-in-shadow  # new app/public/wp-config.php defining it false → file_must_not_exist
+
+reference_fixes_must_pass:
+  - reference-fix                         # delete the define from app/wp-config.php
+  - reference-fix-alt-set-false           # define( 'FORCE_SSL_ADMIN', false );
+  - reference-fix-alt-wp-config-set       # wp config set FORCE_SSL_ADMIN false --raw (proves WP-CLI resolves the parent dir)
+
+predictions:
+  fixture_author:
+    T_vs_C1: ADVERSARIAL
+    T_vs_C0: LOW
+    provisional: true
+  independent:
+    author: PENDING_INDEPENDENT_AUTHOR
+    date: PENDING
+    T_vs_C1: PENDING
+    T_vs_C0: PENDING
+    binding: true

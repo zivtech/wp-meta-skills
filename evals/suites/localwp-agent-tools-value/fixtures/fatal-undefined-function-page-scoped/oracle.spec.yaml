@@ -1,0 +1,56 @@
+# Specification for oracle.py (v2). Not the implementation.
+# The oracle reads site state only. It never reads the agent transcript.
+# WP-CLI is invoked through the lane's SiteBackend, never through the MCP server.
+# Order is load-bearing: static checks -> collateral snapshot -> dynamic probe -> cleanup.
+outcome: pass iff every check below is true; else fail. Runner supplies timeout/error.
+
+inputs_from_runner:
+  post_agent_log_offset: byte length of logs/php/error.log recorded after the agent process exited (finding 3)
+  trigger_log_offset: descriptive only (fatals_during_run = fatal lines between the two offsets)
+  golden_digest: for the changed-file hash diff
+
+phases:
+  1_symptom_resolved:
+    - http_get: {path: /events/, max_redirects: 3, same_host_final: true, expect_status: 200}
+
+  2_functionality_preserved:            # content, not markers (finding 4)
+    - body_regex_count: {pattern: '<ul class="acme-events">', expect: 1}
+    - body_regex_count: {pattern: '<li[\s>]', within: '<ul class="acme-events">[\s\S]*?</ul>', expect: 3}
+    - for_each: golden.events
+      checks:
+        - body_contains_once: "{title}"
+        - li_containing_title_has_time_text_equal: {selector_regex: '<time class="acme-date">\s*([^<]+?)\s*</time>', expect: "{formatted}"}
+      note: a stub returning '' or the raw 2026-10-03 fails here; a correct re-implementation passes
+    - wp_cli: {args: "plugin is-active acme-events", expect_exit: 0}
+
+  3_no_collateral_snapshot:            # taken BEFORE the dynamic probe so the probe's own churn is excluded
+    - error_log_after_offset:
+        offset_from: post_agent_log_offset
+        forbid_regex: '(Fatal error|Parse error)'
+        note: the oracle's own phase-1 GET is the only request after this offset
+    - changed_files_subset_of: allowed_changes.files
+        # SHA-256 vs golden over app/public/** excluding wp-content/uploads/**, *.bak, wp-content/debug.log
+        # wp-config.php is excluded from the byte diff and handled by the next check
+    - wp_config_semantic_equal:        # finding 5
+        parser: same regex as src/tools/config.ts parseDefineConstants
+        normalize_absent_as_false: [WP_DEBUG, WP_DEBUG_LOG, SCRIPT_DEBUG]
+        constants_map_must_equal_golden: true
+        non_define_residue_must_equal_golden: true   # strip define(...); statements, collapse whitespace, compare
+    - wp_cli_json_equals_golden: {args: "plugin list --format=json", fields: [name, status]}
+    - db_options_diff_subset_of: allowed_changes.db_options_diff_allowlist
+
+  4_dynamic_probe:                     # finding 4: defeats hard-coded markup
+    - nonce: 12 hex chars from os.urandom
+    - wp_cli: {args: "post create --post_type=event --post_status=publish --post_title=\"Probe {nonce}\" --meta_input='{\"acme_event_date\":\"2027-03-14\"}' --porcelain", capture: probe_id}
+    - http_get: {path: /events/, expect_status: 200}
+    - body_regex: '<li[\s>][\s\S]*?Probe {nonce}[\s\S]*?<time class="acme-date">\s*Sunday, March 14, 2027\s*</time>[\s\S]*?</li>'
+    - body_regex_count: {pattern: '<li[\s>]', within: '<ul class="acme-events">[\s\S]*?</ul>', expect: 4}
+
+  5_cleanup:
+    - wp_cli: {args: "post delete {probe_id} --force"}
+    - note: cleanup failures are logged as oracle warnings, never change the outcome, and the site is reset before the next cell anyway
+
+evidence_emitted:
+  - each check's boolean plus the observed value (status code, matched text, changed-file list, semantic diff, log lines)
+  - fatals_during_run (descriptive)
+  - final grading.json per design §6 (schema localwp-tool-value-grading/2)

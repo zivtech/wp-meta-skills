@@ -1,0 +1,109 @@
+name: fatal-in-error-log-fresh-debug-log-misleads
+suite: localwp-agent-tools-value
+status: spec_only
+
+expected_lift:
+  T_vs_C1: ADVERSARIAL     # read_error_log returns the newer, wrong file
+  T_vs_C0: ADVERSARIAL
+mechanism: >
+  WP_DEBUG and WP_DEBUG_LOG are false, so the fatal goes to logs/php/error.log.
+  Haystack plugin acme-cache appends one "hits/misses" line to wp-content/debug.log
+  on every request from a `shutdown` hook via error_log($line, 3, $path) — message
+  type 3 writes to the named file and bypasses the error_log ini, so this holds
+  whatever Local's error_log source turns out to be (design §13.2). PHP logs a fatal
+  first and runs shutdown functions after, so debug.log's mtime is newer than
+  error.log's after every request — including the failing one and the agent's own
+  reproductions. src/tools/logs.ts findErrorLog() picks the file with the newer
+  mtime (ties go to debug.log), so read_error_log returns 50 lines of cache stats;
+  with filter "Fatal" it returns zero entries. The T agent is told by its
+  purpose-built tool that nothing is wrong in the logs. C0 and C1 `ls logs/php/`
+  and tail the fatal.
+tools_expected_in_T:
+  read_error_log: {min: 1}
+  wp_cli: {min: 0, max: 3}
+  get_site_info: {min: 0, max: 1}
+
+golden:
+  wordpress_version: PINNED_AT_BUILD
+  php_version: "8.3.x"
+  timezone: UTC
+  permalinks: "/%postname%/"
+  wp_config_constants:
+    WP_DEBUG: false
+    WP_DEBUG_LOG: false
+    SCRIPT_DEBUG: false
+    WP_ENVIRONMENT_TYPE: local
+    WP_HTTP_BLOCK_EXTERNAL: true
+    AUTOMATIC_UPDATER_DISABLED: true
+  plugins_active: [acme-events, acme-seo, acme-forms, acme-related, acme-reports, acme-meta, acme-cache]
+  acme_cache_logging:
+    hook: shutdown
+    call: error_log( $line, 3, WP_CONTENT_DIR . '/debug.log' )
+    line_format: "[{ts}] acme-cache: {hits} hits / {misses} misses ({request_uri})"
+  debug_log_in_golden:
+    size_bytes: ~2000000                        # under read_error_log's 5 MB tail
+    age: two days of one-line-per-request history
+    contains_no_error_lines: true
+  acme_forms_title_option: "Get in touch"        # rendered in <h2 class="acme-form-title">; the dynamic probe changes it
+  digests:
+    public_tar_zst: PENDING_BUILD
+    db_sql: PENDING_BUILD
+
+seed:
+  file: wp-content/plugins/acme-forms/includes/class-acme-forms.php
+  change: rename the call `$this->render_fields()` to `$this->render_feilds()` in the shortcode handler
+  fatal_site: wp-content/plugins/acme-forms/includes/class-acme-forms.php
+  fatal_line: 41
+  fatal_regex: 'Fatal error.*Call to undefined method Acme_Forms::render_feilds\(\)'
+  fatal_destination: logs/php/error.log
+  debug_log_written_after_fatal_by: acme-cache shutdown hook (same request)
+trigger:
+  request: GET /contact/
+  assert_log_gained: 1
+  assert_mtime_order: wp-content/debug.log newer than logs/php/error.log     # the trap must be armed
+  record: trigger_log_offset
+
+prompt:
+  sha256: PENDING_FREEZE_BEFORE_FIRST_RUN
+  forbidden_tokens_checked: false
+symptom_wording:
+  status: pending_stack_observation
+  derivation: same as fixture 1 — WP_Fatal_Error_Handler message, contingent on display_errors (design §13.1) and output_buffering (§13.9)
+
+haystack:
+  plugins_total: 7
+  pre_registered: true
+  pilot_may_change: false
+
+allowed_changes:
+  files: ["app/public/wp-content/plugins/acme-forms/**"]
+  files_must_be_hash_identical_to_golden: ["app/public/wp-content/plugins/acme-cache/**"]   # the herring must be untouched
+  changed_file_exclusions: ["app/public/wp-content/uploads/**", "*.bak", "app/public/wp-content/debug.log"]   # debug.log changes on every request by design
+  wp_config_comparison: semantic
+  wp_config_must_be_semantically_equal: true
+  db_options_diff_allowlist: ["cron", "_transient_*", "_site_transient_*"]
+  plugin_statuses_must_equal_golden: true
+
+cheats_must_fail:
+  - deactivate-acme-forms
+  - silence-acme-cache-logging          # edits acme-cache → hash check; fixes nothing
+  - delete-debug-log                    # excluded from the diff, so not collateral — but the symptom persists
+  - hardcode-form-markup                # static form → nonce probe fails
+  - catch-and-swallow                   # try/catch returning '' → no form → fails
+  - deactivate-acme-cache               # plugin statuses ≠ golden
+
+reference_fixes_must_pass:
+  - reference-fix                       # correct the method name
+  - reference-fix-alt-alias-method      # add a render_feilds() that delegates to render_fields()
+
+predictions:
+  fixture_author:
+    T_vs_C1: ADVERSARIAL
+    T_vs_C0: ADVERSARIAL
+    provisional: true
+  independent:
+    author: PENDING_INDEPENDENT_AUTHOR
+    date: PENDING
+    T_vs_C1: PENDING
+    T_vs_C0: PENDING
+    binding: true
